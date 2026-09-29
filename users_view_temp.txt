@@ -1,0 +1,91 @@
+        onClose={() => setShowNewUserModal(false)} 
+        onSave={handleCreateUser}
+      />
+      <div className="pb-3 pt-4 space-y-3 shrink-0">
+          {/* Search Bar & New User Button */}
+          <div className="flex gap-2 w-full">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" size={16} strokeWidth={3} />
+              <input 
+                type="text" 
+                placeholder="Buscar por nombre, teléfono o barrio.." 
+                className="pl-9 pr-3 py-2 bg-white rounded-[10px] text-xs sm:text-sm w-full outline-none shadow-sm text-gray-700 font-medium border border-gray-100"
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <button onClick={() => setShowNewUserModal(true)} className="bg-[#0BA70B] text-white px-3 py-2 rounded-[10px] font-bold text-[11px] sm:text-sm shadow-sm active:scale-95 transition-transform whitespace-nowrap">
+              + Nuevo usuario
+            </button>
+          </div>
+          
+          {/* Filters */}
+          <div className="flex flex-wrap gap-2 pb-1 pt-0.5">
+            {/* Filter 1 */}
+            <div className="relative flex-shrink-0 flex items-center gap-1 bg-white px-2 py-1.5 rounded-[8px] shadow-sm text-[10px] sm:text-xs border border-gray-100">
+              <ChevronDown className="text-[#0BA70B]" size={12} strokeWidth={3} />
+              <span className="text-gray-800"><span className="font-bold">Adquisición:</span> {filters.acquisition === 'all' ? 'todos' : filters.acquisition === 'today' ? 'hoy' : filters.acquisition === 'week' ? 'semana' : 'mes'}</span>
+              <select 
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                value={filters.acquisition}
+                onChange={e => setFilters({...filters, acquisition: e.target.value})}
+              >
+                <option value="all">Adquisición: Todos</option>
+                <option value="today">Hoy</option>
+                <option value="week">Esta Semana</option>
+                <option value="month">Este Mes</option>
+              </select>
+            </div>
+            
+            {/* Filter 2 */}
+            <div className="relative flex-shrink-0 flex items-center gap-1 bg-white px-2 py-1.5 rounded-[8px] shadow-sm text-[10px] sm:text-xs border border-gray-100">
+              <ChevronDown className="text-[#0BA70B]" size={12} strokeWidth={3} />
+              <span className="text-gray-800"><span className="font-bold">Activación:</span> {filters.activation === 'all' ? 'todos' : filters.activation === 'today' ? 'hoy' : filters.activation === 'week' ? 'semana' : 'mes'}</span>
+              <select 
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                value={filters.activation}
+                onChange={e => setFilters({...filters, activation: e.target.value})}
+              >
+                <option value="all">Activación: Todos</option>
+                <option value="today">Hoy</option>
+                <option value="week">Esta Semana</option>
+                <option value="month">Este Mes</option>
+              </select>
+            </div>
+            
+            {/* Filter 3 */}
+            <div className="relative flex-shrink-0 flex items-center gap-1 bg-white px-2 py-1.5 rounded-[8px] shadow-sm text-[10px] sm:text-xs border border-gray-100">
+              <ChevronDown className="text-[#0BA70B]" size={12} strokeWidth={3} />
+              <span className="text-gray-800"><span className="font-bold">Estado:</span> {filters.retention === 'all' ? 'todos' : filters.retention === 'green' ? 'activos' : filters.retention === 'yellow' ? 'en riesgo' : 'inactivos'}</span>
+              <select 
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                value={filters.retention}
+                onChange={e => setFilters({...filters, retention: e.target.value})}
+              >
+                <option value="all">Estado: Todos</option>
+                <option value="green">Activos</option>
+                <option value="yellow">En Riesgo</option>
+                <option value="red">Inactivos</option>
+              </select>
+            </div>
+            
+            {/* Filter 4 */}
+            <div className="relative flex-shrink-0 flex items-center gap-1 bg-white px-2 py-1.5 rounded-[8px] shadow-sm text-[10px] sm:text-xs border border-gray-100">
+              <ChevronDown className="text-[#0BA70B]" size={12} strokeWidth={3} />
+              <span className="text-gray-800"><span className="font-bold">Partidos:</span> {filters.matches === 'all' ? 'todos' : filters.matches === '0-5' ? '0-5' : filters.matches === '5-20' ? '5-20' : '20+'}</span>
+              <select 
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                value={filters.matches}
+                onChange={e => setFilters({...filters, matches: e.target.value})}
+              >
+                <option value="all">Partidos: Todos</option>
+                <option value="0-5">0 a 5 partidos</option>
+                <option value="5-20">5 a 20 partidos</option>
+                <option value="20+">Más de 20</option>
+              </select>
+            </div>
+          </div>
+        </div>
+      <div className="flex-1 overflow-auto -mx-3 px-3 md:mx-0 md:px-0">
+        <table className="w-full text-[11px] text-left min-w-[750px] bg-white">
+            <thead className="sticky top-0 z-20 bg-gray-50 text-gray-500 font-medium whitespace-nowrap shadow-sm shadow-gray-200/50">
+              <tr>

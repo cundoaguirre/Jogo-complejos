@@ -1,0 +1,62 @@
+                        let matchStatus = 'upcoming';
+                        let statusLabel = 'Próximo';
+                        let statusColor = 'bg-emerald-100 text-emerald-700 border-emerald-200';
+
+                        if (now > matchEnd) {
+                          matchStatus = 'past';
+                          statusLabel = 'Jugado';
+                          statusColor = 'bg-red-100 text-red-700 border-red-200';
+                        } else if (now >= matchStart && now <= matchEnd) {
+                          matchStatus = 'live';
+                          statusLabel = 'En juego';
+                          statusColor = 'bg-yellow-100 text-yellow-700 border-yellow-200 animate-pulse';
+                        }
+
+                        // Compact view if many courts selected
+                        const isCompact = selectedCourtIds.length > 2;
+                          
+                        return (
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            onClick={() => onMatchClick(match)}
+                            className={cn(
+                              "h-full w-full rounded-lg cursor-pointer border shadow-sm transition-all hover:shadow-md flex flex-col justify-between overflow-hidden relative",
+                              match.payment_status === 'paid' ? "bg-emerald-50 border-emerald-100" :
+                              match.payment_status === 'partial' ? "bg-orange-50 border-orange-100" :
+                              "bg-white border-gray-200",
+                              rowHeight < 60 ? "p-1" : "p-1.5"
+                            )}
+                          >
+                            <div className="flex justify-between items-start gap-1">
+                              <div className="font-bold text-xs text-gray-900 truncate flex-1 leading-tight">
+                                {match.host_name}
+                              </div>
+                              <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap flex-shrink-0 border", statusColor)}>
+                                {statusLabel}
+                              </span>
+                            </div>
+                            {!isCompact && rowHeight >= 60 && (
+                              <div className="text-[10px] text-gray-500 mt-0.5 leading-tight truncate">
+                                {match.host_phone}
+                              </div>
+                            )}
+                              
+                            {matchStatus !== 'live' && (
+                              <div className="mt-auto flex items-center justify-between pt-1">
+                                <span className={cn(
+                                  "text-[9px] font-bold px-1.5 py-0.5 rounded-md border",
+                                  match.payment_status === 'paid' ? "bg-emerald-100 text-emerald-700 border-emerald-200" :
+                                  match.payment_status === 'partial' ? (matchStatus === 'past' ? "bg-red-100 text-red-700 border-red-200 animate-pulse" : "bg-orange-100 text-orange-700 border-orange-200") :
+                                  (matchStatus === 'past' ? "bg-red-100 text-red-700 border-red-200 animate-pulse" : "bg-red-100 text-red-700 border-red-200")
+                                )}>
+                                  {match.payment_status === 'paid' ? 'Pagado' : match.payment_status === 'partial' ? 'Señado' : 'No Pagó'}
+                                </span>
+                                
+                                {!isCompact && (
+                                  <div className="text-[10px] font-mono font-bold text-gray-900 ml-auto">
+                                    ${match.price_total?.toLocaleString()}
+                                  </div>
+                                )}
+                              </div>
+                            )}

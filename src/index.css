@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@theme {
+  --color-emerald-50: #eafbea;
+  --color-emerald-100: #c9f3c9;
+  --color-emerald-200: #96e996;
+  --color-emerald-300: #5ed65e;
+  --color-emerald-400: #33be33;
+  --color-emerald-500: #0BA70B;
+  --color-emerald-600: #098e09;
+  --color-emerald-700: #077107;
+  --color-emerald-800: #055405;
+  --color-emerald-900: #044304;
+  --color-emerald-950: #022602;
+}
+
+@custom-variant dark (&:is(.dark *));
+
+@layer base {
+  body {
+    @apply bg-slate-50 text-slate-900 transition-colors duration-200 dark:bg-slate-950 dark:text-slate-200;
+  }
+}
+
+@layer utilities {
+  .bg-white {
+    @apply dark:bg-slate-900 dark:border-slate-800;
+  }
+  .bg-gray-50 {
+    @apply dark:bg-slate-800 dark:border-slate-700;
+  }
+  .text-gray-900 {
+    @apply dark:text-slate-100;
+  }
+  .text-gray-700 {
+    @apply dark:text-slate-300;
+  }
+  .text-gray-500 {
+    @apply dark:text-slate-400;
+  }
+  .border-gray-100 {
+    @apply dark:border-slate-800;
+  }
+  .border-gray-200 {
+    @apply dark:border-slate-700;
+  }
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@layer utilities {
+  .recharts-surface,
+  .recharts-surface:focus,
+  .recharts-wrapper,
+  .recharts-wrapper *:focus {
+    outline: none !important;
+  }
+}
+
+@layer utilities {
+  .recharts-surface:focus-visible,
+  .recharts-wrapper *:focus-visible {
+    outline: none !important;
+  }
+}

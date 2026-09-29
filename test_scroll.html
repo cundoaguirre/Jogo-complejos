@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { margin: 0; padding: 0; }
+  main { height: 100vh; overflow: auto; background: #eee; }
+  .search { position: sticky; left: 16px; width: calc(100vw - 32px); background: #fff; padding: 10px; box-sizing: border-box; border: 1px solid red; }
+  .table { min-width: 750px; }
+  th { position: sticky; top: 0; background: #ccc; }
+</style>
+</head>
+<body>
+  <main>
+    <div class="search">Search Bar</div>
+    <div class="table">
+      <table>
+        <thead><tr><th>Header 1</th><th>Header 2</th><th>Header 3</th></tr></thead>
+        <tbody>
+          <tr><td style="height: 1000px">Long content</td><td>Long content</td><td>Long content</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { margin: 0; padding: 0; overflow: hidden; font-family: sans-serif; }
+  .scroll-container { height: 100vh; width: 50vw; overflow: auto; background: #eee; border: 2px solid red; float: right; }
+  .search-and-filters {
+    position: sticky;
+    left: 0;
+    background: #fff;
+    padding: 20px;
+    box-sizing: border-box;
+    border-bottom: 2px solid #ccc;
+    z-index: 10;
+    /* Try to make it match the visible width! */
+  }
+  table { min-width: 1200px; width: 100%; border-collapse: collapse; }
+  th { position: sticky; top: 0; background: #333; color: #fff; padding: 10px; z-index: 20; }
+  td { padding: 10px; border-bottom: 1px solid #ccc; }
+</style>
+</head>
+<body>
+  <div class="scroll-container">
+    <div class="search-and-filters">
+       <h3>Search and Filters</h3>
+       <p>Does it span the visible width?</p>
+    </div>
+    <table>
+      <thead>
+        <tr><th>Col 1</th><th>Col 2</th><th>Col 3</th><th>Col 4</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Data</td><td>Data</td><td>Data</td><td>Data</td></tr>
+        <tr><td style="height: 1200px">Tall</td><td>Data</td><td>Data</td><td>Data</td></tr>
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>
