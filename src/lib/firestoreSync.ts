@@ -1,6 +1,7 @@
 import { 
   collection, 
   doc, 
+  getDoc,
   setDoc, 
   addDoc,
   deleteDoc, 
@@ -102,32 +103,42 @@ export function formatBookingToMatch(b: any): any {
 }
 
 /**
- * Real-time listener for Bookings filtered strictly by complexId
+ * Real-time listener for Bookings filtered strictly by complexId and optional date
  */
 export function subscribeToBookings(
   complexId: string, 
-  onUpdate: (bookings: any[]) => void
+  onUpdate: (bookings: any[]) => void,
+  selectedDate?: string
 ): () => void {
   try {
     const colRef = collection(db, BOOKINGS_COLLECTION);
     
-    // First attempt with where clause on complexId
-    const q = complexId 
-      ? query(colRef, where('complexId', '==', complexId))
-      : query(colRef);
+    // First attempt with where clause on complexId and optionally date
+    const constraints: any[] = [];
+    if (complexId) {
+      constraints.push(where('complexId', '==', complexId));
+    }
+    if (selectedDate) {
+      constraints.push(where('date', '==', selectedDate));
+    }
+
+    const q = constraints.length > 0 ? query(colRef, ...constraints) : query(colRef);
     
     return onSnapshot(q, (snapshot) => {
       const list = snapshot.docs.map(doc => formatBookingToMatch({ id: doc.id, ...doc.data() }));
       onUpdate(list);
     }, (error) => {
-      console.warn('[Firestore] Notice on complexId query, listening to collection:', error.message);
-      // Fallback in case of index requirements
-      return onSnapshot(colRef, (snap) => {
-        const list = snap.docs
+      console.warn('[Firestore] Notice on bookings query with date, falling back to complexId or collection:', error.message);
+      // Fallback in case of index requirements: query by complexId and filter date client-side
+      const qFallback = complexId ? query(colRef, where('complexId', '==', complexId)) : query(colRef);
+      return onSnapshot(qFallback, (snap) => {
+        let list = snap.docs
           .map(doc => ({ id: doc.id, ...doc.data() as any }))
-          .filter(b => !complexId || b.complexId === complexId || !b.complexId)
-          .map(formatBookingToMatch);
-        onUpdate(list);
+          .filter(b => !complexId || b.complexId === complexId || !b.complexId);
+        if (selectedDate) {
+          list = list.filter(b => b.date === selectedDate || (b.startTime && String(b.startTime).startsWith(selectedDate)) || (b.start_time && String(b.start_time).startsWith(selectedDate)));
+        }
+        onUpdate(list.map(formatBookingToMatch));
       }, (err) => {
         console.error('[Firestore] Error on bookings subscription fallback:', err);
         onUpdate([]);
@@ -278,8 +289,9 @@ export function subscribeToCourts(
         unsubComplexDoc = onSnapshot(complexRef, (snap) => {
           if (snap.exists()) {
             const data = snap.data();
-            if (Array.isArray(data.courts)) {
-              data.courts.forEach((c: any, idx: number) => {
+            const courtsList = data.courts || data.canchas;
+            if (Array.isArray(courtsList)) {
+              courtsList.forEach((c: any, idx: number) => {
                 const cId = c.id || `court_${idx}`;
                 const courtObj: Court = {
                   id: isNaN(Number(cId)) ? (cId as any) : Number(cId),
@@ -349,6 +361,36 @@ export async function saveCourtInFirestore(
     } catch (e) {}
   }
 
+  // 4. Embedded 'courts' array in 'complexes/{complexId}'
+  if (complexId && complexId !== 'complejo_central') {
+    try {
+      const compRef = doc(db, 'complexes', complexId);
+      const cSnap = await getDoc(compRef);
+      if (cSnap.exists()) {
+        const cData = cSnap.data();
+        let existingCourts = Array.isArray(cData.courts) ? [...cData.courts] : (Array.isArray(cData.canchas) ? [...cData.canchas] : []);
+        const idx = existingCourts.findIndex(c => String(c.id) === String(courtId));
+        const courtItem = {
+          id: court.id || courtId,
+          name: payload.name,
+          sport: payload.type,
+          type: payload.type,
+          surface: payload.surface,
+          price: payload.price_per_hour,
+          price_per_hour: payload.price_per_hour,
+          is_roofed: payload.is_roofed,
+          status: payload.status
+        };
+        if (idx >= 0) {
+          existingCourts[idx] = { ...existingCourts[idx], ...courtItem };
+        } else {
+          existingCourts.push(courtItem);
+        }
+        await setDoc(compRef, { courts: existingCourts }, { merge: true });
+      }
+    } catch (e) {}
+  }
+
   return courtId;
 }
 
@@ -367,6 +409,18 @@ export async function deleteCourtInFirestore(courtId: string | number, complexId
     try {
       await deleteDoc(doc(db, 'complejos', complexId, 'canchas', strId));
     } catch (e) {}
+    if (complexId !== 'complejo_central') {
+      try {
+        const compRef = doc(db, 'complexes', complexId);
+        const cSnap = await getDoc(compRef);
+        if (cSnap.exists()) {
+          const cData = cSnap.data();
+          let existingCourts = Array.isArray(cData.courts) ? [...cData.courts] : (Array.isArray(cData.canchas) ? [...cData.canchas] : []);
+          existingCourts = existingCourts.filter(c => String(c.id) !== strId);
+          await setDoc(compRef, { courts: existingCourts }, { merge: true });
+        }
+      } catch (e) {}
+    }
   }
 }
 
@@ -447,17 +501,94 @@ export async function deleteClientInFirestore(clientId: string | number): Promis
 /**
  * Real-time listener for Venue Profile in Firestore
  */
+export function mapWeeklyScheduleToHours(weeklySchedule: any): any[] {
+  const days = [
+    { label: 'Lunes', key: 'lunes' },
+    { label: 'Martes', key: 'martes' },
+    { label: 'Miércoles', key: 'miercoles' },
+    { label: 'Jueves', key: 'jueves' },
+    { label: 'Viernes', key: 'viernes' },
+    { label: 'Sábado', key: 'sabado' },
+    { label: 'Domingo', key: 'domingo' },
+  ];
+
+  if (!weeklySchedule || typeof weeklySchedule !== 'object') {
+    return days.map(d => ({ day: d.label, open: true, start: '14:00', end: '00:00' }));
+  }
+
+  return days.map(d => {
+    const dayConfig = weeklySchedule[d.key] || weeklySchedule[d.key.replace('é', 'e')] || {};
+    return {
+      day: d.label,
+      open: !dayConfig.isClosed,
+      start: dayConfig.open || '14:00',
+      end: dayConfig.close || '00:00'
+    };
+  });
+}
+
+/**
+ * Real-time listener for Venue Profile in Firestore (reads from complexes and venue_profile)
+ */
 export function subscribeToVenueProfile(
   complexId: string,
   onUpdate: (profile: any) => void
 ): () => void {
   try {
-    const docRef = doc(db, VENUE_COLLECTION, complexId);
-    return onSnapshot(docRef, (snapshot) => {
-      if (snapshot.exists()) {
-        onUpdate(snapshot.data());
+    let currentProfile: any = null;
+
+    const emit = () => {
+      if (currentProfile) {
+        onUpdate(currentProfile);
       }
-    });
+    };
+
+    // 1. Complexes document
+    let unsubComplex = () => {};
+    if (complexId) {
+      try {
+        const compRef = doc(db, 'complexes', complexId);
+        unsubComplex = onSnapshot(compRef, (snap) => {
+          if (snap.exists()) {
+            const data = snap.data();
+            currentProfile = {
+              ...(currentProfile || {}),
+              name: data.name || (currentProfile?.name || 'Colo loco'),
+              phone: data.phone || (currentProfile?.phone || ''),
+              address: data.address || (currentProfile?.address || ''),
+              instagram: data.instagram || (currentProfile?.instagram || ''),
+              description: data.description || data.notes || (currentProfile?.description || ''),
+              hours: Array.isArray(data.hours) ? data.hours : mapWeeklyScheduleToHours(data.weeklySchedule),
+              services: data.services || (currentProfile?.services || ['Estacionamiento', 'Vestuarios', 'Buffet', 'Césped Sintético'])
+            };
+            emit();
+          }
+        }, () => {});
+      } catch (e) {}
+    }
+
+    // 2. Venue Profile document
+    let unsubVenue = () => {};
+    if (complexId) {
+      try {
+        const docRef = doc(db, VENUE_COLLECTION, complexId);
+        unsubVenue = onSnapshot(docRef, (snapshot) => {
+          if (snapshot.exists()) {
+            const data = snapshot.data();
+            currentProfile = {
+              ...(currentProfile || {}),
+              ...data
+            };
+            emit();
+          }
+        }, () => {});
+      } catch (e) {}
+    }
+
+    return () => {
+      unsubComplex();
+      unsubVenue();
+    };
   } catch (e) {
     console.warn('[Firestore] Error subscribing to venue profile:', e);
     return () => {};
@@ -480,6 +611,16 @@ export async function saveVenueProfileInFirestore(
   try {
     await setDoc(doc(db, 'complejos', complexId), payload, { merge: true });
     await setDoc(doc(db, 'complejo', complexId), payload, { merge: true });
+    if (complexId) {
+      const compRef = doc(db, 'complexes', complexId);
+      await updateDoc(compRef, {
+        name: profile.name || '',
+        phone: profile.phone || '',
+        address: profile.address || '',
+        instagram: profile.instagram || '',
+        hours: profile.hours || []
+      }).catch(() => {});
+    }
   } catch (e) {}
 }
 

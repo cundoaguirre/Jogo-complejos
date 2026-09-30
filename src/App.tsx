@@ -18,6 +18,8 @@ import { logCrashReport } from './logger';
 import { ContactSupportModal } from './components/ContactSupportModal';
 import { useFirebase } from './components/FirebaseContext';
 import { ActivationView } from './components/ActivationView';
+import { doc, getDoc, collection, addDoc, serverTimestamp } from 'firebase/firestore';
+import { db, auth } from './lib/firebase';
 import { 
   getActiveComplexId,
   subscribeToBookings,
@@ -2411,21 +2413,24 @@ const ScheduleView = ({
     }
   };
 
+  const selectedDateStr = safeFormatDate(selectedDate, 'yyyy-MM-dd') || format(selectedDate, 'yyyy-MM-dd');
+
   // 100% Real Firestore Connection:
-  // - Listens to 'bookings' collection filtered by complexId
+  // - Listens to 'bookings' collection filtered by complexId and date == selectedDate
   // - Listens to 'courts' collection associated with complexId
   // - Listens to 'venue_profile' document for operating hours
   useEffect(() => {
     if (!complexId) return;
 
     const unsubBookings = subscribeToBookings(complexId, (bookingsList) => {
-      setMatches(bookingsList);
-    });
+      setMatches(Array.isArray(bookingsList) ? bookingsList : []);
+    }, selectedDateStr);
 
     const unsubCourts = subscribeToCourts(complexId, (courtsList) => {
-      setCourts(courtsList);
-      if (courtsList.length > 0) {
-        setSelectedCourtIds(prev => prev.length === 0 ? [courtsList[0].id as number] : prev);
+      const validCourts = Array.isArray(courtsList) ? courtsList : [];
+      setCourts(validCourts);
+      if (validCourts.length > 0) {
+        setSelectedCourtIds(prev => prev.length === 0 ? [validCourts[0].id as number] : prev);
       }
     });
 
@@ -2440,7 +2445,7 @@ const ScheduleView = ({
       unsubCourts();
       unsubVenue();
     };
-  }, [complexId, refreshKey]);
+  }, [complexId, selectedDateStr, refreshKey]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 60000);
@@ -3497,9 +3502,11 @@ const FinanceChartModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () =
   );
 };
 
-const FinanceView = () => {
+const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string }) => {
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [rawBookings, setRawBookings] = useState<any[]>([]);
+  const [rawManualTxs, setRawManualTxs] = useState<Transaction[]>([]);
   const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'year'>('today');
   const [txFilterTab, setTxFilterTab] = useState<'all' | 'income' | 'expense'>('all');
   const [summaries, setSummaries] = useState<Record<string, { income: number, expense: number, balance: number, reservas: number, otros: number, pendiente: number, growth: number, ocupacion: number }>>({
@@ -3529,127 +3536,161 @@ const FinanceView = () => {
   const handleDragEnd = (event: any, info: any) => {
     const swipeThreshold = 50;
     if (info.offset.x < -swipeThreshold) {
-      // swipe left (next period)
       const currentIndex = periods.indexOf(period);
       if (currentIndex < periods.length - 1) {
         setPeriod(periods[currentIndex + 1] as any);
       }
     } else if (info.offset.x > swipeThreshold) {
-      // swipe right (prev period)
       const currentIndex = periods.indexOf(period);
       if (currentIndex > 0) {
         setPeriod(periods[currentIndex - 1] as any);
       }
     }
   };
-  
+
+  // Recomputes finance summaries and period transactions from real Firestore bookings
+  const recomputeFromBookings = useCallback((bookingsList: any[], manualTxsList: Transaction[], currentSelectedPeriod: string) => {
+    const today = new Date();
+    const todayStr = safeFormatDate(today, 'yyyy-MM-dd') || format(today, 'yyyy-MM-dd');
+
+    const checkInPeriod = (dateVal: string | Date | undefined, p: string) => {
+      if (!dateVal) return false;
+      const d = safeParseDate(dateVal);
+      if (!d) return false;
+      if (p === 'today') return isSameDay(d, today);
+      if (p === 'week') {
+        const diff = differenceInDays(today, d);
+        return diff >= 0 && diff <= 7;
+      }
+      if (p === 'month') return isSameMonth(d, today);
+      return false;
+    };
+
+    const newSummaries: any = {
+      today: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
+      week: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
+      month: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
+      year: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 }
+    };
+
+    for (const p of ['today', 'week', 'month']) {
+      const pBookings = (bookingsList || []).filter(b => {
+        if (!b) return false;
+        const bDate = b.date || b.start_time || b.startTime;
+        return checkInPeriod(bDate, p) && b.status !== 'cancelled';
+      });
+
+      const pManual = (manualTxsList || []).filter(t => checkInPeriod(t.date, p));
+
+      let reservasTotal = 0;
+      let pendienteTotal = 0;
+
+      pBookings.forEach(b => {
+        const price = Number(b.price || b.price_total || 0);
+        const paid = b.payment_status === 'paid' ? price : Number(b.amount_paid || b.deposit || 0);
+        reservasTotal += paid;
+        if (b.payment_status !== 'paid' && price > paid) {
+          pendienteTotal += (price - paid);
+        }
+      });
+
+      const manualIncome = pManual.filter(t => t.type === 'income').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+      const manualExpense = pManual.filter(t => t.type === 'expense').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+
+      const incomeTotal = reservasTotal + manualIncome;
+      const balanceTotal = incomeTotal - manualExpense;
+      const slots = p === 'today' ? 12 : p === 'week' ? 84 : 360;
+      const ocupacionPct = pBookings.length > 0 ? Math.min(100, Math.round((pBookings.length / slots) * 100)) : 0;
+
+      newSummaries[p] = {
+        income: incomeTotal,
+        expense: manualExpense,
+        balance: balanceTotal,
+        reservas: reservasTotal,
+        otros: manualIncome,
+        pendiente: pendienteTotal,
+        growth: 0,
+        ocupacion: ocupacionPct
+      };
+    }
+
+    setSummaries(newSummaries);
+
+    // Build transactions for selected period
+    const activePeriodBookings = (bookingsList || []).filter(b => {
+      if (!b) return false;
+      const bDate = b.date || b.start_time || b.startTime;
+      return checkInPeriod(bDate, currentSelectedPeriod) && b.status !== 'cancelled';
+    });
+
+    const bookingTxs: Transaction[] = activePeriodBookings.map(b => {
+      const price = Number(b.price || b.price_total || 0);
+      const paid = b.payment_status === 'paid' ? price : Number(b.amount_paid || b.deposit || 0);
+      return {
+        id: `${b.id}-booking`,
+        type: 'income',
+        category: `Alquiler de Cancha (${b.courtName || 'Cancha'})`,
+        amount: paid > 0 ? paid : price,
+        date: b.date || (b.start_time ? String(b.start_time).split('T')[0] : todayStr),
+        description: `Reserva: ${b.clientName || 'Cliente'}`
+      };
+    });
+
+    const activePeriodManual = (manualTxsList || []).filter(t => checkInPeriod(t.date, currentSelectedPeriod));
+
+    const merged = [...activePeriodManual, ...bookingTxs].sort((a, b) => {
+      const dateA = safeParseDate(a.date)?.getTime() || 0;
+      const dateB = safeParseDate(b.date)?.getTime() || 0;
+      return dateB - dateA;
+    });
+
+    setTransactions(merged);
+  }, []);
+
+  // Subscribe to real Firestore bookings for complexId
+  useEffect(() => {
+    if (!complexId) return;
+
+    const unsubBookings = subscribeToBookings(complexId, (bookingsList) => {
+      const list = Array.isArray(bookingsList) ? bookingsList : [];
+      setRawBookings(list);
+      recomputeFromBookings(list, rawManualTxs, period);
+    });
+
+    return () => {
+      unsubBookings();
+    };
+  }, [complexId, recomputeFromBookings]);
+
+  // Recalculate when period changes
+  useEffect(() => {
+    recomputeFromBookings(rawBookings, rawManualTxs, period);
+  }, [period, rawBookings, rawManualTxs, recomputeFromBookings]);
+
+  // Fetch optional manual transactions or backend finance data safely without failing
   useEffect(() => {
     let isMounted = true;
-    const controller = new AbortController();
-
-    const load = async () => {
+    const loadBackendFinance = async () => {
       try {
         const todayStr = new Date().toLocaleDateString('en-CA');
-        
-        // Fetch current period transactions
-        const res = await fetch(`/api/finance?period=${period}&clientDate=${todayStr}`, { signal: controller.signal });
-        const finData = res.ok ? await res.json().catch(() => ({})) : {};
-        if (!isMounted) return;
-        
-        // Client-side timezone correction for 'today'
-        let finalTransactions = Array.isArray(finData?.transactions) ? finData.transactions : [];
-        if (period === 'today') {
-          finalTransactions = finalTransactions.filter((t: any) => {
-            const parsed = safeParseDate(t?.date);
-            return parsed ? isSameDay(parsed, new Date()) : false;
-          });
-        }
-        setTransactions(finalTransactions);
-        
-        // Fetch all summaries to allow seamless peeking during swipe
-        const allSummaries = { ...summaries };
-        
-        for (const p of periods) {
-          if (!isMounted) return;
-          let pTransactions = p === period ? (Array.isArray(finData?.transactions) ? finData.transactions : []) : null;
-          let sumData = p === period ? finData?.summary : null;
-          
-          if (!sumData) {
-            const pRes = await fetch(`/api/finance?period=${p}&clientDate=${todayStr}`, { signal: controller.signal });
-            const pData = pRes.ok ? await pRes.json().catch(() => ({})) : {};
-            if (!isMounted) return;
-            sumData = pData?.summary || {};
-            pTransactions = Array.isArray(pData?.transactions) ? pData.transactions : [];
-          }
-          
-          // Client-side recalculation for 'today' to avoid timezone bugs
-          if (p === 'today' && pTransactions) {
-            const todayTxs = pTransactions.filter((t: any) => {
-              const parsed = safeParseDate(t?.date);
-              return parsed ? isSameDay(parsed, new Date()) : false;
-            });
-            const incomeTotal = todayTxs.filter((t: any) => t.type === 'income').reduce((acc: number, curr: any) => acc + (Number(curr.amount) || 0), 0);
-            const expenseTotal = todayTxs.filter((t: any) => t.type === 'expense').reduce((acc: number, curr: any) => acc + (Number(curr.amount) || 0), 0);
-            const reservasTotal = todayTxs.filter((t: any) => t.type === 'income' && t.category && String(t.category).includes('Alquiler')).reduce((acc: number, curr: any) => acc + (Number(curr.amount) || 0), 0);
-            
-            allSummaries[p] = {
-              income: incomeTotal,
-              expense: expenseTotal,
-              balance: incomeTotal - expenseTotal,
-              reservas: reservasTotal,
-              otros: incomeTotal - reservasTotal,
-              pendiente: Number(sumData?.pendiente) || 0,
-              growth: Number(sumData?.growth) || 0,
-              ocupacion: Number(sumData?.ocupacion) || 0
-            };
-          } else {
-            const incomeTotal = Number(sumData?.income) || 0;
-            const expenseTotal = Number(sumData?.expense) || 0;
-            allSummaries[p] = { 
-              income: incomeTotal, 
-              expense: expenseTotal, 
-              balance: incomeTotal - expenseTotal,
-              reservas: Number(sumData?.reservas) || 0,
-              otros: Number(sumData?.otros) || 0,
-              pendiente: Number(sumData?.pendiente) || 0,
-              growth: Number(sumData?.growth) || 0,
-              ocupacion: Number(sumData?.ocupacion) || 0
-            };
+        const res = await fetch(`/api/finance?period=${period}&clientDate=${todayStr}`);
+        const contentType = res.headers.get('content-type');
+        if (res.ok && contentType && contentType.includes('application/json')) {
+          const finData = await res.json().catch(() => null);
+          if (finData && Array.isArray(finData.transactions) && isMounted) {
+            const manualOnly = finData.transactions.filter((t: any) => !String(t.id).includes('-match') && !String(t.id).includes('-booking'));
+            setRawManualTxs(manualOnly);
           }
         }
-        if (isMounted) {
-          setSummaries(allSummaries);
-        }
-      } catch (e: any) {
-        if (e.name !== 'AbortError') {
-          console.error('Error fetching finance data:', e);
-        }
+      } catch (e) {
+        // Silently ignore network / HTML parse errors, real Firestore bookings are authoritative
       }
     };
-    load();
+    loadBackendFinance();
     return () => {
       isMounted = false;
-      controller.abort();
     };
   }, [period]);
-
-  const fetchFinanceData = async () => {
-    try {
-      const todayStr = new Date().toLocaleDateString('en-CA');
-      const res = await fetch(`/api/finance?period=${period}&clientDate=${todayStr}`);
-      const finData = res.ok ? await res.json().catch(() => ({})) : {};
-      let finalTransactions = Array.isArray(finData?.transactions) ? finData.transactions : [];
-      if (period === 'today') {
-        finalTransactions = finalTransactions.filter((t: any) => {
-          const parsed = safeParseDate(t?.date);
-          return parsed ? isSameDay(parsed, new Date()) : false;
-        });
-      }
-      setTransactions(finalTransactions);
-    } catch (e) {
-      console.error(e);
-    }
-  };
 
   const handleSaveTx = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -3660,22 +3701,47 @@ const FinanceView = () => {
       : newTx.category;
 
     const notesWithMethod = `${newTx.paymentMethod} - ${newTx.description}`;
+    const todayStr = new Date().toISOString().split('T')[0];
 
-    await fetch('/api/transactions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        type: newTx.type,
-        category: categoryToSave,
-        amount: Number(newTx.amount),
-        description: notesWithMethod
-      })
-    });
+    const localTx: Transaction = {
+      id: `manual-${Date.now()}`,
+      type: newTx.type,
+      category: categoryToSave,
+      amount: Number(newTx.amount),
+      description: notesWithMethod,
+      date: todayStr
+    };
+
+    setRawManualTxs(prev => [localTx, ...prev]);
+
+    // Save to Firestore 'transactions'
+    try {
+      await addDoc(collection(db, 'transactions'), {
+        ...localTx,
+        complexId,
+        createdAt: serverTimestamp()
+      });
+    } catch (err) {
+      console.warn('Notice saving transaction in Firestore:', err);
+    }
+
+    // Try posting to /api/transactions safely
+    try {
+      await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: newTx.type,
+          category: categoryToSave,
+          amount: Number(newTx.amount),
+          description: notesWithMethod
+        })
+      });
+    } catch (err) {}
     
     setIsModalOpen(false);
     setNewTx({ type: 'income', amount: '', category: 'Alquiler de Cancha', paymentMethod: 'MercadoPago', description: '' });
     setCustomCategory('');
-    fetchFinanceData();
   };
 
   const filteredTransactions = transactions.filter(t => {
@@ -4465,9 +4531,33 @@ const FinanceView = () => {
 };
 
 const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = 'complejo_central' }: { onDataChange?: () => void, isDarkMode?: boolean, onToggleDarkMode?: () => void, complexId?: string }) => {
+  const { user, activeComplex, collaboratorData, logout } = useFirebase();
+  const [isLoading, setIsLoading] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
-  const [profile, setProfile] = useState<any>(null);
+
+  const defaultHours = [
+    { day: 'lunes', open: true, start: '08:00', end: '23:00' },
+    { day: 'martes', open: true, start: '08:00', end: '23:00' },
+    { day: 'miércoles', open: true, start: '08:00', end: '23:00' },
+    { day: 'jueves', open: true, start: '08:00', end: '23:00' },
+    { day: 'viernes', open: true, start: '08:00', end: '23:00' },
+    { day: 'sábado', open: true, start: '08:00', end: '23:00' },
+    { day: 'domingo', open: true, start: '08:00', end: '23:00' }
+  ];
+
+  const initialProfile = {
+    name: activeComplex?.name || 'Colo loco',
+    address: activeComplex?.address || 'Av. Corrientes 1234, CABA',
+    phone: activeComplex?.phone || '+54 9 11 5555-5555',
+    instagram: activeComplex?.instagram || '@cololoco',
+    description: activeComplex?.description || 'Complejo deportivo líder.',
+    hours: activeComplex?.hours || defaultHours,
+    services: activeComplex?.services || ['Estacionamiento', 'Vestuarios', 'Buffet', 'Césped Sintético']
+  };
+
+  const [profile, setProfile] = useState<any>(initialProfile);
   const [courts, setCourts] = useState<Court[]>([]);
   const [isSupportModalOpen, setIsSupportModalOpen] = useState(false);
   
@@ -4483,21 +4573,99 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
     const controller = new AbortController();
 
     const loadProfileData = async () => {
+      setIsLoading(true);
+      setLoading(true);
       try {
-        const [venueRes, courtsRes] = await Promise.all([
-          fetch('/api/venue', { signal: controller.signal }),
-          fetch('/api/courts', { signal: controller.signal })
-        ]);
-        const venueData = await venueRes.json();
-        const courtsData = await courtsRes.json();
+        // 1. Check collaborators doc for current authenticated user
+        const currentAuth = auth.currentUser || user;
+        let collaboratorProfile: any = null;
+        if (currentAuth) {
+          try {
+            const colDoc = await getDoc(doc(db, 'collaborators', currentAuth.uid));
+            if (colDoc.exists()) {
+              collaboratorProfile = colDoc.data();
+            }
+          } catch (colErr) {
+            console.warn('[Profile] Notice checking collaborator doc:', colErr);
+          }
+        }
+
+        // 2. Read directly from complexes/{activeComplexId}
+        let complexDocData: any = null;
+        if (complexId && complexId !== 'complejo_central') {
+          try {
+            const cSnap = await getDoc(doc(db, 'complexes', complexId));
+            if (cSnap.exists()) {
+              complexDocData = cSnap.data();
+            }
+          } catch (cErr) {
+            console.warn('[Profile] Notice checking complex doc:', cErr);
+          }
+        }
+
+        // 3. Fallback to API if available safely
+        let venueData: any = null;
+        let courtsData: any = null;
+        try {
+          const [venueRes, courtsRes] = await Promise.all([
+            fetch('/api/venue', { signal: controller.signal }),
+            fetch('/api/courts', { signal: controller.signal })
+          ]);
+          if (venueRes.ok) {
+            const vText = await venueRes.text();
+            if (vText.startsWith('{')) venueData = JSON.parse(vText);
+          }
+          if (courtsRes.ok) {
+            const cText = await courtsRes.text();
+            if (cText.startsWith('[')) courtsData = JSON.parse(cText);
+          }
+        } catch (apiErr) {}
+
         if (isMounted) {
-          setProfile(venueData);
-          setCourts(Array.isArray(courtsData) ? courtsData : []);
+          // Read courts directly from complexes/{activeComplexId} ('courts' or 'canchas') or courtsData
+          const embeddedCourts = complexDocData?.courts || complexDocData?.canchas;
+          if (Array.isArray(embeddedCourts) && embeddedCourts.length > 0) {
+            const mappedCourts: Court[] = embeddedCourts.map((c: any, idx: number) => ({
+              id: c.id ? (isNaN(Number(c.id)) ? c.id : Number(c.id)) : idx + 1,
+              name: c.name || `Cancha ${idx + 1}`,
+              type: c.sport || c.type || 'Fútbol 5',
+              surface: c.surface || 'Césped Sintético',
+              price_per_hour: Number(c.price || c.price_per_hour) || 0,
+              is_roofed: Boolean(c.is_roofed),
+              image_url: c.image_url || '',
+              status: c.status === 'activa' ? 'available' : (c.status || 'available')
+            }));
+            setCourts(mappedCourts);
+          } else if (Array.isArray(courtsData) && courtsData.length > 0) {
+            setCourts(courtsData);
+          }
+
+          // Build unified profile: fallback to active complex, authenticated user details, or 'Colo loco'
+          const resolvedName = complexDocData?.name || activeComplex?.name || venueData?.name || 'Colo loco';
+          const resolvedAddress = complexDocData?.address || activeComplex?.address || venueData?.address || 'Av. Corrientes 1234, CABA';
+          const resolvedPhone = complexDocData?.phone || activeComplex?.phone || venueData?.phone || '+54 9 11 5555-5555';
+          const resolvedInstagram = complexDocData?.instagram || activeComplex?.instagram || venueData?.instagram || '@cololoco';
+          const resolvedDescription = complexDocData?.description || activeComplex?.description || venueData?.description || 'Complejo deportivo líder.';
+          const resolvedHours = complexDocData?.hours || complexDocData?.weeklySchedule || venueData?.hours || defaultHours;
+          const resolvedServices = complexDocData?.services || venueData?.services || ['Estacionamiento', 'Vestuarios', 'Buffet', 'Césped Sintético'];
+
+          setProfile({
+            name: resolvedName,
+            address: resolvedAddress,
+            phone: resolvedPhone,
+            instagram: resolvedInstagram,
+            description: resolvedDescription,
+            hours: resolvedHours,
+            services: resolvedServices
+          });
         }
       } catch (err: any) {
-        if (err.name !== 'AbortError' && isMounted) {
+        if (err.name !== 'AbortError') {
           console.error('Error fetching profile data:', err);
         }
+      } finally {
+        setIsLoading(false);
+        setLoading(false);
       }
     };
 
@@ -4520,17 +4688,45 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
   }, [complexId]);
 
   const fetchData = async () => {
+    setIsLoading(true);
+    setLoading(true);
     try {
+      if (complexId && complexId !== 'complejo_central') {
+        const cSnap = await getDoc(doc(db, 'complexes', complexId));
+        if (cSnap.exists()) {
+          const cData = cSnap.data();
+          if (cData.name) setProfile((prev: any) => ({ ...prev, ...cData }));
+          if (Array.isArray(cData.courts) || Array.isArray(cData.canchas)) {
+            const raw = cData.courts || cData.canchas;
+            setCourts(raw.map((c: any, idx: number) => ({
+              id: c.id || idx + 1,
+              name: c.name || `Cancha ${idx + 1}`,
+              type: c.sport || c.type || 'Fútbol 5',
+              surface: c.surface || 'Césped Sintético',
+              price_per_hour: Number(c.price || c.price_per_hour) || 0,
+              is_roofed: Boolean(c.is_roofed),
+              status: c.status || 'available'
+            })));
+          }
+        }
+      }
       const [venueRes, courtsRes] = await Promise.all([
-        fetch('/api/venue'),
-        fetch('/api/courts')
+        fetch('/api/venue').catch(() => null),
+        fetch('/api/courts').catch(() => null)
       ]);
-      const venueData = await venueRes.json();
-      const courtsData = await courtsRes.json();
-      setProfile(venueData);
-      setCourts(Array.isArray(courtsData) ? courtsData : []);
+      if (venueRes && venueRes.ok) {
+        const vData = await venueRes.json().catch(() => null);
+        if (vData) setProfile((prev: any) => ({ ...prev, ...vData }));
+      }
+      if (courtsRes && courtsRes.ok) {
+        const cData = await courtsRes.json().catch(() => null);
+        if (Array.isArray(cData)) setCourts(cData);
+      }
     } catch (err) {
       console.error('Error refreshing profile data:', err);
+    } finally {
+      setIsLoading(false);
+      setLoading(false);
     }
   };
 
@@ -4606,20 +4802,74 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
     if (onDataChange) onDataChange();
   };
 
-  if (!profile) return <div className="p-6 text-center">Cargando perfil...</div>;
+  const authUser = auth.currentUser || user;
+  const displayName = authUser?.displayName || collaboratorData?.name || authUser?.email?.split('@')[0] || 'Administrador';
+  const email = authUser?.email || collaboratorData?.email || 'admin@cololoco.com';
+  const photoURL = authUser?.photoURL || collaboratorData?.photoURL;
+  const complexDisplayName = activeComplex?.name || profile?.name || 'Colo loco';
 
   return (
     <div className="bg-gray-50 min-h-full pb-24">
-      <div className="pt-6 px-6 pb-2 flex justify-end">
+      {/* Top action row */}
+      <div className="pt-6 px-4 md:px-6 pb-2 flex justify-between items-center">
+        <div>
+          <h1 className="text-xl font-black text-gray-900 tracking-tight">Perfil del Complejo</h1>
+          <p className="text-xs text-gray-500">Gestioná tu sede, canchas y datos de contacto</p>
+        </div>
         <button type="button" 
           onClick={() => setEditSection('info')}
-          className="p-2 bg-white border border-gray-200 rounded-full text-emerald-600 shadow-sm"
+          className="p-2.5 bg-white border border-gray-200 rounded-full text-emerald-600 shadow-xs hover:bg-emerald-50 transition-colors"
+          title="Editar información"
         >
-          <Edit3 size={20} />
+          <Edit3 size={18} />
         </button>
       </div>
 
-      <div className="px-4 space-y-4">
+      <div className="px-4 md:px-6 space-y-4 mt-2">
+        {/* 1. Tarjeta de Usuario Autenticado / Administrador */}
+        <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-3xl p-5 shadow-md border border-slate-700/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            {photoURL ? (
+              <img 
+                src={photoURL} 
+                alt={displayName} 
+                className="w-14 h-14 rounded-2xl object-cover border-2 border-emerald-400/40 shadow-md shrink-0"
+              />
+            ) : (
+              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-700 text-white flex items-center justify-center font-bold text-xl shadow-md border border-emerald-300/30 shrink-0">
+                {displayName.charAt(0).toUpperCase()}
+              </div>
+            )}
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-lg font-black tracking-tight truncate">{displayName}</h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
+                  Administrador
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 truncate mt-0.5">{email}</p>
+              <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-400 font-semibold">
+                <Store size={14} className="shrink-0" />
+                <span className="truncate">Complejo Activo: <strong className="text-white">{complexDisplayName}</strong></span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+            {authUser && (
+              <button
+                type="button"
+                onClick={logout}
+                className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-bold transition-all border border-white/10 flex items-center gap-1.5 cursor-pointer active:scale-95"
+                title="Cerrar sesión"
+              >
+                <LogOut size={14} />
+                <span>Salir</span>
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* 2. Información General */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="p-4 border-b border-gray-100 flex justify-between items-center">
@@ -6015,7 +6265,7 @@ export default function App() {
                 />
               )}
               {activeTab === 'analytics' && <AnalyticsView key="view-analytics" />}
-              {activeTab === 'finance' && <FinanceView key="view-finance" />}
+              {activeTab === 'finance' && <FinanceView key="view-finance" complexId={activeComplexId} />}
               {activeTab === 'profile' && (
                 <ProfileView 
                   key="view-profile"

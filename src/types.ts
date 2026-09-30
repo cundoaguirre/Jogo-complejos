@@ -49,7 +49,7 @@ export interface Match {
 }
 
 export interface Transaction {
-  id: number;
+  id: number | string;
   type: 'income' | 'expense';
   category: string;
   amount: number;

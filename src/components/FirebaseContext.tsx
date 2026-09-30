@@ -104,9 +104,33 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             localStorage.setItem('activeComplexId', data.activeComplexId);
           } catch (e) {}
         }
+      } else {
+        // If document doesn't exist, immediately fallback to auth user and active complex 'Colo loco'
+        const fallbackComplexId = (typeof window !== 'undefined' ? localStorage.getItem('activeComplexId') : null) || 'B';
+        setActiveComplexIdState(fallbackComplexId);
+        setCollaboratorData({
+          uid: currentUser.uid,
+          email: currentUser.email,
+          name: currentUser.displayName || currentUser.email?.split('@')[0] || 'Administrador',
+          photoURL: currentUser.photoURL,
+          activeComplexId: fallbackComplexId,
+          memberships: [{ complexId: fallbackComplexId, complexName: 'Colo loco', role: 'owner' }]
+        });
       }
     } catch (err) {
-      console.warn('Error loading collaborator profile:', err);
+      console.warn('Notice loading collaborator profile:', err);
+      const fallbackComplexId = (typeof window !== 'undefined' ? localStorage.getItem('activeComplexId') : null) || 'B';
+      setActiveComplexIdState(fallbackComplexId);
+      setCollaboratorData({
+        uid: currentUser.uid,
+        email: currentUser.email,
+        name: currentUser.displayName || currentUser.email?.split('@')[0] || 'Administrador',
+        photoURL: currentUser.photoURL,
+        activeComplexId: fallbackComplexId,
+        memberships: [{ complexId: fallbackComplexId, complexName: 'Colo loco', role: 'owner' }]
+      });
+    } finally {
+      setLoading(false);
     }
   }, []);
 

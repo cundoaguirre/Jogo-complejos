@@ -638,9 +638,9 @@ async function startServer() {
 
       // Calculate pending (amount_paid < price_total for the period)
       const pendingQuery = db.prepare(`
-        SELECT SUM(price_total - amount_paid) as pending
-        FROM matches 
-        WHERE ${pendingCondition} AND (price_total - amount_paid) > 0
+        SELECT SUM(m.price_total - m.amount_paid) as pending
+        FROM matches m 
+        WHERE ${matchCondition} AND (m.price_total - m.amount_paid) > 0
       `).get() as any;
       const pendiente = pendingQuery?.pending || 0;
       
