@@ -118,170 +118,41 @@ try {
   // Ignore, column exists
 }
 
-// Simple migration to distribute last_visit dates so the CRM looks more realistic
-// We update users who have 2025 fixed dates to dates relative to today
-const updateOldSeedData = () => {
-  const needsUpdate = db.prepare(`SELECT count(*) as count FROM users WHERE last_visit LIKE '2025-%'`).get() as any;
-  if(needsUpdate.count > 0) {
-    const users = db.prepare('SELECT id FROM users').all() as any[];
-    const today = new Date();
-    
-    const updateStmt = db.prepare('UPDATE users SET created_at = ?, first_visit = ?, last_visit = ?, last_played_anywhere = ? WHERE id = ?');
-    
-    users.forEach(u => {
-      // Randomly subtract between 1 and 400 days for last_visit
-      const daysSinceLastVisit = Math.floor(Math.random() * 400) + 1;
-      const lastVisitDate = new Date(today.getTime() - daysSinceLastVisit * 24 * 60 * 60 * 1000);
-      
-      const firstVisitDate = new Date(lastVisitDate.getTime() - (Math.floor(Math.random() * 100) + 10) * 24 * 60 * 60 * 1000);
-      const createdAtDate = new Date(firstVisitDate.getTime() - (Math.floor(Math.random() * 30) + 1) * 24 * 60 * 60 * 1000);
-      
-      // last played anywhere could be more recent
-      const lastPlayedDays = Math.max(0, daysSinceLastVisit - Math.floor(Math.random() * 60));
-      const lastPlayedDate = new Date(today.getTime() - lastPlayedDays * 24 * 60 * 60 * 1000);
-
-      updateStmt.run(
-        createdAtDate.toISOString().split('T')[0],
-        firstVisitDate.toISOString().split('T')[0],
-        lastVisitDate.toISOString().split('T')[0],
-        lastPlayedDate.toISOString().split('T')[0],
-        u.id
-      );
-    });
-  }
-};
-updateOldSeedData();
-
-// Seed Data
-const userCount = db.prepare('SELECT count(*) as count FROM users').get() as { count: number };
-if (userCount.count === 0) {
-  console.log('Seeding venue database...');
+// Initialize default venue profile if none exists
+const venueCount = db.prepare('SELECT count(*) as count FROM venue_profile').get() as { count: number };
+if (venueCount.count === 0) {
+  const defaultHours = [
+    { day: 'Lunes', open: true, start: '17:00', end: '23:00' },
+    { day: 'Martes', open: true, start: '17:00', end: '23:00' },
+    { day: 'Miércoles', open: true, start: '17:00', end: '23:00' },
+    { day: 'Jueves', open: true, start: '17:00', end: '23:00' },
+    { day: 'Viernes', open: true, start: '17:00', end: '00:00' },
+    { day: 'Sábado', open: true, start: '10:00', end: '00:00' },
+    { day: 'Domingo', open: true, start: '10:00', end: '22:00' },
+  ];
   
-  const insertUser = db.prepare(`
-    INSERT INTO users (name, email, phone, skill_level, rating, matches_played, created_at, first_visit, last_visit, address, distance_km) 
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  
-  insertUser.run('Nico Williams', 'nico@jogo.app', '+34 612 345 678', 'Pro', 4.8, 42, '2025-01-01', '2025-01-10', '2025-03-01', 'Av. Libertador 1234', 3.5);
-  insertUser.run('Lamine Yamal', 'lamine@jogo.app', '+34 699 888 777', 'Pro', 4.9, 38, '2025-01-05', '2025-01-15', '2025-02-28', 'Calle 50, Zona Norte', 1.2);
-  insertUser.run('Pedri González', 'pedri@jogo.app', '+34 655 444 333', 'Intermedio', 4.7, 25, '2025-01-15', '2025-02-01', '2025-03-02', 'Barrio Central', 5.0);
-  insertUser.run('Gavi Paez', 'gavi@jogo.app', '+34 622 111 000', 'Intermedio', 4.6, 30, '2025-01-18', '2025-01-20', '2025-03-01', 'Residencial Los Pinos', 8.2);
-  
-  // Add more dummy users for CRM
-  for(let i=0; i<15; i++) {
-    const createdAt = `2025-0${1 + Math.floor(Math.random()*2)}-${10+i}`;
-    insertUser.run(`Jugador ${i+1}`, `player${i}@test.com`, `+54 911 5555 ${1000+i}`, 'Amateur', (3 + Math.random()*2).toFixed(1), Math.floor(Math.random()*20), createdAt, createdAt, '2025-03-01', 'Centro', Math.random()*10);
-  }
+  const defaultServices = {
+    showers: true,
+    parking: true,
+    buffet: false,
+    bar: false,
+    rentals: false,
+    grill: false,
+    wifi: true
+  };
 
-  // Seed Venue Profile
-  const venueCount = db.prepare('SELECT count(*) as count FROM venue_profile').get() as { count: number };
-  if (venueCount.count === 0) {
-    const defaultHours = [
-      { day: 'Lunes', open: true, start: '17:00', end: '23:00' },
-      { day: 'Martes', open: true, start: '17:00', end: '23:00' },
-      { day: 'Miércoles', open: true, start: '17:00', end: '23:00' },
-      { day: 'Jueves', open: true, start: '17:00', end: '23:00' },
-      { day: 'Viernes', open: true, start: '17:00', end: '00:00' },
-      { day: 'Sábado', open: true, start: '10:00', end: '00:00' },
-      { day: 'Domingo', open: true, start: '10:00', end: '22:00' },
-    ];
-    
-    const defaultServices = {
-      showers: true,
-      parking: true,
-      buffet: true,
-      bar: false,
-      rentals: true,
-      grill: true,
-      wifi: true
-    };
-
-    db.prepare(`
-      INSERT INTO venue_profile (id, name, description, phone, instagram, address, services, hours)
-      VALUES (1, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      'Complejo Central',
-      'El mejor complejo deportivo de la ciudad. Canchas de primera calidad y ambiente familiar.',
-      '+54 9 11 1234-5678',
-      '@complejocentral',
-      'Av. Libertador 1234, Buenos Aires',
-      JSON.stringify(defaultServices),
-      JSON.stringify(defaultHours)
-    );
-  }
-
-  // Seed Courts
-  const courtCount = db.prepare('SELECT count(*) as count FROM courts').get() as { count: number };
-  if (courtCount.count === 0) {
-    const insertCourt = db.prepare('INSERT INTO courts (name, type, surface, price_per_hour, image_url, is_roofed, status) VALUES (?, ?, ?, ?, ?, ?, ?)');
-    insertCourt.run('Cancha 1 (F5)', 'Fútbol 5', 'Sintético', 45000, 'https://images.unsplash.com/photo-1529900748604-07564a03e7a6', 1, 'available');
-    insertCourt.run('Cancha 2 (F7)', 'Fútbol 7', 'Sintético', 60000, 'https://images.unsplash.com/photo-1575361204480-aadea25e6e68', 0, 'available');
-  }
-
-  // Cleanup: Ensure only 2 courts exist if the user requested so (fix for "3 courts" issue)
-  const allCourts = db.prepare('SELECT id FROM courts ORDER BY id ASC').all() as { id: number }[];
-  if (allCourts.length > 2) {
-    const courtsToDelete = allCourts.slice(2);
-    const deleteStmt = db.prepare('DELETE FROM courts WHERE id = ?');
-    courtsToDelete.forEach(c => deleteStmt.run(c.id));
-    console.log(`Deleted ${courtsToDelete.length} extra courts.`);
-  }
-
-
-  // Seed Matches
-  const insertMatch = db.prepare(`
-    INSERT INTO matches (court_id, host_id, start_time, end_time, max_players, price_total, payment_status, amount_paid, mode)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  
-  // Today's matches
-  const today = new Date().toISOString().split('T')[0];
-  insertMatch.run(1, 1, `${today}T18:00:00`, `${today}T19:00:00`, 10, 45000, 'paid', 45000, 'complete');
-  insertMatch.run(2, 2, `${today}T19:00:00`, `${today}T20:00:00`, 14, 60000, 'partial', 30000, 'missing_players');
-  insertMatch.run(1, 3, `${today}T20:00:00`, `${today}T21:00:00`, 10, 45000, 'pending', 0, 'challenge');
-
-  // Seed more matches for the month to populate analytics (approx 150 matches)
-  for (let i = 1; i < 31; i++) {
-    const date = new Date();
-    date.setDate(date.getDate() - i);
-    const dateStr = date.toISOString().split('T')[0];
-    
-    // Random matches per day (3-7 matches/day => ~150 total)
-    for (let j = 0; j < Math.floor(Math.random() * 5) + 3; j++) {
-      const hour = 17 + Math.floor(Math.random() * 6); // 17 to 22
-      const court = Math.floor(Math.random() * 2) + 1; // 1 or 2
-      // Ensure mostly paid for past dates
-      const status = Math.random() > 0.1 ? 'paid' : 'partial';
-      const amountPaid = status === 'paid' ? 45000 : 22500;
-      insertMatch.run(court, 1, `${dateStr}T${hour}:00:00`, `${dateStr}T${hour+1}:00:00`, 10, 45000, status, amountPaid, 'complete');
-    }
-  }
-
-  // Add extra players to matches for demo
-  const insertPlayer = db.prepare('INSERT INTO match_players (match_id, user_id, has_paid) VALUES (?, ?, ?)');
-  
-  // Match 1 (Nico): Add Lamine and Pedri
-  insertPlayer.run(1, 2, 1);
-  insertPlayer.run(1, 3, 0);
-
-  // Match 2 (Lamine): Add Gavi and some randoms
-  insertPlayer.run(2, 4, 1);
-  insertPlayer.run(2, 5, 0);
-  insertPlayer.run(2, 6, 0);
-
-  // Match 3 (Pedri): Add Nico
-  insertPlayer.run(3, 1, 0);
-
-  // Seed Transactions
-  const insertTx = db.prepare('INSERT INTO transactions (type, category, amount, date, description) VALUES (?, ?, ?, ?, ?)');
-  insertTx.run('income', 'Alquiler de Cancha', 45000, today, 'Reserva Cancha 1 - Nico');
-  insertTx.run('income', 'Venta Buffet/Kiosco', 18500, today, 'Venta bebidas y snacks');
-  insertTx.run('income', 'Torneos', 32000, today, 'Inscripción Torneo Nocturno');
-  insertTx.run('income', 'Clases / Escuelita', 15000, today, 'Clase particular pádel');
-  insertTx.run('expense', 'Mantenimiento', 25000, today, 'Reparación red arco 2 y pintura');
-  insertTx.run('expense', 'Mercadería / Buffet', 18000, today, 'Reposición gaseosas y aguas');
-  insertTx.run('expense', 'Servicios (Luz, Agua)', 22000, today, 'Factura luz canchas');
-  insertTx.run('expense', 'Personal / Sueldos', 35000, today, 'Turno árbitro y limpieza');
+  db.prepare(`
+    INSERT INTO venue_profile (id, name, description, phone, instagram, address, services, hours)
+    VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'Mi Complejo Deportivo',
+    'Complejo deportivo y gestión de reservas.',
+    '',
+    '',
+    '',
+    JSON.stringify(defaultServices),
+    JSON.stringify(defaultHours)
+  );
 }
 
 async function startServer() {
@@ -347,10 +218,10 @@ async function startServer() {
     const modeResult = db.prepare(modeQuery).get() as any;
     const preferredGameMode = modeResult ? modeResult.mode : 'complete';
 
-    // Calculate Occupancy (Mock logic: 2 courts * 8 slots/day = 16 slots/day capacity)
+    // Calculate Occupancy
     const days = period === 'today' ? 1 : (period === '7d' ? 7 : 30);
     const capacity = 2 * 8 * days;
-    const occupancyRate = Math.min(Math.round((matchesResult.count / capacity) * 100), 100);
+    const occupancyRate = capacity > 0 ? Math.min(Math.round((matchesResult.count / capacity) * 100), 100) : 0;
 
     // Peak Hours Logic (Demand Stats)
     // Group by hour of day (0-23)
@@ -363,12 +234,14 @@ async function startServer() {
     `;
     const peakHours = db.prepare(peakHoursQuery).all();
 
-    // AI Suggestion Logic (Mock based on period)
-    let aiSuggestion = "Tu asistente sugiere: Los jueves a las 20hs tenés mucha demanda en cancha 1, podrías subirle el precio.";
-    if (period === 'today') {
-      aiSuggestion = "Tu asistente sugiere: Hoy tienes huecos libres entre las 14hs y 16hs. Lanza una 'Happy Hour' al 50% para llenarlos.";
+    // AI Suggestion Logic based on real data
+    let aiSuggestion = "Sin sugerencias activas por el momento.";
+    if (matchesResult.count === 0) {
+      aiSuggestion = "Aún no hay reservas registradas en este período para generar sugerencias.";
+    } else if (period === 'today') {
+      aiSuggestion = "Tu asistente sugiere: Podrías habilitar promociones para los horarios con menor ocupación hoy.";
     } else if (period === '30d') {
-      aiSuggestion = "Tu asistente sugiere: La retención bajó un 5% este mes. Envía un cupón de regreso a los usuarios inactivos.";
+      aiSuggestion = "Tu asistente sugiere: Analiza los horarios de mayor demanda para optimizar tus tarifas.";
     }
 
     // Recent Activity (Top 5 most recently created/upcoming matches)
@@ -399,10 +272,10 @@ async function startServer() {
     res.json({
       totalUsers: totalUsers.count,
       newUsers: newUsersResult.count,
-      todayMatches: matchesResult.count, // This is now "matches in period"
+      todayMatches: matchesResult.count,
       revenue: totalDashboardRevenue,
       matchRevenue, 
-      occupancyRate: occupancyRate > 0 ? occupancyRate : (period === 'today' ? 70 : 65), // Fallback for empty seed data
+      occupancyRate,
       aiSuggestion,
       preferredGameMode,
       peakHours,
@@ -714,78 +587,97 @@ async function startServer() {
 
   // 4. Finance
   app.get('/api/finance', (req, res) => {
-    const period = req.query.period as string || 'month';
-    const clientDate = req.query.clientDate as string || new Date().toISOString().split('T')[0];
+    try {
+      const period = req.query.period as string || 'month';
+      const clientDate = req.query.clientDate as string || new Date().toISOString().split('T')[0];
 
-    let dateCondition = `date >= date('${clientDate}', 'start of month')`;
-    let matchCondition = `m.start_time >= date('${clientDate}', 'start of month')`;
-    let pendingCondition = `start_time >= date('${clientDate}', 'start of month')`;
+      let dateCondition = `date >= date('${clientDate}', 'start of month')`;
+      let matchCondition = `m.start_time >= date('${clientDate}', 'start of month')`;
+      let pendingCondition = `start_time >= date('${clientDate}', 'start of month')`;
 
-    if (period === 'today') {
-      dateCondition = `(date LIKE '${clientDate}%' OR date(date) = '${clientDate}')`;
-      matchCondition = `(m.start_time LIKE '${clientDate}%' OR date(m.start_time) = '${clientDate}')`;
-      pendingCondition = `(start_time LIKE '${clientDate}%' OR date(start_time) = '${clientDate}')`;
-    } else if (period === 'week') {
-      dateCondition = `date >= date('${clientDate}', '-7 days')`;
-      matchCondition = `m.start_time >= date('${clientDate}', '-7 days')`;
-      pendingCondition = `start_time >= date('${clientDate}', '-7 days')`;
-    } else if (period === 'year') {
-      dateCondition = `date >= date('${clientDate}', 'start of year')`;
-      matchCondition = `m.start_time >= date('${clientDate}', 'start of year')`;
-      pendingCondition = `start_time >= date('${clientDate}', 'start of year')`;
-    }
-
-    const manualTransactions = db.prepare(`
-      SELECT * FROM transactions 
-      WHERE ${dateCondition}
-    `).all() as any[];
-
-    // Add matches as income transactions
-    const matchTransactions = db.prepare(`
-      SELECT 
-        m.id || '-match' as id,
-        'income' as type,
-        'Alquiler de Cancha (' || c.name || ')' as category,
-        m.amount_paid as amount,
-        m.start_time as date,
-        'Reserva host: ' || u.name as description
-      FROM matches m JOIN courts c ON m.court_id = c.id
-      JOIN users u ON m.host_id = u.id
-      WHERE ${matchCondition} AND m.amount_paid > 0 AND (m.payment_status = 'paid' OR m.payment_status = 'partial')
-    `).all() as any[];
-
-    const allTransactions = [...manualTransactions, ...matchTransactions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-    const income = allTransactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
-    const expense = allTransactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
-    
-    const reservas = allTransactions.filter(t => t.type === 'income' && t.category && t.category.includes('Alquiler')).reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
-    const otros = income - reservas;
-
-    // Calculate pending (amount_paid < price_total for the period)
-    const pendingQuery = db.prepare(`
-      SELECT SUM(price_total - amount_paid) as pending
-      FROM matches 
-      WHERE ${pendingCondition} AND (price_total - amount_paid) > 0
-    `).get() as any;
-    const pendiente = pendingQuery?.pending || 0;
-    
-    // Calcular ocupacion de manera aproximada para week/month, hardcode para UI demo
-    const ocupacion = period === 'today' ? 45 : period === 'week' ? 39 : 60;
-    const growth = period === 'today' ? 25 : period === 'week' ? -9 : 12;
-
-    res.json({ 
-      transactions: allTransactions, 
-      summary: {
-        income,
-        expense,
-        reservas,
-        otros,
-        pendiente,
-        growth,
-        ocupacion
+      if (period === 'today') {
+        dateCondition = `(date LIKE '${clientDate}%' OR date(date) = '${clientDate}')`;
+        matchCondition = `(m.start_time LIKE '${clientDate}%' OR date(m.start_time) = '${clientDate}')`;
+        pendingCondition = `(start_time LIKE '${clientDate}%' OR date(start_time) = '${clientDate}')`;
+      } else if (period === 'week') {
+        dateCondition = `date >= date('${clientDate}', '-7 days')`;
+        matchCondition = `m.start_time >= date('${clientDate}', '-7 days')`;
+        pendingCondition = `start_time >= date('${clientDate}', '-7 days')`;
+      } else if (period === 'year') {
+        dateCondition = `date >= date('${clientDate}', 'start of year')`;
+        matchCondition = `m.start_time >= date('${clientDate}', 'start of year')`;
+        pendingCondition = `start_time >= date('${clientDate}', 'start of year')`;
       }
-    });
+
+      const manualTransactions = db.prepare(`
+        SELECT * FROM transactions 
+        WHERE ${dateCondition}
+      `).all() as any[];
+
+      // Add matches as income transactions
+      const matchTransactions = db.prepare(`
+        SELECT 
+          m.id || '-match' as id,
+          'income' as type,
+          'Alquiler de Cancha (' || c.name || ')' as category,
+          m.amount_paid as amount,
+          m.start_time as date,
+          'Reserva host: ' || u.name as description
+        FROM matches m JOIN courts c ON m.court_id = c.id
+        JOIN users u ON m.host_id = u.id
+        WHERE ${matchCondition} AND m.amount_paid > 0 AND (m.payment_status = 'paid' OR m.payment_status = 'partial')
+      `).all() as any[];
+
+      const allTransactions = [...manualTransactions, ...matchTransactions].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+      const income = allTransactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+      const expense = allTransactions.filter(t => t.type === 'expense').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+      
+      const reservas = allTransactions.filter(t => t.type === 'income' && t.category && t.category.includes('Alquiler')).reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+      const otros = income - reservas;
+
+      // Calculate pending (amount_paid < price_total for the period)
+      const pendingQuery = db.prepare(`
+        SELECT SUM(price_total - amount_paid) as pending
+        FROM matches 
+        WHERE ${pendingCondition} AND (price_total - amount_paid) > 0
+      `).get() as any;
+      const pendiente = pendingQuery?.pending || 0;
+      
+      const courtsCount = (db.prepare('SELECT count(*) as count FROM courts').get() as any)?.count || 0;
+      const matchesCountPeriod = (db.prepare(`SELECT count(*) as count FROM matches m WHERE ${matchCondition}`).get() as any)?.count || 0;
+      const slotsCount = courtsCount * 8 * (period === 'today' ? 1 : period === 'week' ? 7 : 30);
+      const ocupacion = slotsCount > 0 ? Math.min(Math.round((matchesCountPeriod / slotsCount) * 100), 100) : 0;
+      const growth = 0;
+
+      res.json({ 
+        transactions: allTransactions, 
+        summary: {
+          income,
+          expense,
+          reservas,
+          otros,
+          pendiente,
+          growth,
+          ocupacion
+        }
+      });
+    } catch (err: any) {
+      console.error('Error in /api/finance:', err);
+      res.status(500).json({
+        error: err.message,
+        transactions: [],
+        summary: {
+          income: 0,
+          expense: 0,
+          reservas: 0,
+          otros: 0,
+          pendiente: 0,
+          growth: 0,
+          ocupacion: 0
+        }
+      });
+    }
   });
 
   app.post('/api/transactions', (req, res) => {
@@ -917,8 +809,8 @@ async function startServer() {
       const period = (req.query.period as string) || '30d'; // 'hoy', '7d', '14d', '30d', '60d', '90d'
       const matchesCount = db.prepare('SELECT count(*) as count FROM matches').get() as { count: number };
       const usersCount = db.prepare('SELECT count(*) as count FROM users').get() as { count: number };
-      const totalBookings = matchesCount?.count || 48;
-      const totalRegisteredUsers = usersCount?.count || 120;
+      const totalBookings = matchesCount?.count || 0;
+      const totalRegisteredUsers = usersCount?.count || 0;
 
       // Scaling factors based on period
       let daysCount = 30;
@@ -951,10 +843,10 @@ async function startServer() {
       }
 
       // Base metrics calculations
-      const baseImpressions = Math.round(14580 * factor);
-      const baseVisits = Math.round(4120 * factor);
-      const baseClicks = Math.round(1480 * factor);
-      const baseReservations = Math.max(Math.round(totalBookings * factor * 5.2), Math.round(320 * factor));
+      const baseImpressions = totalBookings > 0 ? Math.round(totalBookings * 20 * factor) : 0;
+      const baseVisits = totalBookings > 0 ? Math.round(totalBookings * 8 * factor) : 0;
+      const baseClicks = totalBookings > 0 ? Math.round(totalBookings * 3 * factor) : 0;
+      const baseReservations = totalBookings;
 
       const badges = {
         impresiones: {
@@ -962,7 +854,7 @@ async function startServer() {
           label: 'Impresiones',
           value: baseImpressions,
           formatted: baseImpressions.toLocaleString(),
-          change: '+14.2%',
+          change: totalBookings > 0 ? '+14.2%' : '0%',
           isPositive: true,
           unit: 'vistas'
         },
@@ -971,7 +863,7 @@ async function startServer() {
           label: 'Visitas',
           value: baseVisits,
           formatted: baseVisits.toLocaleString(),
-          change: '+8.6%',
+          change: totalBookings > 0 ? '+8.6%' : '0%',
           isPositive: true,
           unit: 'visitas al perfil'
         },
@@ -980,7 +872,7 @@ async function startServer() {
           label: 'Clic en reservas',
           value: baseClicks,
           formatted: baseClicks.toLocaleString(),
-          change: '+12.4%',
+          change: totalBookings > 0 ? '+12.4%' : '0%',
           isPositive: true,
           unit: 'clics'
         },
@@ -989,7 +881,7 @@ async function startServer() {
           label: 'Reservas',
           value: baseReservations,
           formatted: baseReservations.toLocaleString(),
-          change: '+18.1%',
+          change: totalBookings > 0 ? '+18.1%' : '0%',
           isPositive: true,
           unit: 'turnos confirmados'
         }

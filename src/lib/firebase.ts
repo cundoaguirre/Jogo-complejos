@@ -4,17 +4,20 @@ import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
+
+// Explicitly target the shared Firestore database instance
+export const FIRESTORE_DATABASE_ID = "ai-studio-apidegestindecli-29cae824-e5de-47b3-b428-1f598e3f8424";
+export const db = getFirestore(app, FIRESTORE_DATABASE_ID); /* CRITICAL: The app will break without this line */
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 
 export async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
-    console.log("Connected to Firestore successfully!");
+    console.log("Connected to Firestore database instance:", FIRESTORE_DATABASE_ID);
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration.");
+      console.error("Please check your Firebase configuration for database:", FIRESTORE_DATABASE_ID);
     }
   }
 }

@@ -1,30 +1,9 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 1. Global Default-Deny Catch-All
-    match /{document=**} {
-      allow read, write: if false;
-    }
-
     // Helper functions
     function isSignedIn() {
       return request.auth != null;
-    }
-
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    function isVerifiedUser() {
-      return isSignedIn() && (request.auth.token.email_verified == true || request.auth.token.firebase.sign_in_provider == 'google.com');
     }
 
     function isOwner(userId) {
@@ -46,76 +25,85 @@ service cloud.firestore {
     // Admins collection
     match /admins/{adminId} {
       allow read: if isSignedIn() && (isOwner(adminId) || isAdmin());
-      allow write: if isAdmin() && isValidId(adminId);
+      allow write: if isAdmin();
     }
 
-    // Users collection
-    match /users/{userId} {
-      allow get: if isSignedIn() && (isOwner(userId) || isAdmin());
-      allow list: if isAdmin();
-      allow create: if isVerifiedUser() && isValidId(userId) && request.auth.uid == userId
-        && incoming().keys().hasAll(['userId', 'name', 'email'])
-        && incoming().keys().hasOnly(['userId', 'name', 'email', 'phone', 'skill_level', 'rating', 'matches_played', 'created_at', 'first_visit', 'last_visit', 'address', 'distance_km'])
-        && incoming().userId == request.auth.uid
-        && incoming().name is string && incoming().name.size() <= 100
-        && incoming().email is string && incoming().email.size() <= 150;
-      allow update: if isSignedIn() && isValidId(userId) && (isOwner(userId) || isAdmin())
-        && incoming().userId == existing().userId;
-      allow delete: if isAdmin() && isValidId(userId);
+    // Complexes collection (activation and properties)
+    match /complexes/{complexId} {
+      allow read, write: if true;
     }
 
-    // Courts collection
-    match /courts/{courtId} {
-      allow read: if isSignedIn();
-      allow create: if isAdmin() && isValidId(courtId)
-        && incoming().keys().hasAll(['name', 'type', 'surface', 'price_per_hour', 'status'])
-        && incoming().name is string && incoming().name.size() <= 100
-        && incoming().price_per_hour is number;
-      allow update: if isAdmin() && isValidId(courtId);
-      allow delete: if isAdmin() && isValidId(courtId);
+    // Collaborators collection
+    match /collaborators/{collaboratorId} {
+      allow read, write: if true;
     }
 
-    // Matches collection
+    // Bookings collection (reservas en tiempo real)
+    match /bookings/{bookingId} {
+      allow read, write: if true;
+    }
+
+    // Matches / Turnos alias
     match /matches/{matchId} {
-      allow read: if isSignedIn();
-      allow create: if isVerifiedUser() && isValidId(matchId)
-        && incoming().keys().hasAll(['court_id', 'host_id', 'start_time', 'end_time', 'max_players', 'payment_status', 'status'])
-        && (incoming().host_id == request.auth.uid || isAdmin())
-        && incoming().start_time is string && incoming().start_time.size() <= 50
-        && incoming().end_time is string && incoming().end_time.size() <= 50;
-      allow update: if isSignedIn() && isValidId(matchId)
-        && (existing().host_id == request.auth.uid || isAdmin());
-      allow delete: if isSignedIn() && isValidId(matchId)
-        && (existing().host_id == request.auth.uid || isAdmin());
+      allow read, write: if true;
     }
 
-    // Transactions collection (sensitive financial data)
+    match /turnos/{turnoId} {
+      allow read, write: if true;
+    }
+
+    // Users / Clientes collection
+    match /users/{userId} {
+      allow read, write: if true;
+    }
+
+    match /usuarios/{usuarioId} {
+      allow read, write: if true;
+    }
+
+    // Courts / Canchas collection
+    match /courts/{courtId} {
+      allow read, write: if true;
+    }
+
+    match /canchas/{canchaId} {
+      allow read, write: if true;
+    }
+
+    // Subcollection: canchas under complex
+    match /{path=**}/canchas/{canchaId} {
+      allow read, write: if true;
+    }
+
+    match /{path=**}/courts/{courtId} {
+      allow read, write: if true;
+    }
+
+    match /{path=**}/bookings/{bookingId} {
+      allow read, write: if true;
+    }
+
+    // Venue Profile / Complejo
+    match /venue_profile/{venueId} {
+      allow read, write: if true;
+    }
+
+    match /complejos/{complejoId} {
+      allow read, write: if true;
+    }
+
+    match /complejo/{complejoId} {
+      allow read, write: if true;
+    }
+
+    // Transactions collection
     match /transactions/{transactionId} {
-      allow read: if isAdmin();
-      allow create: if isAdmin() && isValidId(transactionId)
-        && incoming().keys().hasAll(['type', 'category', 'amount', 'date'])
-        && incoming().type in ['income', 'expense']
-        && incoming().amount is number;
-      allow update: if isAdmin() && isValidId(transactionId);
-      allow delete: if isAdmin() && isValidId(transactionId);
+      allow read, write: if true;
     }
 
     // Support tickets
     match /support_tickets/{ticketId} {
-      allow get: if isSignedIn() && isValidId(ticketId) && (isAdmin() || (resource.data.admin_email == request.auth.token.email));
-      allow list: if isAdmin();
-      allow create: if isSignedIn() && isValidId(ticketId)
-        && incoming().keys().hasAll(['ticket_code', 'type', 'priority', 'module', 'title', 'description', 'status', 'created_at'])
-        && incoming().title is string && incoming().title.size() <= 200
-        && incoming().description is string && incoming().description.size() <= 3000;
-      allow update: if isAdmin() && isValidId(ticketId);
-      allow delete: if isAdmin() && isValidId(ticketId);
-    }
-
-    // Venue Profile
-    match /venue_profile/{venueId} {
-      allow read: if isSignedIn();
-      allow write: if isAdmin() && isValidId(venueId);
+      allow read, write: if true;
     }
   }
 }

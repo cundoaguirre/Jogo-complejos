@@ -22,7 +22,7 @@ export interface Court {
   type: string;
   surface: string;
   price_per_hour: number;
-  image_url: string;
+  image_url?: string;
   is_roofed?: boolean;
   status?: 'available' | 'maintenance';
   blockedCourts?: number[];

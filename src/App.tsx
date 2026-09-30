@@ -17,6 +17,22 @@ import type { User, Match, Transaction, DashboardStats, Court } from './types';
 import { logCrashReport } from './logger';
 import { ContactSupportModal } from './components/ContactSupportModal';
 import { useFirebase } from './components/FirebaseContext';
+import { ActivationView } from './components/ActivationView';
+import { 
+  getActiveComplexId,
+  subscribeToBookings,
+  createBookingInFirestore,
+  updateBookingInFirestore,
+  deleteBookingInFirestore,
+  subscribeToCourts,
+  saveCourtInFirestore,
+  deleteCourtInFirestore,
+  subscribeToClients,
+  saveClientInFirestore,
+  deleteClientInFirestore,
+  subscribeToVenueProfile,
+  saveVenueProfileInFirestore
+} from './lib/firestoreSync';
 
 // --- Components ---
 
@@ -121,7 +137,9 @@ const Sidebar = ({
   isOpen, 
   onClose, 
   isDarkMode, 
-  onToggleDarkMode 
+  onToggleDarkMode,
+  activeComplex,
+  onOpenActivation
 }: { 
   active: NavTabId | string, 
   onNavigate: (tab: NavTabId) => void, 
@@ -129,7 +147,9 @@ const Sidebar = ({
   isOpen: boolean, 
   onClose: () => void, 
   isDarkMode?: boolean, 
-  onToggleDarkMode?: () => void 
+  onToggleDarkMode?: () => void,
+  activeComplex?: any | null,
+  onOpenActivation?: () => void
 }) => {
   // Context-sensitive menu items
   const getMenuItems = () => {
@@ -199,6 +219,18 @@ const Sidebar = ({
         </div>
         
         <div className="p-4 flex-1 overflow-y-auto space-y-6">
+          {activeComplex && (
+            <div className="p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-2xl flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+                <Store size={18} />
+              </div>
+              <div className="truncate">
+                <p className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider">Complejo Activo</p>
+                <p className="text-xs font-bold text-white truncate">{activeComplex.name || 'Mi Complejo'}</p>
+              </div>
+            </div>
+          )}
+
           {menuItems.length > 0 && (
             <div>
               <div className="text-xs font-bold text-slate-500 tracking-wider mb-3 px-2">
@@ -227,6 +259,20 @@ const Sidebar = ({
               </nav>
             </div>
           )}
+
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (onOpenActivation) onOpenActivation();
+                onClose();
+              }}
+              className="w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-emerald-400 border border-slate-700/50 text-xs font-semibold cursor-pointer transition-all active:scale-[0.98]"
+            >
+              <ShieldCheck size={16} className="text-emerald-400" />
+              <span>Activar / Canjear Complejo</span>
+            </button>
+          </div>
         </div>
 
         <div className="mt-auto p-4 border-t border-slate-800 space-y-3">
@@ -436,11 +482,7 @@ const UserDetailModal = ({ user, onClose, onDelete }: { user: User | null, onClo
 
 const NotificationsModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () => void }) => {
   if (!isOpen) return null;
-  const notifications = [
-    { id: 1, text: 'Juan Pérez reservó la Cancha 1.', time: 'Hace 5 min' },
-    { id: 2, text: 'El pago de la reserva #342 fue confirmado.', time: 'Hace 30 min' },
-    { id: 3, text: 'Recordatorio: Mantenimiento de Cancha 2 mañana.', time: 'Hace 2 horas' }
-  ];
+  const notifications: Array<{ id: number | string; text: string; time: string }> = [];
 
   return (
     <div 
@@ -475,16 +517,28 @@ const NotificationsModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () 
             <X size={20} />
           </button>
         </div>
-        <div className="overflow-y-auto p-4 space-y-3">
-          {notifications.map((n, nIdx) => (
-            <div key={`notif-${n.id || nIdx}-${nIdx}`} className="p-4 bg-gray-50 rounded-xl border border-gray-100 flex items-start gap-3">
-              <div className="mt-1 w-2 h-2 rounded-full bg-[#0BA70B] shrink-0" />
-              <div>
-                <p className="text-sm text-gray-900 font-medium">{n.text}</p>
-                <p className="text-xs text-gray-500 mt-1">{n.time}</p>
+        <div className="overflow-y-auto p-6 space-y-3">
+          {notifications.length === 0 ? (
+            <div className="py-10 text-center text-gray-400">
+              <div className="w-12 h-12 rounded-2xl bg-gray-50 flex items-center justify-center mx-auto mb-3 text-gray-300">
+                <Bell size={24} />
               </div>
+              <p className="text-sm font-bold text-gray-700">No hay notificaciones</p>
+              <p className="text-xs text-gray-400 mt-1 max-w-xs mx-auto">
+                Las alertas de reservas confirmadas y pagos aparecerán aquí en tiempo real.
+              </p>
             </div>
-          ))}
+          ) : (
+            notifications.map((n, nIdx) => (
+              <div key={`notif-${n.id || nIdx}-${nIdx}`} className="p-4 bg-gray-50 rounded-xl border border-gray-100 flex items-start gap-3">
+                <div className="mt-1 w-2 h-2 rounded-full bg-[#0BA70B] shrink-0" />
+                <div>
+                  <p className="text-sm text-gray-900 font-medium">{n.text}</p>
+                  <p className="text-xs text-gray-500 mt-1">{n.time}</p>
+                </div>
+              </div>
+            ))
+          )}
         </div>
       </motion.div>
     </div>
@@ -727,7 +781,12 @@ const MatchDetailModal = ({ match, onClose, onUpdateStatus, onUserClick, onEdit,
             <button 
               type="button"
               onClick={async () => {
-                await fetch(`/api/matches/${match.id}`, { method: 'DELETE' });
+                try {
+                  await deleteBookingInFirestore(match.id);
+                } catch (e) {
+                  console.warn('Error deleting booking in Firestore:', e);
+                }
+                await fetch(`/api/matches/${match.id}`, { method: 'DELETE' }).catch(() => null);
                 if(onUpdateStatus) onUpdateStatus(match.id, 'cancelled');
                 onClose();
               }}
@@ -878,13 +937,26 @@ const CreateMatchModal = ({ isOpen, onClose, courts, users, onCreate, onQuickAdd
   const handleSubmit = () => {
     const startDateTime = new Date(`${data.date}T${data.time}`);
     const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000);
-    const selectedCourt = courts.find(c => c.id === data.court_id);
+    const selectedCourt = courts.find(c => String(c.id) === String(data.court_id));
+    const selectedHost = users.find(u => String(u.id) === String(data.host_id));
+    const clientName = selectedHost?.name || data.clientName || 'Cliente';
+    const clientPhone = selectedHost?.phone || data.clientPhone || '';
+    const endTimeStr = endDateTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
     
     onCreate({
       ...data,
+      courtId: data.court_id,
+      clientName,
+      clientPhone,
+      date: data.date,
+      startTime: data.time,
+      endTime: endTimeStr,
       start_time: startDateTime.toISOString(),
       end_time: endDateTime.toISOString(),
-      price_total: selectedCourt?.price_per_hour || 0
+      price: selectedCourt?.price_per_hour || 0,
+      price_total: selectedCourt?.price_per_hour || 0,
+      deposit: Number(data.amount_paid || data.deposit || 0),
+      status: 'confirmed'
     });
     onClose();
     setStep(1);
@@ -2267,7 +2339,19 @@ const RetentionStats = ({ onClose }: { onClose: () => void }) => {
   );
 };
 
-const ScheduleView = ({ onMatchClick, onNewBooking, onUpdateStatus, refreshKey }: { onMatchClick: (match: Match) => void, onNewBooking: () => void, onUpdateStatus: (id: number, status: string) => void, refreshKey?: number }) => {
+const ScheduleView = ({ 
+  onMatchClick, 
+  onNewBooking, 
+  onUpdateStatus, 
+  refreshKey,
+  complexId = 'complejo_central'
+}: { 
+  onMatchClick: (match: Match) => void, 
+  onNewBooking: () => void, 
+  onUpdateStatus: (id: number, status: string) => void, 
+  refreshKey?: number,
+  complexId?: string
+}) => {
   const [matches, setMatches] = useState<Match[]>([]);
   const [courts, setCourts] = useState<Court[]>([]);
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -2327,44 +2411,36 @@ const ScheduleView = ({ onMatchClick, onNewBooking, onUpdateStatus, refreshKey }
     }
   };
 
-
+  // 100% Real Firestore Connection:
+  // - Listens to 'bookings' collection filtered by complexId
+  // - Listens to 'courts' collection associated with complexId
+  // - Listens to 'venue_profile' document for operating hours
   useEffect(() => {
-    const controller = new AbortController();
-    fetch('/api/matches', { signal: controller.signal })
-      .then(res => res.json())
-      .then(data => setMatches(Array.isArray(data) ? data : []))
-      .catch((err) => {
-        if (err.name !== 'AbortError') setMatches([]);
-      });
-    return () => controller.abort();
-  }, [refreshKey]);
+    if (!complexId) return;
 
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch('/api/courts', { signal: controller.signal })
-      .then(res => res.json())
-      .then(data => {
-        const courtList = Array.isArray(data) ? data : [];
-        setCourts(courtList);
-        if (courtList.length > 0 && selectedCourtIds.length === 0) {
-          setSelectedCourtIds([courtList[0].id]);
-        }
-      })
-      .catch((err) => {
-        if (err.name !== 'AbortError') setCourts([]);
-      });
+    const unsubBookings = subscribeToBookings(complexId, (bookingsList) => {
+      setMatches(bookingsList);
+    });
 
-    fetch('/api/venue', { signal: controller.signal })
-      .then(res => res.json())
-      .then(data => {
-        setVenueHours(Array.isArray(data?.hours) ? data.hours : []);
-      })
-      .catch((err) => {
-        if (err.name !== 'AbortError') setVenueHours([]);
-      });
+    const unsubCourts = subscribeToCourts(complexId, (courtsList) => {
+      setCourts(courtsList);
+      if (courtsList.length > 0) {
+        setSelectedCourtIds(prev => prev.length === 0 ? [courtsList[0].id as number] : prev);
+      }
+    });
 
-    return () => controller.abort();
-  }, [refreshKey]);
+    const unsubVenue = subscribeToVenueProfile(complexId, (venueData) => {
+      if (venueData && Array.isArray(venueData.hours)) {
+        setVenueHours(venueData.hours);
+      }
+    });
+
+    return () => {
+      unsubBookings();
+      unsubCourts();
+      unsubVenue();
+    };
+  }, [complexId, refreshKey]);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 60000);
@@ -2401,7 +2477,7 @@ const ScheduleView = ({ onMatchClick, onNewBooking, onUpdateStatus, refreshKey }
   const { start: startHour, end: endHour } = getDayHours();
   const timeSlots = Array.from({ length: Math.max(0, endHour - startHour + 1) }, (_, i) => i + startHour);
 
-  const getMatchForSlot = (courtId: number, rawHour: number) => {
+  const getMatchForSlot = (courtId: number | string, rawHour: number) => {
     if (!Array.isArray(matches)) return null;
     return matches.find(m => {
       if (!m || !m.start_time) return false;
@@ -2411,11 +2487,12 @@ const ScheduleView = ({ onMatchClick, onNewBooking, onUpdateStatus, refreshKey }
       if (rawHour >= 24) {
         slotDate.setDate(slotDate.getDate() + 1);
       }
-      return matchDate.getDate() === slotDate.getDate() &&
-             matchDate.getMonth() === slotDate.getMonth() &&
-             matchDate.getFullYear() === slotDate.getFullYear() &&
-             matchDate.getHours() === (rawHour % 24) &&
-             m.court_id === courtId;
+      const isSameHour = matchDate.getHours() === (rawHour % 24);
+      const isSameDayMatch = matchDate.getDate() === slotDate.getDate() &&
+                             matchDate.getMonth() === slotDate.getMonth() &&
+                             matchDate.getFullYear() === slotDate.getFullYear();
+      const isSameCourt = String(m.court_id) === String(courtId) || String((m as any).courtId) === String(courtId);
+      return isSameDayMatch && isSameHour && isSameCourt;
     });
   };
 
@@ -2487,52 +2564,78 @@ const ScheduleView = ({ onMatchClick, onNewBooking, onUpdateStatus, refreshKey }
   const currentTimePos = getCurrentTimePosition();
   const isTodayDate = isSameDay(selectedDate, currentTime) || isSameDay(new Date(selectedDate.getTime() + 86400000), currentTime);
 
+  // Filter bookings for the selected date
+  const dayBookings = matches.filter(m => {
+    if (!m || !m.start_time) return false;
+    const matchDate = safeParseDate(m.start_time);
+    if (!matchDate) return false;
+    return isSameDay(matchDate, selectedDate);
+  });
+
   return (
     <div className="flex flex-col h-[calc(100vh-140px)] lg:h-auto space-y-4">
       {/* Calendar Header */}
-      <div className="flex items-center justify-between bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
+      <div className="flex items-center justify-between bg-white dark:bg-slate-900 p-4 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm">
         <div className="flex items-center gap-4">
-          <button type="button" onClick={() => changeDate(-1)} className="p-2 hover:bg-gray-100 rounded-full text-gray-500">
+          <button type="button" onClick={() => changeDate(-1)} className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full text-gray-500">
             <ChevronRight className="rotate-180" size={20} />
           </button>
           <div className="text-center">
-            <h2 className="font-bold text-lg text-gray-900 capitalize">
+            <h2 className="font-bold text-lg text-gray-900 dark:text-white capitalize">
               {safeFormatDate(selectedDate, 'EEEE d MMMM', { locale: es }, 'Fecha')}
             </h2>
-            <p className="text-xs text-gray-500 font-medium tracking-wider">
-              {matches.filter(m => {
-                if (!m || !m.start_time) return false;
-                const matchDate = safeParseDate(m.start_time);
-                if (!matchDate) return false;
-                return timeSlots.some(rawHour => {
-                  const slotDate = new Date(selectedDate);
-                  if (rawHour >= 24) slotDate.setDate(slotDate.getDate() + 1);
-                  return matchDate.getDate() === slotDate.getDate() &&
-                         matchDate.getMonth() === slotDate.getMonth() &&
-                         matchDate.getFullYear() === slotDate.getFullYear() &&
-                         matchDate.getHours() === (rawHour % 24);
-                });
-              }).length}/{timeSlots.length * courts.length} reservas disponibles
-            </p>
+            {dayBookings.length === 0 ? (
+              <p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold tracking-wide">
+                No hay reservas para esta fecha
+              </p>
+            ) : (
+              <p className="text-xs text-gray-500 dark:text-slate-400 font-medium tracking-wider">
+                {dayBookings.length} {dayBookings.length === 1 ? 'reserva confirmada' : 'reservas confirmadas'}
+              </p>
+            )}
           </div>
-          <button type="button" onClick={() => changeDate(1)} className="p-2 hover:bg-gray-100 rounded-full text-gray-500">
+          <button type="button" onClick={() => changeDate(1)} className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full text-gray-500">
             <ChevronRight size={20} />
           </button>
         </div>
         
         <div className="flex items-center gap-2">
           {/* Zoom Control */}
-          <div className="hidden sm:flex items-center gap-2 bg-gray-50 rounded-lg p-1 mr-2">
-            <button type="button" onClick={() => setRowHeight(Math.max(40, rowHeight - 10))} className="p-1 hover:bg-white rounded text-gray-500 text-xs font-bold">-</button>
+          <div className="hidden sm:flex items-center gap-2 bg-gray-50 dark:bg-slate-800 rounded-lg p-1 mr-2">
+            <button type="button" onClick={() => setRowHeight(Math.max(40, rowHeight - 10))} className="p-1 hover:bg-white dark:hover:bg-slate-700 rounded text-gray-500 text-xs font-bold cursor-pointer">-</button>
             <span className="text-xs font-mono text-gray-400 w-8 text-center">Zoom</span>
-            <button type="button" onClick={() => setRowHeight(Math.min(120, rowHeight + 10))} className="p-1 hover:bg-white rounded text-gray-500 text-xs font-bold">+</button>
+            <button type="button" onClick={() => setRowHeight(Math.min(120, rowHeight + 10))} className="p-1 hover:bg-white dark:hover:bg-slate-700 rounded text-gray-500 text-xs font-bold cursor-pointer">+</button>
           </div>
 
-          <button type="button" onClick={onNewBooking} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-lg shadow-emerald-900/20 hover:bg-emerald-700 flex items-center gap-2">
+          <button type="button" onClick={onNewBooking} className="bg-emerald-600 text-white px-4 py-2 rounded-xl text-sm font-bold shadow-lg shadow-emerald-900/20 hover:bg-emerald-700 flex items-center gap-2 cursor-pointer transition-all active:scale-95">
             <Plus size={18} /> <span className="hidden sm:inline">Nueva Reserva</span>
           </button>
         </div>
       </div>
+
+      {/* Clean Empty State Notification when no reservations exist for selected day */}
+      {dayBookings.length === 0 && courts.length > 0 && (
+        <div className="bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/40 rounded-2xl py-2.5 px-4 flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300 shadow-xs">
+          <div className="flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span className="font-bold">No hay reservas para esta fecha</span>
+          </div>
+          <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">Todos los horarios libres</span>
+        </div>
+      )}
+
+      {/* Empty State when no courts exist */}
+      {courts.length === 0 && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 text-center my-2 shadow-sm">
+          <div className="w-12 h-12 rounded-2xl bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto mb-3">
+            <Calendar size={24} />
+          </div>
+          <h3 className="text-base font-bold text-gray-900 dark:text-white mb-1">No hay canchas registradas</h3>
+          <p className="text-xs text-gray-500 dark:text-slate-400 max-w-sm mx-auto mb-4">
+            Para comenzar a registrar turnos en la grilla, agregá las canchas de tu complejo en la pestaña Perfil.
+          </p>
+        </div>
+      )}
 
       {/* Court Tabs (Multi-select) */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-2 flex gap-2 overflow-x-auto">
@@ -2833,7 +2936,7 @@ const NewUserModal = ({ isOpen, onClose, onSave }: { isOpen: boolean; onClose: (
   );
 };
 
-const UsersView = ({ onUserClick, refreshKey, onDataChange }: { onUserClick: (id: number) => void, refreshKey?: number, onDataChange?: () => void }) => {
+const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complejo_central' }: { onUserClick: (id: number | string) => void, refreshKey?: number, onDataChange?: () => void, complexId?: string }) => {
   const [users, setUsers] = useState<User[]>([]);
   const parentRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState('');
@@ -2862,33 +2965,32 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange }: { onUserClick: (id
         }
       });
 
+    // Real-time Firestore sync
+    const unsub = subscribeToClients(complexId, (clientsList) => {
+      if (Array.isArray(clientsList) && isMounted) {
+        setUsers(clientsList);
+      }
+    });
+
     return () => {
       isMounted = false;
       controller.abort();
+      unsub();
     };
-  }, [refreshKey]);
-
-  const fetchUsers = () => {
-    fetch('/api/users')
-      .then(res => res.json())
-      .then(data => setUsers(Array.isArray(data) ? data : []))
-      .catch(() => setUsers([]));
-  };
+  }, [complexId, refreshKey]);
 
   const handleCreateUser = async (userData: any) => {
     try {
-      const res = await fetch('/api/users', {
+      await saveClientInFirestore(complexId, userData);
+      await fetch('/api/users', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(userData)
-      });
-      if (res.ok) {
-        fetchUsers();
-        setShowNewUserModal(false);
-        if (onDataChange) onDataChange();
-      }
+        body: JSON.stringify({ ...userData, complexId })
+      }).catch(() => null);
+      setShowNewUserModal(false);
+      if (onDataChange) onDataChange();
     } catch (error) {
-      console.error('Error creating user:', error);
+      console.error('Error creating user in Firestore:', error);
     }
   };
 
@@ -3451,7 +3553,7 @@ const FinanceView = () => {
         
         // Fetch current period transactions
         const res = await fetch(`/api/finance?period=${period}&clientDate=${todayStr}`, { signal: controller.signal });
-        const finData = await res.json();
+        const finData = res.ok ? await res.json().catch(() => ({})) : {};
         if (!isMounted) return;
         
         // Client-side timezone correction for 'today'
@@ -3474,7 +3576,7 @@ const FinanceView = () => {
           
           if (!sumData) {
             const pRes = await fetch(`/api/finance?period=${p}&clientDate=${todayStr}`, { signal: controller.signal });
-            const pData = await pRes.json();
+            const pData = pRes.ok ? await pRes.json().catch(() => ({})) : {};
             if (!isMounted) return;
             sumData = pData?.summary || {};
             pTransactions = Array.isArray(pData?.transactions) ? pData.transactions : [];
@@ -3535,7 +3637,7 @@ const FinanceView = () => {
     try {
       const todayStr = new Date().toLocaleDateString('en-CA');
       const res = await fetch(`/api/finance?period=${period}&clientDate=${todayStr}`);
-      const finData = await res.json();
+      const finData = res.ok ? await res.json().catch(() => ({})) : {};
       let finalTransactions = Array.isArray(finData?.transactions) ? finData.transactions : [];
       if (period === 'today') {
         finalTransactions = finalTransactions.filter((t: any) => {
@@ -4362,7 +4464,7 @@ const FinanceView = () => {
   );
 };
 
-const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode }: { onDataChange?: () => void, isDarkMode?: boolean, onToggleDarkMode?: () => void }) => {
+const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = 'complejo_central' }: { onDataChange?: () => void, isDarkMode?: boolean, onToggleDarkMode?: () => void, complexId?: string }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [hasChanges, setHasChanges] = useState(false);
   const [profile, setProfile] = useState<any>(null);
@@ -4373,10 +4475,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode }: { onDataCha
   const [editSection, setEditSection] = useState<'info' | 'hours' | 'court' | null>(null);
   const [editingCourt, setEditingCourt] = useState<Court | null>(null);
   const [editingHourIndex, setEditingHourIndex] = useState<number | null>(null);
-  const [photos, setPhotos] = useState([
-    { id: '1', url: 'https://images.unsplash.com/photo-1529900748604-07564a03e7a6?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80' },
-    { id: '2', url: 'https://images.unsplash.com/photo-1575361204480-aadea25e6e68?ixlib=rb-4.0.3&auto=format&fit=crop&w=400&q=80' }
-  ]);
+  const [photos, setPhotos] = useState<Array<{ id: string; url: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -4404,11 +4503,21 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode }: { onDataCha
 
     loadProfileData();
 
+    // Real-time Firestore sync for venue and courts
+    const unsubVenue = subscribeToVenueProfile(complexId, (vData) => {
+      if (vData && isMounted) setProfile((prev: any) => ({ ...prev, ...vData }));
+    });
+    const unsubCourts = subscribeToCourts(complexId, (cList) => {
+      if (Array.isArray(cList) && isMounted) setCourts(cList);
+    });
+
     return () => {
       isMounted = false;
       controller.abort();
+      unsubVenue();
+      unsubCourts();
     };
-  }, []);
+  }, [complexId]);
 
   const fetchData = async () => {
     try {
@@ -4429,11 +4538,16 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode }: { onDataCha
 
   const handleSaveProfile = async () => {
     setIsSaving(true);
+    try {
+      await saveVenueProfileInFirestore(complexId, profile);
+    } catch (e) {
+      console.warn('Error saving venue to Firestore:', e);
+    }
     await fetch('/api/venue', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(profile)
-    });
+    }).catch(() => null);
     setIsSaving(false);
     setHasChanges(false);
     setEditSection(null);
@@ -4442,6 +4556,11 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode }: { onDataCha
 
   const handleSaveCourt = async (court: any) => {
     setIsSaving(true);
+    try {
+      await saveCourtInFirestore(complexId, court);
+    } catch (e) {
+      console.warn('Error saving court to Firestore:', e);
+    }
     const method = court.id ? 'PUT' : 'POST';
     const url = court.id ? `/api/courts/${court.id}` : '/api/courts';
     
@@ -4449,12 +4568,12 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode }: { onDataCha
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(court)
-    });
+    }).catch(() => null);
     
     setIsSaving(false);
     setEditingCourt(null);
     setEditSection(null);
-    fetchData(); // Refresh courts
+    fetchData();
     if (onDataChange) onDataChange();
   };
 
@@ -4462,18 +4581,27 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode }: { onDataCha
     const newStatus: 'available' | 'maintenance' = court.status === 'maintenance' ? 'available' : 'maintenance';
     const updatedCourt: Court = { ...court, status: newStatus };
     
-    // Optimistic update
     setCourts(courts.map(c => c.id === court.id ? updatedCourt : c));
+    try {
+      await saveCourtInFirestore(complexId, updatedCourt);
+    } catch (e) {
+      console.warn('Error updating court in Firestore:', e);
+    }
     
     await fetch(`/api/courts/${court.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updatedCourt)
-    });
+    }).catch(() => null);
   };
 
-  const handleDeleteCourt = async (id: number) => {
-    await fetch(`/api/courts/${id}`, { method: 'DELETE' });
+  const handleDeleteCourt = async (id: number | string) => {
+    try {
+      await deleteCourtInFirestore(id, complexId);
+    } catch (e) {
+      console.warn('Error deleting court in Firestore:', e);
+    }
+    await fetch(`/api/courts/${id}`, { method: 'DELETE' }).catch(() => null);
     fetchData();
     if (onDataChange) onDataChange();
   };
@@ -5455,8 +5583,52 @@ export default function App() {
     }
   }, [activeTab]);
   
-  // Firebase Auth & Database Hook
-  const { user, isAdmin, signInWithGoogle, logout } = useFirebase();
+  // Firebase Auth, Active Complex & Database Hook
+  const { 
+    user, 
+    isAdmin, 
+    signInWithGoogle, 
+    logout, 
+    activeComplexId: contextComplexId, 
+    activeComplex, 
+    setActiveComplexId 
+  } = useFirebase();
+
+  // Router & URL parameters evaluation for Activation and Redirection
+  const [currentPath, setCurrentPath] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return window.location.pathname;
+    }
+    return '/';
+  });
+
+  const [searchParams, setSearchParams] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return new URLSearchParams(window.location.search);
+    }
+    return new URLSearchParams();
+  });
+
+  const [activationSuccessBanner, setActivationSuccessBanner] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setCurrentPath(window.location.pathname);
+      setSearchParams(new URLSearchParams(window.location.search));
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  // Detección universal del código de activación:
+  // Evalúa el query param 'codigo' tanto en '/activar?codigo=...' como en la raíz '/?codigo=...'
+  const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : searchParams;
+  const activationCode = (params.get('codigo') || searchParams.get('codigo') || params.get('code') || searchParams.get('code') || '').trim();
+  const isActivationRoute = 
+    Boolean(activationCode) ||
+    currentPath === '/activar' || 
+    currentPath.startsWith('/activar') || 
+    (typeof window !== 'undefined' && window.location.hash.includes('/activar'));
 
   // Analytics States
   const [showExposureStats, setShowExposureStats] = useState(false);
@@ -5522,6 +5694,24 @@ export default function App() {
     };
   }, [refreshKey]);
 
+  const activeComplexId = contextComplexId || getActiveComplexId(user);
+
+  // Real-time synchronization for users and courts from shared Firestore database
+  useEffect(() => {
+    const unsubUsers = subscribeToClients(activeComplexId, (firestoreUsers) => {
+      setUsers(firestoreUsers);
+    });
+
+    const unsubCourts = subscribeToCourts(activeComplexId, (firestoreCourts) => {
+      setCourts(firestoreCourts);
+    });
+
+    return () => {
+      unsubUsers();
+      unsubCourts();
+    };
+  }, [activeComplexId]);
+
   const handleSidebarAction = (action: string) => {
     if (action === 'exposure') setShowExposureStats(true);
     if (action === 'demand') setShowDemandStats(true);
@@ -5531,15 +5721,21 @@ export default function App() {
     if (action === 'support') setShowGlobalSupportModal(true);
   };
 
-  const handleUserClick = async (id: number) => {
+  const handleUserClick = async (id: number | string) => {
     const res = await fetch(`/api/users/${id}`);
-    const data = await res.json();
-    setSelectedUser(data);
+    const data = await res.json().catch(() => null);
+    if (data && data.id) {
+      setSelectedUser(data);
+    } else {
+      const found = users.find(u => String(u.id) === String(id));
+      if (found) setSelectedUser(found);
+    }
   };
 
-  const handleDeleteUser = async (id: number) => {
+  const handleDeleteUser = async (id: number | string) => {
     try {
-      await fetch(`/api/users/${id}`, { method: 'DELETE' });
+      await deleteClientInFirestore(id);
+      await fetch(`/api/users/${id}`, { method: 'DELETE' }).catch(() => null);
       setSelectedUser(null);
       setRefreshKey(prev => prev + 1);
     } catch (e) {
@@ -5547,32 +5743,107 @@ export default function App() {
     }
   };
 
-  const handleCreateMatch = async (data: any) => {
-    await fetch('/api/matches', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    setRefreshKey(prev => prev + 1);
+  const handleCreateMatch = async (bookingData: any) => {
+    try {
+      const payload = {
+        complexId: activeComplexId,
+        courtId: bookingData.courtId || bookingData.court_id,
+        clientName: bookingData.clientName || 'Cliente',
+        clientPhone: bookingData.clientPhone || '',
+        date: bookingData.date,
+        startTime: bookingData.startTime || bookingData.time,
+        endTime: bookingData.endTime || '',
+        price: Number(bookingData.price ?? bookingData.price_total) || 0,
+        deposit: Number(bookingData.deposit ?? bookingData.amount_paid) || 0,
+        status: 'confirmed' as const,
+        courtName: bookingData.courtName || ''
+      };
+
+      // 1. Direct write to Firestore 'bookings' collection
+      await createBookingInFirestore(payload);
+
+      // 2. Local API sync as backup
+      fetch('/api/matches', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          court_id: payload.courtId,
+          host_id: bookingData.host_id || 1,
+          start_time: `${payload.date}T${payload.startTime}:00`,
+          end_time: `${payload.date}T${payload.endTime}:00`,
+          price_total: payload.price,
+          payment_status: payload.deposit >= payload.price && payload.price > 0 ? 'paid' : payload.deposit > 0 ? 'partial' : 'pending',
+          amount_paid: payload.deposit
+        })
+      }).catch(() => null);
+
+      setRefreshKey(prev => prev + 1);
+    } catch (err) {
+      console.error('[Firestore] Error creating booking:', err);
+    }
   };
 
   const handleCreateUser = async (data: any) => {
-    await fetch('/api/users', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data)
-    });
-    // Refresh users list
-    fetch('/api/users').then(res => res.json()).then(setUsers);
+    try {
+      const userPayload = {
+        ...data,
+        complexId: activeComplexId
+      };
+      await saveClientInFirestore(activeComplexId, userPayload);
+      fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(userPayload)
+      }).catch(() => null);
+      setRefreshKey(prev => prev + 1);
+    } catch (e) {
+      console.error('[Firestore] Error creating user:', e);
+    }
   };
 
-  const handleUpdateStatus = async (id: number, status: string) => {
+  const handleUpdateStatus = async (id: number | string, status: string) => {
+    try {
+      await updateBookingInFirestore(id, { 
+        status: status as any,
+        payment_status: status === 'paid' ? 'paid' : status === 'cancelled' ? 'cancelled' : 'pending'
+      });
+    } catch (e) {
+      console.warn('Error updating booking in Firestore:', e);
+    }
     await fetch(`/api/matches/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ payment_status: status })
-    });
+    }).catch(() => null);
+    setRefreshKey(prev => prev + 1);
   };
+
+  // Interceptor for /activar route or ?codigo=... query parameter
+  if (isActivationRoute) {
+    return (
+      <ActivationView
+        initialCode={activationCode}
+        isDarkMode={isDarkMode}
+        onNavigateHome={() => {
+          window.history.pushState({}, '', '/');
+          setCurrentPath('/');
+          setSearchParams(new URLSearchParams());
+        }}
+        onSuccess={(newComplexId, complexName) => {
+          setActiveComplexId(newComplexId);
+          try {
+            localStorage.setItem('activeComplexId', newComplexId);
+          } catch (e) {}
+          window.history.pushState({}, '', '/');
+          setCurrentPath('/');
+          setSearchParams(new URLSearchParams());
+          setActiveTab('schedule');
+          setRefreshKey(prev => prev + 1);
+          setActivationSuccessBanner(`¡Complejo "${complexName}" activado exitosamente! Has tomado el control de la sede.`);
+        }}
+      />
+    );
+  }
 
   return (
     <div className="flex w-full h-[100dvh] overflow-hidden bg-white dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 transition-colors">
@@ -5584,6 +5855,11 @@ export default function App() {
         onClose={() => setSidebarOpen(false)}
         isDarkMode={isDarkMode}
         onToggleDarkMode={toggleDarkMode}
+        activeComplex={activeComplex}
+        onOpenActivation={() => {
+          window.history.pushState({}, '', '/activar');
+          setCurrentPath('/activar');
+        }}
       />
 
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -5593,14 +5869,22 @@ export default function App() {
             <button type="button" onClick={() => setSidebarOpen(true)} className="lg:hidden text-white hover:text-white/80 transition-colors p-1 -ml-1 cursor-pointer" aria-label="Abrir menú lateral">
               <Menu size={32} strokeWidth={2.5} />
             </button>
-            <h2 className="text-[22px] md:text-[26px] font-bold tracking-wide">
-              { 
-               activeTab === 'schedule' ? 'Agenda' :
-               activeTab === 'users' ? 'Usuarios totales' :
-               activeTab === 'finance' ? 'Hola Admin!' :
-               activeTab === 'profile' ? 'Perfil' : 
-               activeTab === 'analytics' ? 'Analíticas' : activeTab}
-            </h2>
+            <div className="flex flex-col">
+              <h2 className="text-[20px] md:text-[24px] font-bold tracking-wide leading-tight">
+                { 
+                 activeTab === 'schedule' ? 'Agenda' :
+                 activeTab === 'users' ? 'Usuarios totales' :
+                 activeTab === 'finance' ? 'Finanzas' :
+                 activeTab === 'profile' ? 'Perfil' : 
+                 activeTab === 'analytics' ? 'Analíticas' : activeTab}
+              </h2>
+              {activeComplex?.name && (
+                <div className="flex items-center gap-1.5 text-xs text-emerald-100 font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-200 animate-pulse" />
+                  <span className="truncate max-w-[200px]">{activeComplex.name}</span>
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-2 sm:gap-4">
             {activeTab === 'users' && (
@@ -5680,13 +5964,43 @@ export default function App() {
 
         {/* Content */}
         <main id="main-scroll" className="flex-1 relative pt-0 px-3 md:px-6 pb-24 lg:pb-6 bg-[#f0f2f5] dark:bg-slate-900 overflow-y-auto">
+          {activationSuccessBanner && (
+            <div className="mt-3 p-4 bg-emerald-500/15 border border-emerald-500/40 rounded-2xl flex items-center justify-between text-emerald-950 dark:text-emerald-200">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-xl bg-[#0BA70B] text-white flex items-center justify-center font-bold shadow-md shadow-emerald-900/20 shrink-0">
+                  ✓
+                </div>
+                <div>
+                  <p className="font-bold text-sm leading-snug">{activationSuccessBanner}</p>
+                  <p className="text-xs text-emerald-800/80 dark:text-emerald-300/80">Control total y sincronización en tiempo real con Firestore habilitados.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setActivationSuccessBanner(null)}
+                className="p-1.5 hover:bg-emerald-500/20 rounded-xl transition-colors cursor-pointer text-emerald-900 dark:text-emerald-200"
+                aria-label="Cerrar notificación"
+              >
+                <X size={18} />
+              </button>
+            </div>
+          )}
+
           <ErrorBoundary key={`section-boundary-${activeTab}`} sectionName={activeTab}>
             <div className="w-full pt-3 md:pt-5">
               {activeTab === 'schedule' && (
                 <ScheduleView 
                   key="view-schedule"
+                  complexId={activeComplexId}
                   onMatchClick={setSelectedMatch} 
-                  onNewBooking={() => setCreateMatchOpen(true)}
+                  onNewBooking={(prefillData?: any) => {
+                    if (prefillData) {
+                      setSelectedMatch(prefillData);
+                    } else {
+                      setSelectedMatch(null);
+                    }
+                    setCreateMatchOpen(true);
+                  }}
                   onUpdateStatus={handleUpdateStatus}
                   refreshKey={refreshKey}
                 />
@@ -5694,6 +6008,7 @@ export default function App() {
               {activeTab === 'users' && (
                 <UsersView 
                   key="view-users"
+                  complexId={activeComplexId}
                   onUserClick={handleUserClick} 
                   refreshKey={refreshKey}
                   onDataChange={() => setRefreshKey(prev => prev + 1)}
@@ -5704,6 +6019,7 @@ export default function App() {
               {activeTab === 'profile' && (
                 <ProfileView 
                   key="view-profile"
+                  complexId={activeComplexId}
                   onDataChange={() => setRefreshKey(prev => prev + 1)} 
                   isDarkMode={isDarkMode}
                   onToggleDarkMode={toggleDarkMode}
@@ -5746,12 +6062,20 @@ export default function App() {
             courts={courts}
             users={users}
             initialData={selectedMatch}
-            onCreate={selectedMatch ? async (data) => {
+            onCreate={selectedMatch && selectedMatch.id ? async (data) => {
+              try {
+                await updateBookingInFirestore(selectedMatch.id, {
+                  ...data,
+                  complexId: activeComplexId
+                });
+              } catch (e) {
+                console.warn('Error updating in Firestore:', e);
+              }
               await fetch(`/api/matches/${selectedMatch.id}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
-              });
+              }).catch(() => null);
               setRefreshKey(prev => prev + 1);
               setSelectedMatch(null);
             } : handleCreateMatch}
