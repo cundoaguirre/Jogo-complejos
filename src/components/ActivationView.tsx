@@ -68,8 +68,8 @@ export const ActivationView: React.FC<ActivationViewProps> = ({
     setErrorMessage('');
 
     try {
-      // Query complexes where activationCode == codigo.trim()
-      const complexesRef = collection(db, 'complexes');
+      // Query canonical collection complejos where activationCode == codigo.trim()
+      const complexesRef = collection(db, 'complejos');
       const q = query(complexesRef, where('activationCode', '==', trimmed));
       const snapshot = await getDocs(q);
 
@@ -90,7 +90,7 @@ export const ActivationView: React.FC<ActivationViewProps> = ({
         setStatus('ready_to_claim');
       }
     } catch (err: any) {
-      console.error('[Activation] Error querying Firestore complexes:', err);
+      console.error('[Activation] Error querying Firestore complejos:', err);
       setStatus('not_found');
       setErrorMessage(err.message || 'Error al conectar con la base de datos de activación.');
     }
@@ -128,8 +128,8 @@ export const ActivationView: React.FC<ActivationViewProps> = ({
       // Execute writeBatch as specified:
       const batch = writeBatch(db);
 
-      // 1. docRefComplejo = doc(db, 'complexes', complexData.id)
-      const docRefComplejo = doc(db, 'complexes', complexData.id);
+      // 1. docRefComplejo = doc(db, 'complejos', complexData.id)
+      const docRefComplejo = doc(db, 'complejos', complexData.id);
       batch.update(docRefComplejo, {
         isActivated: true,
         ownerUid: currentUser.uid,

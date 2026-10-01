@@ -46,6 +46,7 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
   const { user } = useFirebase();
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submittedTicket, setSubmittedTicket] = useState<SupportTicket | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
   const [ticketsList, setTicketsList] = useState<SupportTicket[]>([]);
   const [isLoadingTickets, setIsLoadingTickets] = useState(false);
@@ -60,17 +61,20 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
     if (adminEmail && !senderEmail && !user?.email) setSenderEmail(adminEmail);
   }, [adminName, adminPhone, adminEmail, user]);
 
-  // Load tickets on mount or history tab open
-  const fetchTickets = async () => {
+  // Load tickets from local storage without external API dependency
+  const fetchTickets = () => {
     setIsLoadingTickets(true);
     try {
-      const res = await fetch('/api/support-tickets');
-      if (res.ok) {
-        const data = await res.json();
-        setTicketsList(data);
+      const stored = localStorage.getItem('jogo_support_tickets');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setTicketsList(Array.isArray(parsed) ? parsed : []);
+      } else {
+        setTicketsList([]);
       }
     } catch (e) {
-      console.error('Error fetching tickets:', e);
+      console.warn('Error reading support tickets from storage:', e);
+      setTicketsList([]);
     } finally {
       setIsLoadingTickets(false);
     }
@@ -129,65 +133,45 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
   };
 
   const handleSend = async (channel: 'whatsapp' | 'email' | 'system') => {
+    setFormError(null);
     if (!title.trim()) {
-      alert('Por favor, ingresa un asunto o título para el reporte.');
+      setFormError('Por favor, ingresa un asunto o título para el reporte.');
       return;
     }
     if (!description.trim()) {
-      alert('Por favor, describe el error o la sugerencia de mejora.');
+      setFormError('Por favor, describe el error o la sugerencia de mejora.');
       return;
     }
 
     setIsSubmitting(true);
     try {
       const diagnostics = includeDiagnostics ? getSystemDiagnostics() : {};
+      const ticketCode = `TK-${Math.floor(100000 + Math.random() * 900000)}`;
 
-      const payload = {
+      const newTicket: SupportTicket = {
+        id: Date.now(),
+        ticket_code: ticketCode,
         type: ticketType,
         priority,
         module: appModule,
         title: title.trim(),
         description: description.trim(),
         admin_name: senderName || 'Administrador',
-        admin_phone: senderPhone,
-        admin_email: senderEmail,
-        system_info: diagnostics,
-        channel
+        admin_phone: senderPhone || '',
+        admin_email: senderEmail || user?.email || '',
+        status: 'pending',
+        channel,
+        system_info: JSON.stringify(diagnostics),
+        created_at: new Date().toISOString()
       };
 
-      const res = await fetch('/api/support-tickets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (!res.ok) {
-        throw new Error('Error al registrar el reporte en el servidor');
-      }
-
-      const data = await res.json();
-      const newTicket: SupportTicket = data.ticket;
-
-      // Sync to Firestore if user is authenticated
       try {
-        if (user) {
-          await setDoc(doc(db, 'support_tickets', newTicket.ticket_code), {
-            ticket_code: newTicket.ticket_code,
-            type: newTicket.type,
-            priority: newTicket.priority,
-            module: newTicket.module,
-            title: newTicket.title,
-            description: newTicket.description,
-            admin_name: newTicket.admin_name || senderName || 'Administrador',
-            admin_email: user.email || senderEmail || '',
-            admin_phone: senderPhone || '',
-            status: 'pending',
-            channel: channel || 'whatsapp',
-            created_at: newTicket.created_at || new Date().toISOString()
-          });
-        }
-      } catch (firestoreErr) {
-        console.warn('Firestore sync note:', firestoreErr);
+        const stored = localStorage.getItem('jogo_support_tickets');
+        const list = stored ? JSON.parse(stored) : [];
+        const updated = [newTicket, ...(Array.isArray(list) ? list : [])];
+        localStorage.setItem('jogo_support_tickets', JSON.stringify(updated));
+      } catch (stErr) {
+        console.warn('Error saving ticket in local storage:', stErr);
       }
 
       setSubmittedTicket(newTicket);
@@ -214,7 +198,7 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
       }
     } catch (e: any) {
       console.error('Error submitting support ticket:', e);
-      alert('No se pudo enviar el reporte. Por favor intenta de nuevo.');
+      setFormError('No se pudo enviar el reporte. Por favor intenta de nuevo.');
     } finally {
       setIsSubmitting(false);
     }
@@ -444,6 +428,12 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
             ) : (
               /* Contact / Report Form */
               <div className="space-y-5">
+                {formError && (
+                  <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 rounded-xl text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
+                    <AlertTriangle size={16} className="shrink-0" />
+                    <span>{formError}</span>
+                  </div>
+                )}
                 {/* 1. Category Selection */}
                 <div>
                   <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 uppercase tracking-wider mb-2">

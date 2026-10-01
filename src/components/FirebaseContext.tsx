@@ -24,6 +24,7 @@ interface FirebaseContextType {
   loading: boolean;
   isAdmin: boolean;
   activeComplexId: string;
+  activeComplejoName: string;
   activeComplex: any | null;
   collaboratorData: CollaboratorProfile | null;
   signInWithGoogle: () => Promise<FirebaseUser | null>;
@@ -37,6 +38,7 @@ const FirebaseContext = createContext<FirebaseContextType>({
   loading: true,
   isAdmin: false,
   activeComplexId: 'complejo_central',
+  activeComplejoName: 'Colo loco',
   activeComplex: null,
   collaboratorData: null,
   signInWithGoogle: async () => null,
@@ -62,15 +64,31 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [activeComplex, setActiveComplex] = useState<any | null>(null);
   const [collaboratorData, setCollaboratorData] = useState<CollaboratorProfile | null>(null);
 
-  // Sync active complex metadata from Firestore 'complexes'
+  // Sync active complex metadata from Firestore canonical collection 'complejos'
   useEffect(() => {
     if (!activeComplexId || activeComplexId === 'complejo_central') {
-      setActiveComplex(null);
+      // Intentar leer complejo 'B' por defecto si estamos en complejo_central
+      const targetId = activeComplexId === 'complejo_central' ? 'B' : activeComplexId;
+      try {
+        const complexDocRef = doc(db, 'complejos', targetId);
+        const unsub = onSnapshot(complexDocRef, (snap) => {
+          if (snap.exists()) {
+            setActiveComplex({ id: snap.id, ...snap.data() });
+          } else {
+            setActiveComplex(null);
+          }
+        }, (err) => {
+          console.warn('Error fetching active complex:', err);
+        });
+        return () => unsub();
+      } catch (e) {
+        console.warn('Could not listen to complejos doc:', e);
+      }
       return;
     }
 
     try {
-      const complexDocRef = doc(db, 'complexes', activeComplexId);
+      const complexDocRef = doc(db, 'complejos', activeComplexId);
       const unsub = onSnapshot(complexDocRef, (snap) => {
         if (snap.exists()) {
           setActiveComplex({ id: snap.id, ...snap.data() });
@@ -82,7 +100,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       });
       return () => unsub();
     } catch (e) {
-      console.warn('Could not listen to complex doc:', e);
+      console.warn('Could not listen to complejos doc:', e);
     }
   }, [activeComplexId]);
 
@@ -197,6 +215,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const userEmail = user?.email?.toLowerCase() || '';
   const isAdmin = Boolean(user && ADMIN_EMAILS.includes(userEmail));
 
+  const activeComplejoName = activeComplex?.name || activeComplex?.company || 'Colo loco';
+
   return (
     <FirebaseContext.Provider 
       value={{ 
@@ -204,6 +224,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         loading, 
         isAdmin, 
         activeComplexId,
+        activeComplejoName,
         activeComplex,
         collaboratorData,
         signInWithGoogle, 

@@ -1,345 +1,360 @@
 {
   "entities": {
-    "Admin": {
-      "title": "Admin",
-      "description": "System administrator with privileged access to manage venue settings, matches, and finances",
+    "Complejo": {
+      "title": "Complejo",
+      "description": "Documento central de la sede deportiva con array inmutable de canchas",
       "type": "object",
       "properties": {
-        "email": {
+        "id": {
           "type": "string",
-          "format": "email",
-          "description": "Administrator email address"
+          "description": "Identificador del complejo"
         },
-        "role": {
-          "type": "string",
-          "enum": ["admin", "superadmin"],
-          "description": "Administrator role level"
-        },
-        "createdAt": {
-          "type": "string",
-          "description": "Timestamp when admin privilege was granted"
-        }
-      },
-      "required": ["email", "role"]
-    },
-    "UserProfile": {
-      "title": "UserProfile",
-      "description": "Registered player or club customer profile",
-      "type": "object",
-      "properties": {
-        "userId": {
-          "type": "string",
-          "description": "Firebase Auth UID of the user"
-        },
-        "name": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Full display name of the user"
-        },
-        "email": {
-          "type": "string",
-          "format": "email",
-          "description": "Contact email"
-        },
-        "phone": {
-          "type": "string",
-          "maxLength": 30,
-          "description": "Contact telephone or WhatsApp number"
-        },
-        "skill_level": {
-          "type": "string",
-          "enum": ["Principiante", "Amateur", "Intermedio", "Avanzado", "Primera"],
-          "description": "Player skill category"
-        },
-        "rating": {
-          "type": "number",
-          "description": "Community rating from 1 to 5 stars"
-        },
-        "matches_played": {
-          "type": "number",
-          "description": "Total matches played in the venue"
-        },
-        "created_at": {
-          "type": "string",
-          "description": "Account registration ISO date"
-        },
-        "first_visit": {
-          "type": "string",
-          "description": "First match activation ISO date"
-        },
-        "last_visit": {
-          "type": "string",
-          "description": "Last recorded match or visit ISO date"
-        }
-      },
-      "required": ["userId", "name", "email"]
-    },
-    "Court": {
-      "title": "Court",
-      "description": "Sports court available for booking at the venue",
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Court identifier name (e.g. Cancha 1)"
-        },
-        "type": {
-          "type": "string",
-          "maxLength": 50,
-          "description": "Sport type, e.g. Fútbol 5, Pádel, Tenis"
-        },
-        "surface": {
-          "type": "string",
-          "maxLength": 50,
-          "description": "Playing surface type"
-        },
-        "price_per_hour": {
-          "type": "number",
-          "description": "Booking rate per hour in local currency"
-        },
-        "is_roofed": {
-          "type": "boolean",
-          "description": "Whether the court has a roof"
-        },
-        "status": {
-          "type": "string",
-          "enum": ["available", "maintenance"],
-          "description": "Operational status of the court"
-        }
-      },
-      "required": ["name", "type", "surface", "price_per_hour", "status"]
-    },
-    "Match": {
-      "title": "Match",
-      "description": "Scheduled game or court reservation",
-      "type": "object",
-      "properties": {
-        "court_id": {
-          "type": "string",
-          "description": "Associated court ID"
-        },
-        "host_id": {
-          "type": "string",
-          "description": "Firebase UID or user ID of the host/creator"
-        },
-        "court_name": {
-          "type": "string",
-          "description": "Cached court name"
-        },
-        "host_name": {
-          "type": "string",
-          "description": "Cached host name"
-        },
-        "host_phone": {
-          "type": "string",
-          "description": "Cached host phone"
-        },
-        "start_time": {
-          "type": "string",
-          "description": "Start timestamp ISO"
-        },
-        "end_time": {
-          "type": "string",
-          "description": "End timestamp ISO"
-        },
-        "is_open": {
-          "type": "boolean",
-          "description": "Whether other players can join"
-        },
-        "mode": {
-          "type": "string",
-          "description": "Game mode: complete, challenge, missing_players"
-        },
-        "max_players": {
-          "type": "number",
-          "description": "Capacity of the match"
-        },
-        "price_total": {
-          "type": "number",
-          "description": "Total reservation price"
-        },
-        "amount_paid": {
-          "type": "number",
-          "description": "Amount already paid"
-        },
-        "payment_status": {
-          "type": "string",
-          "enum": ["pending", "paid", "partial"],
-          "description": "Payment status"
-        },
-        "status": {
-          "type": "string",
-          "description": "Status of the reservation: scheduled, in_progress, completed, cancelled"
-        }
-      },
-      "required": ["court_id", "host_id", "start_time", "end_time", "max_players", "payment_status", "status"]
-    },
-    "Transaction": {
-      "title": "Transaction",
-      "description": "Financial income or expense transaction",
-      "type": "object",
-      "properties": {
-        "type": {
-          "type": "string",
-          "enum": ["income", "expense"],
-          "description": "Income or expense"
-        },
-        "category": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Category such as Alquiler, Buffet, Torneos, Mantenimiento, Servicios"
-        },
-        "amount": {
-          "type": "number",
-          "description": "Monetary value in local currency"
-        },
-        "date": {
-          "type": "string",
-          "description": "ISO timestamp of transaction"
-        },
-        "description": {
-          "type": "string",
-          "maxLength": 500,
-          "description": "Detailed description or notes"
-        }
-      },
-      "required": ["type", "category", "amount", "date"]
-    },
-    "SupportTicket": {
-      "title": "SupportTicket",
-      "description": "Support helpdesk ticket or user feedback",
-      "type": "object",
-      "properties": {
-        "ticket_code": {
-          "type": "string",
-          "maxLength": 20,
-          "description": "Unique human-readable ticket code"
-        },
-        "type": {
-          "type": "string",
-          "enum": ["bug", "feature", "inquiry", "urgent"],
-          "description": "Category of request"
-        },
-        "priority": {
-          "type": "string",
-          "enum": ["low", "medium", "high", "critical"],
-          "description": "Urgency priority"
-        },
-        "module": {
-          "type": "string",
-          "maxLength": 50,
-          "description": "Application module where issue occurred"
-        },
-        "title": {
-          "type": "string",
-          "maxLength": 200,
-          "description": "Short title summary"
-        },
-        "description": {
-          "type": "string",
-          "maxLength": 3000,
-          "description": "Detailed description of the issue"
-        },
-        "admin_name": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Contact name submitting the ticket"
-        },
-        "admin_email": {
-          "type": "string",
-          "format": "email",
-          "description": "Contact email"
-        },
-        "admin_phone": {
-          "type": "string",
-          "maxLength": 30,
-          "description": "Contact phone"
-        },
-        "system_info": {
-          "type": "string",
-          "maxLength": 1000,
-          "description": "Device and browser environment info"
-        },
-        "status": {
-          "type": "string",
-          "enum": ["pending", "in_review", "resolved"],
-          "description": "Resolution status"
-        },
-        "channel": {
-          "type": "string",
-          "enum": ["whatsapp", "email", "system"],
-          "description": "Preferred contact channel"
-        },
-        "created_at": {
-          "type": "string",
-          "description": "Creation timestamp ISO"
-        }
-      },
-      "required": ["ticket_code", "type", "priority", "module", "title", "description", "status", "created_at"]
-    },
-    "VenueProfile": {
-      "title": "VenueProfile",
-      "description": "General sports venue profile, branding and config",
-      "type": "object",
-      "properties": {
         "name": {
           "type": "string",
           "maxLength": 150,
-          "description": "Venue name"
+          "description": "Nombre de la sede deportiva"
         },
-        "description": {
+        "company": {
           "type": "string",
-          "maxLength": 1000,
-          "description": "Venue description"
+          "maxLength": 150,
+          "description": "Razón social o empresa del complejo"
         },
         "phone": {
           "type": "string",
           "maxLength": 30,
-          "description": "Venue main phone"
-        },
-        "instagram": {
-          "type": "string",
-          "maxLength": 100,
-          "description": "Instagram profile handle"
+          "description": "Teléfono de contacto de la sede"
         },
         "address": {
           "type": "string",
           "maxLength": 250,
-          "description": "Physical street address"
+          "description": "Dirección física de la sede"
+        },
+        "instagram": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Handle de Instagram del complejo"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1000,
+          "description": "Descripción general del complejo"
+        },
+        "courts": {
+          "type": "array",
+          "description": "Array inmutable de canchas dentro del complejo",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Identificador alfanumérico único de la cancha"
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 100,
+                "description": "Nombre provisto en el formulario"
+              },
+              "sport": {
+                "type": "string",
+                "enum": ["fútbol 5", "fútbol 6", "fútbol 7", "fútbol 8", "fútbol 9", "fútbol 11"],
+                "description": "Deporte correspondiente"
+              },
+              "surface": {
+                "type": "string",
+                "description": "Tipo de superficie (sintético, cemento, césped, blindex, tierra, arena)"
+              },
+              "price": {
+                "type": "number",
+                "description": "Valor de la hora parseado del formulario"
+              },
+              "status": {
+                "type": "string",
+                "enum": ["activa", "mantenimiento", "inactiva"],
+                "description": "Estado operativo de la cancha"
+              }
+            },
+            "required": ["id", "name", "sport", "surface", "price", "status"]
+          }
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Marca de tiempo de última actualización"
         }
       },
-      "required": ["name"]
+      "required": ["name", "courts"]
+    },
+    "Booking": {
+      "title": "Booking",
+      "description": "Reserva de cancha con clave de enlace complejoId",
+      "type": "object",
+      "properties": {
+        "complejoId": {
+          "type": "string",
+          "description": "ID del complejo activo (estricto en español)"
+        },
+        "complejoName": {
+          "type": "string",
+          "description": "Nombre del complejo activo"
+        },
+        "courtName": {
+          "type": "string",
+          "description": "Nombre de la cancha seleccionada"
+        },
+        "date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "description": "Fecha en formato YYYY-MM-DD"
+        },
+        "startTime": {
+          "type": "string",
+          "pattern": "^\\d{2}:\\d{2}$",
+          "description": "Horario de inicio HH:mm"
+        },
+        "endTime": {
+          "type": "string",
+          "pattern": "^\\d{2}:\\d{2}$",
+          "description": "Horario de fin HH:mm"
+        },
+        "durationMinutes": {
+          "type": "number",
+          "description": "Duración en minutos calculada"
+        },
+        "price": {
+          "type": "number",
+          "description": "Monto total acordado"
+        },
+        "deposit": {
+          "type": "number",
+          "description": "Seña abonada (0 si no aplica)"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["confirmado", "cancelado", "jugado"],
+          "description": "Estado operativo del turno"
+        },
+        "paymentStatus": {
+          "type": "string",
+          "description": "Estado del pago (pendiente, seña, pagado)"
+        },
+        "userId": {
+          "type": "string",
+          "description": "ID del jugador en users, o '0' si es cliente temporal"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Nombre del cliente"
+        },
+        "userPhone": {
+          "type": "string",
+          "description": "Teléfono del cliente"
+        },
+        "userEmail": {
+          "type": "string",
+          "description": "Email del cliente"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Observaciones operativas cargadas por el operador"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID de Google Auth del operador"
+        },
+        "adminId": {
+          "type": "string",
+          "description": "ID de control o cadena vacía"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp ISO de creación"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp ISO de última edición"
+        }
+      },
+      "required": ["complejoId", "courtName", "date", "startTime", "endTime", "price", "status"]
+    },
+    "User": {
+      "title": "User",
+      "description": "Jugadores y clientes finales del complejo deportivo",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID del documento del cliente"
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 100,
+          "description": "Nombre y apellido del cliente provisto en input"
+        },
+        "phone": {
+          "type": "string",
+          "maxLength": 30,
+          "description": "Teléfono provisto en input"
+        },
+        "email": {
+          "type": "string",
+          "description": "Correo electrónico provisto en input"
+        },
+        "gender": {
+          "type": "string",
+          "description": "Género seleccionado explícitamente en el desplegable"
+        },
+        "city": {
+          "type": "string",
+          "description": "Ciudad o localidad provista en input"
+        },
+        "category": {
+          "type": "string",
+          "description": "Categoría de cliente (jugador, capitán)"
+        },
+        "status": {
+          "type": "string",
+          "description": "Estado inicial de negocio"
+        },
+        "isActivated": {
+          "type": "boolean",
+          "description": "Indica si el cliente interactuó en canales digitales"
+        },
+        "acquisitionChannel": {
+          "type": "string",
+          "description": "Canal de adquisición seleccionado en desplegable"
+        },
+        "acquisitionDate": {
+          "type": "string",
+          "description": "Fecha de registro YYYY-MM-DD"
+        },
+        "acquisitionTime": {
+          "type": "string",
+          "description": "Hora de registro HH:mm"
+        },
+        "activationDate": {
+          "type": ["string", "null"],
+          "description": "Fecha de activación al tomar posesión o jugar"
+        },
+        "activationTime": {
+          "type": ["string", "null"],
+          "description": "Hora de activación"
+        },
+        "originComplejoId": {
+          "type": "string",
+          "description": "ID del complejo de origen"
+        },
+        "originComplejoName": {
+          "type": "string",
+          "description": "Nombre del complejo de origen"
+        },
+        "totalBookings": {
+          "type": "number",
+          "description": "Total de reservas realizadas"
+        },
+        "totalMatchesPlayed": {
+          "type": "number",
+          "description": "Total de partidos jugados"
+        },
+        "participatedMatches": {
+          "type": "number",
+          "description": "Partidos participados"
+        },
+        "lastGameDate": {
+          "type": "string",
+          "description": "Fecha del último partido jugado"
+        },
+        "lastGameTime": {
+          "type": "string",
+          "description": "Hora del último partido jugado"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Notas u observaciones del cliente"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID del operador que lo dio de alta"
+        },
+        "adminId": {
+          "type": "string",
+          "description": "ID de control o cadena vacía"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp ISO de creación"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp ISO de actualización"
+        }
+      },
+      "required": ["id", "name", "originComplejoId", "acquisitionChannel"]
+    },
+    "Collaborator": {
+      "title": "Collaborator",
+      "description": "Operador del complejo autenticado mediante Google Auth",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "ID del usuario autenticado"
+        },
+        "email": {
+          "type": "string",
+          "description": "Email provisto por Google Auth"
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre provisto por Google Auth (displayName)"
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "Foto de perfil provista por Google Auth"
+        },
+        "activeComplejoId": {
+          "type": "string",
+          "description": "Complejo seleccionado actualmente para operar"
+        },
+        "memberships": {
+          "type": "array",
+          "description": "Membresías del operador { complejoId, complejoName, role }",
+          "items": {
+            "type": "object",
+            "properties": {
+              "complejoId": { "type": "string" },
+              "complejoName": { "type": "string" },
+              "role": { "type": "string" }
+            },
+            "required": ["complejoId", "complexName", "role"]
+          }
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp ISO de creación"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp ISO de actualización"
+        }
+      },
+      "required": ["uid", "email", "activeComplejoId"]
     }
   },
   "firestore": {
-    "/admins/{adminId}": {
-      "schema": "Admin",
-      "description": "Admin authorization documents"
+    "/complejos/{complejoId}": {
+      "schema": "Complejo",
+      "description": "Documento central de la sede deportiva con array courts"
+    },
+    "/bookings/{bookingId}": {
+      "schema": "Booking",
+      "description": "Reservas de canchas asociadas a la sede mediante complejoId"
     },
     "/users/{userId}": {
-      "schema": "UserProfile",
-      "description": "Customer profiles and user records"
+      "schema": "User",
+      "description": "Clientes y jugadores registrados en el complejo"
     },
-    "/courts/{courtId}": {
-      "schema": "Court",
-      "description": "Sports courts available for booking"
-    },
-    "/matches/{matchId}": {
-      "schema": "Match",
-      "description": "Court bookings and match records"
-    },
-    "/transactions/{transactionId}": {
-      "schema": "Transaction",
-      "description": "Financial income and expense operations"
-    },
-    "/support_tickets/{ticketId}": {
-      "schema": "SupportTicket",
-      "description": "Technical support and helpdesk tickets"
-    },
-    "/venue_profile/{venueId}": {
-      "schema": "VenueProfile",
-      "description": "Venue configuration and business information"
+    "/collaborators/{uid}": {
+      "schema": "Collaborator",
+      "description": "Perfiles de operadores del complejo"
     }
   }
 }
