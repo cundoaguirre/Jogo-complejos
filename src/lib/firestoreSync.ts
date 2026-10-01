@@ -2,6 +2,7 @@ import {
   collection, 
   doc, 
   getDoc,
+  getDocs,
   setDoc, 
   addDoc,
   deleteDoc, 
@@ -111,31 +112,15 @@ export function formatBookingToMatch(b: any): Match {
 // 2.1. Colección Canónica: complejos & Manejo de Canchas (courts array)
 // =========================================================================
 
-export function mapWeeklyScheduleToHours(weeklySchedule: any): any[] {
-  const days = [
-    { label: 'Lunes', key: 'lunes' },
-    { label: 'Martes', key: 'martes' },
-    { label: 'Miércoles', key: 'miercoles' },
-    { label: 'Jueves', key: 'jueves' },
-    { label: 'Viernes', key: 'viernes' },
-    { label: 'Sábado', key: 'sabado' },
-    { label: 'Domingo', key: 'domingo' },
-  ];
-
-  if (!weeklySchedule || typeof weeklySchedule !== 'object') {
-    return days.map(d => ({ day: d.label, open: true, start: '14:00', end: '00:00' }));
-  }
-
-  return days.map(d => {
-    const dayConfig = weeklySchedule[d.key] || weeklySchedule[d.key.replace('é', 'e')] || {};
-    return {
-      day: d.label,
-      open: !dayConfig.isClosed,
-      start: dayConfig.open || '14:00',
-      end: dayConfig.close || '00:00'
-    };
-  });
-}
+export const defaultComplexHours = [
+  { day: 'Lunes', open: true, start: '14:00', end: '00:00' },
+  { day: 'Martes', open: true, start: '14:00', end: '00:00' },
+  { day: 'Miércoles', open: true, start: '14:00', end: '00:00' },
+  { day: 'Jueves', open: true, start: '14:00', end: '00:00' },
+  { day: 'Viernes', open: true, start: '14:00', end: '00:00' },
+  { day: 'Sábado', open: true, start: '14:00', end: '00:00' },
+  { day: 'Domingo', open: true, start: '14:00', end: '00:00' }
+];
 
 /**
  * Escucha las canchas del complejo activo leyendo EXCLUSIVAMENTE
@@ -272,7 +257,7 @@ export function subscribeToVenueProfile(
           address: data.address || '',
           instagram: data.instagram || '',
           description: data.description || data.notes || '',
-          hours: Array.isArray(data.hours) ? data.hours : mapWeeklyScheduleToHours(data.weeklySchedule),
+          hours: Array.isArray(data.hours) ? data.hours : defaultComplexHours,
           services: data.services || ['Estacionamiento', 'Vestuarios', 'Buffet', 'Césped Sintético'],
           courts: data.courts || []
         };
@@ -298,6 +283,7 @@ export async function saveVenueProfileInFirestore(
 ): Promise<void> {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const compRef = doc(db, COMPLEJOS_COLLECTION, targetId);
+  const hoursToSave = Array.isArray(profile.hours) ? profile.hours : defaultComplexHours;
   await setDoc(compRef, {
     name: profile.name || '',
     company: profile.name || profile.company || '',
@@ -305,7 +291,7 @@ export async function saveVenueProfileInFirestore(
     address: profile.address || '',
     instagram: profile.instagram || '',
     description: profile.description || '',
-    hours: Array.isArray(profile.hours) ? profile.hours : mapWeeklyScheduleToHours(profile.hours),
+    hours: hoursToSave,
     services: profile.services || [],
     updatedAt: new Date().toISOString()
   }, { merge: true });
@@ -359,12 +345,51 @@ export function subscribeToBookings(
 }
 
 /**
+ * Sincroniza las métricas y estado del usuario en Firestore a partir de sus reservas reales
+ */
+export async function syncUserMetricsWithBookings(userId: string | number): Promise<void> {
+  const uId = String(userId);
+  if (!uId || uId === '0') return;
+
+  try {
+    const colRef = collection(db, BOOKINGS_COLLECTION);
+    const q = query(colRef, where('userId', '==', uId));
+    const snap = await getDocs(q);
+    const bookings = snap.docs.map(d => d.data());
+
+    const totalBookings = bookings.length;
+    const totalPlayed = bookings.filter(b => b.status === 'jugado').length;
+    const dates = bookings.map(b => b.date).filter(Boolean).sort();
+    const firstDate = dates[0] || null;
+    const lastDate = dates[dates.length - 1] || '';
+
+    const userRef = doc(db, USERS_COLLECTION, uId);
+    const uSnap = await getDoc(userRef);
+    if (uSnap.exists()) {
+      await updateDoc(userRef, {
+        totalBookings,
+        totalMatchesPlayed: totalPlayed,
+        matches_played: totalPlayed,
+        isActivated: totalBookings > 0,
+        activationDate: firstDate,
+        lastGameDate: lastDate,
+        updatedAt: new Date().toISOString()
+      });
+      console.log(`[Firestore] Métricas sincronizadas para usuario ${uId}: ${totalBookings} reservas, ${totalPlayed} jugados`);
+    }
+  } catch (err) {
+    console.warn('[Firestore] Error sincronizando métricas de usuario:', err);
+  }
+}
+
+/**
  * Crea una reserva en la colección canónica 'bookings' cumpliendo el contrato de esquema
  */
 export async function createBookingInFirestore(data: {
   complejoId: string;
   complejoName?: string;
   courtName: string;
+  courtId?: string | number;
   date: string;
   startTime: string;
   endTime: string;
@@ -396,11 +421,46 @@ export async function createBookingInFirestore(data: {
     : (deposit >= price && price > 0 ? 'pagado' : (deposit > 0 ? 'seña' : 'pendiente'));
 
   const status = data.status === 'confirmed' ? 'confirmado' : (data.status === 'cancelled' ? 'cancelado' : (data.status || 'confirmado'));
+  const resolvedCourtId = data.courtId || data.court_id || 'c_1';
+  const resolvedCourtName = data.courtName || data.court_name || 'Cancha 1';
+  const resolvedUserId = data.userId || data.host_id || '0';
+  const resolvedUserName = (data.userName || data.clientName || 'Cliente').trim();
+
+  // Control preventivo de conflicto / double-booking en Firestore
+  try {
+    const qExisting = query(
+      colRef,
+      where('complejoId', '==', targetComplexId),
+      where('date', '==', data.date)
+    );
+    const snapExisting = await getDocs(qExisting);
+    const conflict = snapExisting.docs.find(d => {
+      const b = d.data();
+      if (b.status === 'cancelado' || b.status === 'cancelled') return false;
+      const sameCourt = String(b.courtId || b.court_id) === String(resolvedCourtId) ||
+                        String(b.courtName || b.court_name) === String(resolvedCourtName);
+      const sameTime = String(b.startTime || b.start_time) === String(startTime);
+      return sameCourt && sameTime;
+    });
+
+    if (conflict) {
+      throw new Error(`Conflicto de turno: La cancha "${resolvedCourtName}" ya se encuentra reservada para la fecha ${data.date} a las ${startTime} hs.`);
+    }
+  } catch (conflictErr: any) {
+    if (conflictErr.message?.includes('Conflicto de turno:')) {
+      throw conflictErr;
+    }
+    console.warn('[Firestore] Advertencia verificando conflictos:', conflictErr);
+  }
 
   const payload = {
     complejoId: targetComplexId,
+    complexId: targetComplexId,
     complejoName: data.complejoName || 'Colo loco',
-    courtName: data.courtName || 'Cancha 1',
+    courtId: String(resolvedCourtId),
+    court_id: String(resolvedCourtId),
+    courtName: resolvedCourtName,
+    court_name: resolvedCourtName,
     date: data.date,
     startTime,
     endTime,
@@ -409,10 +469,15 @@ export async function createBookingInFirestore(data: {
     deposit,
     status,
     paymentStatus,
-    userId: data.userId ? String(data.userId) : '0',
-    userName: (data.userName || data.clientName || 'Cliente').trim(),
+    userId: String(resolvedUserId),
+    host_id: String(resolvedUserId),
+    userName: resolvedUserName,
+    clientName: resolvedUserName,
+    host_name: resolvedUserName,
     userPhone: (data.userPhone || data.clientPhone || '').trim(),
+    clientPhone: (data.userPhone || data.clientPhone || '').trim(),
     userEmail: (data.userEmail || data.clientEmail || '').trim(),
+    clientEmail: (data.userEmail || data.clientEmail || '').trim(),
     notes: data.notes || '',
     ownerId: auth.currentUser?.uid || data.ownerId || '',
     adminId: data.adminId || '',
@@ -422,6 +487,11 @@ export async function createBookingInFirestore(data: {
 
   const docRef = await addDoc(colRef, payload);
   console.log('[Firestore] Reserva creada exitosamente en bookings/', docRef.id);
+  
+  if (payload.userId && payload.userId !== '0') {
+    syncUserMetricsWithBookings(payload.userId);
+  }
+
   return docRef.id;
 }
 
@@ -433,10 +503,26 @@ export async function updateBookingInFirestore(
   patch: Record<string, any>
 ): Promise<void> {
   const docRef = doc(db, BOOKINGS_COLLECTION, String(bookingId));
+  
+  let targetUserId = patch.userId;
+  if (!targetUserId) {
+    try {
+      const snap = await getDoc(docRef);
+      if (snap.exists()) {
+        targetUserId = snap.data().userId;
+      }
+    } catch (e) {}
+  }
+
   await updateDoc(docRef, {
     ...patch,
     updatedAt: new Date().toISOString()
   });
+
+  const finalUserId = patch.userId || targetUserId;
+  if (finalUserId && finalUserId !== '0') {
+    syncUserMetricsWithBookings(finalUserId);
+  }
 }
 
 /**
@@ -444,7 +530,19 @@ export async function updateBookingInFirestore(
  */
 export async function deleteBookingInFirestore(bookingId: string | number): Promise<void> {
   const docRef = doc(db, BOOKINGS_COLLECTION, String(bookingId));
+  let userId: string | null = null;
+  try {
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      userId = snap.data().userId;
+    }
+  } catch (e) {}
+
   await deleteDoc(docRef);
+
+  if (userId && userId !== '0') {
+    syncUserMetricsWithBookings(userId);
+  }
 }
 
 // =========================================================================
