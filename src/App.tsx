@@ -18,6 +18,8 @@ import { logCrashReport } from './logger';
 import { ContactSupportModal } from './components/ContactSupportModal';
 import { useFirebase } from './components/FirebaseContext';
 import { ActivationView } from './components/ActivationView';
+import { LandingAuthView } from './components/LandingAuthView';
+import { calculateUserLifecycleMetrics, formatDDMMYY } from './lib/userMetrics';
 import { doc, getDoc, getDocs, collection, query, where, serverTimestamp } from 'firebase/firestore';
 import { db, auth } from './lib/firebase';
 import { 
@@ -142,7 +144,10 @@ const Sidebar = ({
   isDarkMode, 
   onToggleDarkMode,
   activeComplex,
-  onOpenActivation
+  onOpenActivation,
+  user,
+  collaboratorData,
+  onLogout
 }: { 
   active: NavTabId | string, 
   onNavigate: (tab: NavTabId) => void, 
@@ -152,7 +157,10 @@ const Sidebar = ({
   isDarkMode?: boolean, 
   onToggleDarkMode?: () => void,
   activeComplex?: any | null,
-  onOpenActivation?: () => void
+  onOpenActivation?: () => void,
+  user?: any,
+  collaboratorData?: any,
+  onLogout?: () => void
 }) => {
   // Context-sensitive menu items
   const getMenuItems = () => {
@@ -322,14 +330,34 @@ const Sidebar = ({
             </button>
           </div>
 
-          <div className="flex items-center gap-3 px-1">
-            <div className="w-10 h-10 rounded-full bg-emerald-900 flex items-center justify-center text-emerald-400 font-bold">
-              CC
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-2.5 min-w-0">
+              {user?.photoURL ? (
+                <img src={user.photoURL} alt={user.displayName || 'Operador'} className="w-9 h-9 rounded-full object-cover border border-slate-700 flex-shrink-0" />
+              ) : (
+                <div className="w-9 h-9 rounded-full bg-emerald-900/80 flex items-center justify-center text-emerald-400 font-bold text-xs flex-shrink-0 border border-emerald-700/50">
+                  {user?.displayName?.[0] || user?.email?.[0] || 'O'}
+                </div>
+              )}
+              <div className="min-w-0">
+                <div className="font-bold text-xs text-white truncate max-w-[120px]">
+                  {activeComplex?.name || collaboratorData?.memberships?.[0]?.complexName || 'Mi Sede'}
+                </div>
+                <div className="text-[10px] text-slate-400 truncate max-w-[120px]">
+                  {user?.email || 'Operador'}
+                </div>
+              </div>
             </div>
-            <div>
-              <div className="font-bold text-sm">Complejo Central</div>
-              <div className="text-xs text-slate-500">Admin</div>
-            </div>
+            {onLogout && (
+              <button
+                type="button"
+                onClick={onLogout}
+                title="Cerrar Sesión"
+                className="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <LogOut size={16} />
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -3503,6 +3531,7 @@ const NewUserModal = ({ isOpen, onClose, onSave }: { isOpen: boolean; onClose: (
 
 const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complejo_central' }: { onUserClick: (id: number | string) => void, refreshKey?: number, onDataChange?: () => void, complexId?: string }) => {
   const [users, setUsers] = useState<User[]>([]);
+  const [bookings, setBookings] = useState<Match[]>([]);
   const parentRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState('');
   const [showNewUserModal, setShowNewUserModal] = useState(false);
@@ -3515,19 +3544,85 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
 
   useEffect(() => {
     let isMounted = true;
+    if (!complexId) return;
 
-    // Real-time Firestore sync
-    const unsub = subscribeToClients(complexId, (clientsList) => {
+    // Real-time Firestore sync for users
+    const unsubUsers = subscribeToClients(complexId, (clientsList) => {
       if (Array.isArray(clientsList) && isMounted) {
         setUsers(clientsList);
       }
     });
 
+    // Real-time Firestore sync for bookings to cross-reference B_u in memory
+    const unsubBookings = subscribeToBookings(complexId, (bookingsList) => {
+      if (Array.isArray(bookingsList) && isMounted) {
+        setBookings(bookingsList);
+      }
+    });
+
     return () => {
       isMounted = false;
-      unsub();
+      unsubUsers();
+      unsubBookings();
     };
   }, [complexId, refreshKey]);
+
+  // Indexar reservas por userId y por userPhone para lookup O(1) de B_u
+  const bookingsByUser = useMemo(() => {
+    const byId: Record<string, Match[]> = {};
+    const byPhone: Record<string, Match[]> = {};
+
+    for (const b of bookings) {
+      if (b.userId && String(b.userId) !== '0') {
+        const uId = String(b.userId);
+        if (!byId[uId]) byId[uId] = [];
+        byId[uId].push(b);
+      }
+      const rawPhone = b.userPhone || (b as any).clientPhone;
+      if (rawPhone) {
+        const p = String(rawPhone).trim();
+        if (p) {
+          if (!byPhone[p]) byPhone[p] = [];
+          byPhone[p].push(b);
+        }
+      }
+    }
+    return { byId, byPhone };
+  }, [bookings]);
+
+  // Mapa de métricas analíticas de ciclo de vida calculadas al vuelo en la UI
+  const userMetricsMap = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof calculateUserLifecycleMetrics>>();
+    const now = new Date();
+
+    for (const user of users) {
+      const uId = String(user.id);
+      const uPhone = user.phone ? String(user.phone).trim() : '';
+
+      // B_u = { b in bookings | b.userId == u.id || b.userPhone == u.phone }
+      const associatedList: Match[] = [];
+      const seenIds = new Set<string>();
+
+      const addBooking = (b: Match) => {
+        const bId = String(b.id || `${b.date}_${b.startTime}_${b.courtId}`);
+        if (!seenIds.has(bId)) {
+          seenIds.add(bId);
+          associatedList.push(b);
+        }
+      };
+
+      if (bookingsByUser.byId[uId]) {
+        bookingsByUser.byId[uId].forEach(addBooking);
+      }
+      if (uPhone && bookingsByUser.byPhone[uPhone]) {
+        bookingsByUser.byPhone[uPhone].forEach(addBooking);
+      }
+
+      const metrics = calculateUserLifecycleMetrics(user, associatedList, now);
+      map.set(uId, metrics);
+    }
+    return map;
+  }, [users, bookingsByUser]);
 
   const handleCreateUser = async (userData: any) => {
     try {
@@ -3541,11 +3636,14 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
 
   const filteredUsers = (Array.isArray(users) ? users : []).filter(user => {
     if (!user) return false;
+    const metrics = userMetricsMap.get(String(user.id));
+    if (!metrics) return false;
+
     // Search Filter
     const searchLower = (search || '').toLowerCase();
     const userName = (user.name || '').toLowerCase();
     const userPhone = String(user.phone || '');
-    const userAddress = (user.address || '').toLowerCase();
+    const userAddress = (user.address || (user as any).city || '').toLowerCase();
 
     const matchesSearch = 
       userName.includes(searchLower) ||
@@ -3557,39 +3655,41 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
     const now = new Date();
 
     // Acquisition Filter
-    if (filters.acquisition !== 'all' && user.created_at) {
-      const date = safeParseDate(user.created_at);
-      if (date) {
-        if (filters.acquisition === 'today' && !isSameDay(date, now)) return false;
-        if (filters.acquisition === 'week' && !isSameWeek(date, now)) return false;
-        if (filters.acquisition === 'month' && !isSameMonth(date, now)) return false;
+    if (filters.acquisition !== 'all') {
+      const rawAdq = user.acquisitionDate || (user as any).acquisition_date || user.created_at;
+      const adqDate = rawAdq ? safeParseDate(rawAdq) : null;
+      if (adqDate) {
+        if (filters.acquisition === 'today' && !isSameDay(adqDate, now)) return false;
+        if (filters.acquisition === 'week' && !isSameWeek(adqDate, now)) return false;
+        if (filters.acquisition === 'month' && !isSameMonth(adqDate, now)) return false;
       }
     }
 
     // Activation Filter
-    if (filters.activation !== 'all' && user.first_visit) {
-      const date = safeParseDate(user.first_visit);
-      if (date) {
-        if (filters.activation === 'today' && !isSameDay(date, now)) return false;
-        if (filters.activation === 'week' && !isSameWeek(date, now)) return false;
-        if (filters.activation === 'month' && !isSameMonth(date, now)) return false;
+    if (filters.activation !== 'all') {
+      if (!metrics.isActivated) {
+        return false;
+      }
+      const rawAct = user.activationDate || (user as any).activation_date || user.first_visit;
+      const actDate = rawAct ? safeParseDate(rawAct) : null;
+      if (actDate) {
+        if (filters.activation === 'today' && !isSameDay(actDate, now)) return false;
+        if (filters.activation === 'week' && !isSameWeek(actDate, now)) return false;
+        if (filters.activation === 'month' && !isSameMonth(actDate, now)) return false;
       }
     }
 
-    // Retention Filter (Last Game)
-    if (filters.retention !== 'all' && user.last_visit) {
-      const lastDate = safeParseDate(user.last_visit);
-      if (lastDate) {
-        const days = differenceInDays(now, lastDate);
-        if (filters.retention === 'green' && days > 15) return false;
-        if (filters.retention === 'yellow' && (days <= 15 || days > 30)) return false;
-        if (filters.retention === 'red' && days <= 30) return false;
-      }
+    // Retention Filter (Días sin Jugar)
+    if (filters.retention !== 'all') {
+      const days = metrics.sinJugarDays;
+      if (filters.retention === 'green' && (days === null || days > 15)) return false;
+      if (filters.retention === 'yellow' && (days === null || days <= 15 || days > 30)) return false;
+      if (filters.retention === 'red' && (days !== null && days <= 30)) return false;
     }
 
     // Matches Played Filter
     if (filters.matches !== 'all') {
-      const played = Number(user.matches_played || 0);
+      const played = metrics.juegos;
       if (filters.matches === '0-5' && played > 5) return false;
       if (filters.matches === '5-20' && (played <= 5 || played > 20)) return false;
       if (filters.matches === '20+' && played <= 20) return false;
@@ -3697,28 +3797,26 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
 
       <div className="w-full bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700/60 overflow-hidden">
         <div className="overflow-x-auto w-full">
-          <table className="w-full text-[11px] text-left min-w-[750px] bg-white dark:bg-slate-800">
-            <thead className="sticky top-0 z-20 bg-gray-50 dark:bg-slate-800/90 text-gray-500 dark:text-slate-400 font-medium whitespace-nowrap shadow-sm shadow-gray-200/50 dark:shadow-none">
+          <table className="w-full text-[11px] text-left min-w-[850px] bg-white dark:bg-slate-800">
+            <thead className="sticky top-0 z-20 bg-gray-50 dark:bg-slate-800/90 text-gray-500 dark:text-slate-400 font-medium whitespace-nowrap shadow-sm shadow-gray-200/50 dark:shadow-none border-b border-gray-100 dark:border-slate-700/60">
               <tr>
-                <th className="pl-6 md:pl-4 pr-2 py-3">Usuario</th>
-                <th className="px-2 py-3">Teléfono</th>
+                <th className="pl-6 md:pl-4 pr-2 py-3">Jugador</th>
+                <th className="px-2 py-3 text-center">Frec</th>
                 <th className="px-2 py-3">Adquisición</th>
                 <th className="px-2 py-3">Activación</th>
-                <th className="px-2 py-3">Ubicación</th>
-                <th className="px-2 py-3 text-center">Partidos</th>
-                <th className="px-2 py-3 text-center">Ciclo Vida</th>
-                <th className="px-2 py-3">Última Vez</th>
-                <th className="px-2 py-3">Estado</th>
+                <th className="px-2 py-3 text-center">TTV</th>
+                <th className="px-2 py-3 text-center">Sem. Act.</th>
+                <th className="px-2 py-3 text-center">Juegos</th>
+                <th className="px-2 py-3">Último Juego</th>
+                <th className="px-2 py-3 text-center">Sin Jugar</th>
+                <th className="px-2 py-3 text-center">Ciclo</th>
                 <th className="pr-6 md:pr-4 pl-2 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100 dark:divide-slate-700/60">
               {filteredUsers.map((user, uIdx) => {
                 if (!user) return null;
-                const lastDate = safeParseDate(user.last_visit);
-                const daysSinceLastPlay = lastDate ? differenceInDays(new Date(), lastDate) : 0;
-                const firstDate = safeParseDate(user.first_visit);
-                const lifecycleDays = firstDate ? differenceInDays(new Date(), firstDate) : 0;
+                const metrics = userMetricsMap.get(String(user.id)) || calculateUserLifecycleMetrics(user, [], new Date());
                 
                 return (
                   <tr 
@@ -3730,39 +3828,72 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
                       onUserClick(user.id);
                     }}
                   >
+                    {/* 1. Jugador */}
                     <td className="pl-6 md:pl-4 pr-2 py-3">
                       <div className="flex items-center gap-2">
                         <div className="w-7 h-7 rounded-full bg-emerald-100 dark:bg-emerald-900/50 flex items-center justify-center font-bold text-emerald-700 dark:text-emerald-300 border-2 border-white dark:border-slate-800 shadow-sm flex-shrink-0 text-xs">
                           {user.name?.charAt(0).toUpperCase() || '?'}
                         </div>
                         <div className="min-w-0 max-w-[130px]">
-                          <div className="font-medium text-gray-900 dark:text-slate-100 truncate">{user.name}</div>
-                          <div className="text-[9px] text-gray-500 dark:text-slate-400 truncate">{user.email?.includes('sin-correo.com') ? 'Sin correo' : user.email}</div>
+                          <div className="font-bold text-gray-900 dark:text-slate-100 truncate">{user.name}</div>
+                          <div className="text-[9px] text-gray-500 dark:text-slate-400 truncate">{user.phone || (user.email?.includes('sin-correo.com') ? 'Sin teléfono' : user.email)}</div>
                         </div>
                       </div>
                     </td>
-                    <td className="px-2 py-3 text-gray-500 dark:text-slate-400 font-mono text-[10px] whitespace-nowrap">{user.phone || '-'}</td>
-                    <td className="px-2 py-3 text-gray-500 dark:text-slate-400">{safeFormatDate(user.created_at, 'dd/MM/yy')}</td>
-                    <td className="px-2 py-3 text-gray-500 dark:text-slate-400">{safeFormatDate(user.first_visit, 'dd/MM/yy')}</td>
-                    <td className="px-2 py-3 text-gray-500 dark:text-slate-400 max-w-[100px] truncate" title={user.address}>{user.address || '-'}</td>
+
+                    {/* 2. Frec */}
+                    <td className="px-2 py-3 text-center font-mono font-medium text-gray-700 dark:text-slate-300">
+                      {metrics.frecuencia}
+                    </td>
+
+                    {/* 3. Adquisición */}
+                    <td className="px-2 py-3 text-gray-600 dark:text-slate-400 font-mono text-[10px] whitespace-nowrap">
+                      {metrics.adquisicionFormatted}
+                    </td>
+
+                    {/* 4. Activación */}
+                    <td className="px-2 py-3 text-gray-600 dark:text-slate-400 font-mono text-[10px] whitespace-nowrap">
+                      {metrics.activacionFormatted}
+                    </td>
+
+                    {/* 5. TTV */}
+                    <td className="px-2 py-3 text-center font-mono text-gray-600 dark:text-slate-400">
+                      {metrics.ttvFormatted}
+                    </td>
+
+                    {/* 6. Sem. Act. */}
+                    <td className="px-2 py-3 text-center">
+                      {metrics.semanaActFormatted !== '-' ? (
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-mono font-bold text-[10px]">
+                          {metrics.semanaActFormatted}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 font-mono">-</span>
+                      )}
+                    </td>
+
+                    {/* 7. Juegos */}
                     <td className="px-2 py-3 font-medium text-center">
-                      <span className="bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-200 px-2 py-0.5 rounded-md">{user.matches_played ?? 0}</span>
-                    </td>
-                    <td className="px-2 py-3 text-gray-500 dark:text-slate-400 text-center">{lifecycleDays}d</td>
-                    <td className="px-2 py-3 text-gray-500 dark:text-slate-400">
-                      <div>{safeFormatDate(user.last_visit, 'dd/MM/yy')}</div>
-                      {user.last_visit && <div className="text-[10px] text-gray-400 dark:text-slate-500 mt-0.5">Hace {daysSinceLastPlay} días</div>}
-                    </td>
-                    <td className="px-2 py-3">
-                      <span className={cn(
-                        "px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wide border",
-                        daysSinceLastPlay <= 15 ? "bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 border-emerald-100 dark:border-emerald-900/60" :
-                        daysSinceLastPlay <= 30 ? "bg-yellow-50 dark:bg-yellow-950/40 text-yellow-700 dark:text-yellow-400 border-yellow-100 dark:border-yellow-900/60" :
-                        "bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-400 border-red-100 dark:border-red-900/60"
-                      )}>
-                        {daysSinceLastPlay <= 15 ? 'Activo' : daysSinceLastPlay <= 30 ? 'Riesgo' : 'Inactivo'}
+                      <span className="bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-200 px-2 py-0.5 rounded-md font-mono font-semibold">
+                        {metrics.juegos}
                       </span>
                     </td>
+
+                    {/* 8. Último Juego */}
+                    <td className="px-2 py-3 text-gray-600 dark:text-slate-400 font-mono text-[10px] whitespace-nowrap">
+                      {metrics.ultimoJuegoFormatted}
+                    </td>
+
+                    {/* 9. Sin Jugar */}
+                    <td className="px-2 py-3 text-center font-mono text-gray-600 dark:text-slate-400">
+                      {metrics.sinJugarFormatted}
+                    </td>
+
+                    {/* 10. Ciclo */}
+                    <td className="px-2 py-3 text-center font-mono text-gray-600 dark:text-slate-400">
+                      {metrics.cicloFormatted}
+                    </td>
+
                     <td className="pr-6 md:pr-4 pl-2 py-3 text-right">
                       <ChevronRight size={14} className="text-gray-300 dark:text-slate-500 group-hover:text-gray-500 dark:group-hover:text-slate-300 transition-colors" />
                     </td>
@@ -6374,12 +6505,14 @@ export default function App() {
   // Firebase Auth, Active Complex & Database Hook
   const { 
     user, 
+    loading,
     isAdmin, 
     signInWithGoogle, 
     logout, 
-    activeComplexId: contextComplexId, 
+    activeComplexId, 
     activeComplejoName,
     activeComplex, 
+    collaboratorData,
     setActiveComplexId 
   } = useFirebase();
 
@@ -6455,10 +6588,14 @@ export default function App() {
   const [courts, setCourts] = useState<Court[]>([]);
   const [users, setUsers] = useState<User[]>([]);
 
-  const activeComplexId = contextComplexId || getActiveComplexId(user);
-
-  // Real-time synchronization for users and courts from shared Firestore database
+  // Sincronización en tiempo real estrictamente ligada al complejo asignado del operador autenticado
   useEffect(() => {
+    if (!activeComplexId || !user) {
+      setUsers([]);
+      setCourts([]);
+      return;
+    }
+
     const unsubUsers = subscribeToClients(activeComplexId, (firestoreUsers) => {
       setUsers(firestoreUsers);
     });
@@ -6471,7 +6608,7 @@ export default function App() {
       unsubUsers();
       unsubCourts();
     };
-  }, [activeComplexId, refreshKey]);
+  }, [activeComplexId, user, refreshKey]);
 
   const handleSidebarAction = (action: string) => {
     if (action === 'exposure') setShowExposureStats(true);
@@ -6576,7 +6713,23 @@ export default function App() {
     setRefreshKey(prev => prev + 1);
   };
 
-  // Interceptor for /activar route or ?codigo=... query parameter
+  // 1. Pantalla de carga mientras se verifica el estado de autenticación de Firebase
+  if (loading) {
+    return (
+      <div className="flex w-full h-[100dvh] items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100">
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-600 to-[#0BA70B] flex items-center justify-center shadow-lg shadow-emerald-500/25 animate-pulse">
+            <span className="text-white font-black text-2xl tracking-tighter">J</span>
+          </div>
+          <div className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+            Iniciando Jogo SaaS...
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Interceptor de ruta /activar o ?codigo=... para canje de sedes
   if (isActivationRoute) {
     return (
       <ActivationView
@@ -6603,6 +6756,49 @@ export default function App() {
     );
   }
 
+  // 3. Regla de Aislamiento Inmutable (Auth Wall):
+  // Si auth.currentUser === null => Renderizar Landing / Login View
+  if (!user) {
+    return (
+      <LandingAuthView
+        onSignInWithGoogle={signInWithGoogle}
+        onClaimWithCode={(code) => {
+          window.history.pushState({}, '', '/activar?codigo=' + encodeURIComponent(code));
+          setCurrentPath('/activar');
+          setSearchParams(new URLSearchParams({ codigo: code }));
+        }}
+        isDarkMode={isDarkMode}
+        onToggleDarkMode={toggleDarkMode}
+      />
+    );
+  }
+
+  // 4. Si el usuario está autenticado pero no tiene complejo asignado (collaboratorDoc === null):
+  // Solicitar canje de código de activación de su sede para prevenir cruce de datos
+  if (!collaboratorData || !activeComplexId) {
+    return (
+      <ActivationView
+        initialCode=""
+        isDarkMode={isDarkMode}
+        onNavigateHome={() => {
+          logout();
+        }}
+        onSuccess={(newComplexId, complexName) => {
+          setActiveComplexId(newComplexId);
+          try {
+            localStorage.setItem('activeComplexId', newComplexId);
+          } catch (e) {}
+          window.history.pushState({}, '', '/');
+          setCurrentPath('/');
+          setSearchParams(new URLSearchParams());
+          setActiveTab('schedule');
+          setRefreshKey(prev => prev + 1);
+          setActivationSuccessBanner(`¡Complejo "${complexName}" activado exitosamente!`);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex w-full h-[100dvh] overflow-hidden bg-white dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 transition-colors">
       <Sidebar 
@@ -6614,6 +6810,9 @@ export default function App() {
         isDarkMode={isDarkMode}
         onToggleDarkMode={toggleDarkMode}
         activeComplex={activeComplex}
+        user={user}
+        collaboratorData={collaboratorData}
+        onLogout={logout}
         onOpenActivation={() => {
           window.history.pushState({}, '', '/activar');
           setCurrentPath('/activar');
@@ -6652,47 +6851,29 @@ export default function App() {
               </div>
             )}
             
-            {/* Firebase Auth button / User profile */}
-            {user ? (
-              <div className="flex items-center gap-2 bg-white/15 dark:bg-black/20 hover:bg-white/25 transition-all rounded-full py-1 pl-1.5 pr-2.5 border border-white/20 text-white shadow-sm">
-                {user.photoURL ? (
-                  <img src={user.photoURL} alt={user.displayName || 'Usuario'} className="w-7 h-7 rounded-full object-cover border border-white/40" />
-                ) : (
-                  <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center font-bold text-xs uppercase text-white">
-                    {user.displayName?.[0] || user.email?.[0] || 'U'}
-                  </div>
-                )}
-                <div className="hidden md:flex flex-col text-left">
-                  <span className="text-xs font-semibold leading-tight truncate max-w-[120px]">{user.displayName || user.email?.split('@')[0]}</span>
-                  {isAdmin && <span className="text-[9px] uppercase tracking-wider text-emerald-200 font-bold">Admin</span>}
+            {/* Perfil del operador autenticado & Cerrar Sesión */}
+            <div className="flex items-center gap-2 bg-white/15 dark:bg-black/20 hover:bg-white/25 transition-all rounded-full py-1 pl-1.5 pr-2.5 border border-white/20 text-white shadow-sm">
+              {user?.photoURL ? (
+                <img src={user.photoURL} alt={user.displayName || 'Usuario'} className="w-7 h-7 rounded-full object-cover border border-white/40" />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center font-bold text-xs uppercase text-white">
+                  {user?.displayName?.[0] || user?.email?.[0] || 'U'}
                 </div>
-                <button
-                  type="button"
-                  onClick={logout}
-                  title="Cerrar sesión de Firebase"
-                  className="p-1 hover:text-red-200 transition-colors ml-0.5 cursor-pointer text-white/90"
-                  aria-label="Cerrar sesión"
-                >
-                  <LogOut size={16} />
-                </button>
+              )}
+              <div className="hidden md:flex flex-col text-left">
+                <span className="text-xs font-semibold leading-tight truncate max-w-[120px]">{user?.displayName || user?.email?.split('@')[0]}</span>
+                {isAdmin && <span className="text-[9px] uppercase tracking-wider text-emerald-200 font-bold">Admin</span>}
               </div>
-            ) : (
               <button
                 type="button"
-                onClick={signInWithGoogle}
-                className="flex items-center gap-1.5 bg-white text-slate-800 hover:bg-slate-100 px-3 py-1.5 rounded-full font-bold text-xs shadow-md transition-all active:scale-95 cursor-pointer"
-                title="Acceder con cuenta de Google (Firebase)"
+                onClick={logout}
+                title="Cerrar sesión"
+                className="p-1 hover:text-red-200 transition-colors ml-0.5 cursor-pointer text-white/90"
+                aria-label="Cerrar sesión"
               >
-                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24">
-                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
-                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
-                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
-                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
-                </svg>
-                <span className="hidden sm:inline">Google</span>
-                <span className="sm:hidden">Entrar</span>
+                <LogOut size={16} />
               </button>
-            )}
+            </div>
 
             {/* Night mode toggle button in Header */}
             <button 

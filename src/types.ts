@@ -52,6 +52,7 @@ export interface Match {
   complejoId?: string;
   complejoName?: string;
   host_id: number | string;
+  userId?: string | number;
   start_time: string;
   end_time: string;
   startTime?: string;

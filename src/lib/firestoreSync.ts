@@ -347,35 +347,72 @@ export function subscribeToBookings(
 /**
  * Sincroniza las métricas y estado del usuario en Firestore a partir de sus reservas reales
  */
-export async function syncUserMetricsWithBookings(userId: string | number): Promise<void> {
-  const uId = String(userId);
-  if (!uId || uId === '0') return;
+export async function syncUserMetricsWithBookings(userId: string | number, userPhone?: string): Promise<void> {
+  const uId = String(userId || '');
+  if ((!uId || uId === '0') && !userPhone) return;
 
   try {
     const colRef = collection(db, BOOKINGS_COLLECTION);
-    const q = query(colRef, where('userId', '==', uId));
-    const snap = await getDocs(q);
-    const bookings = snap.docs.map(d => d.data());
+    let bookings: any[] = [];
+
+    if (uId && uId !== '0') {
+      const q = query(colRef, where('userId', '==', uId));
+      const snap = await getDocs(q);
+      bookings = snap.docs.map(d => d.data());
+    }
+
+    if (bookings.length === 0 && userPhone) {
+      const qPhone = query(colRef, where('userPhone', '==', String(userPhone).trim()));
+      const snapPhone = await getDocs(qPhone);
+      bookings = snapPhone.docs.map(d => d.data());
+    }
 
     const totalBookings = bookings.length;
-    const totalPlayed = bookings.filter(b => b.status === 'jugado').length;
-    const dates = bookings.map(b => b.date).filter(Boolean).sort();
+    const validBookings = bookings.filter(b => {
+      const st = String(b.status || '').toLowerCase();
+      return st !== 'cancelled' && st !== 'cancelado';
+    });
+
+    const totalPlayed = validBookings.filter(b => {
+      const st = String(b.status || '').toLowerCase();
+      return st === 'jugado' || st === 'confirmado' || st === 'completed';
+    }).length;
+
+    const dates = validBookings.map(b => b.date).filter(Boolean).sort();
     const firstDate = dates[0] || null;
     const lastDate = dates[dates.length - 1] || '';
 
-    const userRef = doc(db, USERS_COLLECTION, uId);
-    const uSnap = await getDoc(userRef);
-    if (uSnap.exists()) {
-      await updateDoc(userRef, {
+    // Buscar doc de usuario por ID
+    let targetDocRef = uId && uId !== '0' ? doc(db, USERS_COLLECTION, uId) : null;
+    let uSnap = targetDocRef ? await getDoc(targetDocRef) : null;
+
+    // Si no se encontró por ID pero hay userPhone, buscar por teléfono
+    if ((!uSnap || !uSnap.exists()) && userPhone) {
+      const usersCol = collection(db, USERS_COLLECTION);
+      const qUser = query(usersCol, where('phone', '==', String(userPhone).trim()));
+      const userSnap = await getDocs(qUser);
+      if (!userSnap.empty) {
+        targetDocRef = doc(db, USERS_COLLECTION, userSnap.docs[0].id);
+        uSnap = userSnap.docs[0];
+      }
+    }
+
+    if (targetDocRef && uSnap && uSnap.exists()) {
+      const uData = uSnap.data();
+      const existingActivationDate = uData.activationDate || null;
+      const activationDate = existingActivationDate || firstDate;
+      const lastGameDate = (!uData.lastGameDate || (lastDate && lastDate > uData.lastGameDate)) ? (lastDate || uData.lastGameDate || '') : uData.lastGameDate;
+
+      await updateDoc(targetDocRef, {
         totalBookings,
         totalMatchesPlayed: totalPlayed,
         matches_played: totalPlayed,
-        isActivated: totalBookings > 0,
-        activationDate: firstDate,
-        lastGameDate: lastDate,
+        isActivated: Boolean(activationDate),
+        activationDate,
+        lastGameDate,
         updatedAt: new Date().toISOString()
       });
-      console.log(`[Firestore] Métricas sincronizadas para usuario ${uId}: ${totalBookings} reservas, ${totalPlayed} jugados`);
+      console.log(`[Firestore] Métricas de ciclo de vida actualizadas para usuario ${uSnap.id}: ${totalBookings} reservas, ${totalPlayed} jugados`);
     }
   } catch (err) {
     console.warn('[Firestore] Error sincronizando métricas de usuario:', err);
@@ -489,7 +526,9 @@ export async function createBookingInFirestore(data: {
   console.log('[Firestore] Reserva creada exitosamente en bookings/', docRef.id);
   
   if (payload.userId && payload.userId !== '0') {
-    syncUserMetricsWithBookings(payload.userId);
+    syncUserMetricsWithBookings(payload.userId, payload.userPhone);
+  } else if (payload.userPhone) {
+    syncUserMetricsWithBookings('', payload.userPhone);
   }
 
   return docRef.id;
@@ -520,8 +559,9 @@ export async function updateBookingInFirestore(
   });
 
   const finalUserId = patch.userId || targetUserId;
-  if (finalUserId && finalUserId !== '0') {
-    syncUserMetricsWithBookings(finalUserId);
+  const finalPhone = patch.userPhone || patch.clientPhone;
+  if ((finalUserId && finalUserId !== '0') || finalPhone) {
+    syncUserMetricsWithBookings(finalUserId || '', finalPhone);
   }
 }
 
