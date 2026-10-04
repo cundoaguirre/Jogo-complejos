@@ -105,6 +105,7 @@ export interface CanonicalUser {
   participatedMatches: number;
   lastGameDate: string;
   lastGameTime: string;
+  debt?: number;
   notes: string;
   ownerId: string;
   adminId: string;
@@ -145,6 +146,7 @@ export interface User {
   participatedMatches?: number;
   lastGameDate?: string;
   lastGameTime?: string;
+  debt?: number;
   notes?: string;
   ownerId?: string;
   adminId?: string;
@@ -152,13 +154,62 @@ export interface User {
   updatedAt?: string;
 }
 
+export interface Product {
+  id: string;
+  complejoId: string;
+  name: string;
+  categoryId: string;
+  purchasePrice: number;
+  salePrice: number;
+  stock: number;
+  status: 'activo' | 'inactivo';
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export interface TransactionPayment {
+  method: 'efectivo' | 'transferencia' | 'tarjeta' | 'fiado';
+  amount: number;
+}
+
+export interface TransactionItem {
+  productId?: string;
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  subtotal: number;
+}
+
+export interface POSTransaction {
+  id: string;
+  complejoId: string;
+  type: 'venta' | 'gasto' | string;
+  total: number;
+  payments: TransactionPayment[];
+  items: TransactionItem[];
+  userId?: string;
+  userName?: string;
+  paymentStatus?: 'paid' | 'fiado' | 'pending' | string;
+  category?: string;
+  description?: string;
+  notes?: string;
+  createdAt: any;
+  settledAt?: any;
+}
+
 export interface Transaction {
   id: number | string;
-  type: 'income' | 'expense';
+  type: 'income' | 'expense' | 'venta' | 'gasto';
   category: string;
   amount: number;
   date: string;
   description: string;
+  payments?: TransactionPayment[];
+  items?: TransactionItem[];
+  userId?: string;
+  userName?: string;
+  paymentStatus?: string;
+  complejoId?: string;
 }
 
 export interface DashboardStats {

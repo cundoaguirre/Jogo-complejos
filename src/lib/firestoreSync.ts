@@ -9,15 +9,20 @@ import {
   updateDoc, 
   onSnapshot, 
   query,
-  where
+  where,
+  serverTimestamp,
+  increment,
+  writeBatch
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
-import type { User, Court, Match } from '../types';
+import type { User, Court, Match, Product, POSTransaction, TransactionPayment, TransactionItem } from '../types';
 
 export const COMPLEJOS_COLLECTION = 'complejos';
 export const BOOKINGS_COLLECTION = 'bookings';
 export const USERS_COLLECTION = 'users';
 export const COLLABORATORS_COLLECTION = 'collaborators';
+export const PRODUCTS_COLLECTION = 'products';
+export const TRANSACTIONS_COLLECTION = 'transactions';
 
 /**
  * Returns current complexId for scoping data to the active complex (default: 'B')
@@ -719,3 +724,357 @@ export const listenToFirestoreUsuarios = (cb: (users: User[]) => void, complexId
 export const listenToFirestoreCourts = (cb: (courts: Court[]) => void, complexId?: string) => {
   return subscribeToCourts(complexId || getActiveComplexId(), cb);
 };
+
+// ============================================================================
+// DIRECTIVA MAESTRA POS, INVENTARIO Y FINANZAS
+// ============================================================================
+
+export const DEFAULT_INVENTORY_CATEGORIES = ["Bebidas", "Snacks", "Kiosco"];
+
+/**
+ * Escucha las categorías de mostrador desde complejos/{complejoId}.inventoryCategories
+ */
+export function subscribeToInventoryCategories(
+  complexId: string,
+  cb: (categories: string[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const compRef = doc(db, COMPLEJOS_COLLECTION, targetId);
+  return onSnapshot(compRef, (snap) => {
+    if (snap.exists()) {
+      const data = snap.data();
+      if (Array.isArray(data.inventoryCategories) && data.inventoryCategories.length > 0) {
+        cb(data.inventoryCategories);
+        return;
+      }
+    }
+    cb(DEFAULT_INVENTORY_CATEGORIES);
+  }, (err) => {
+    console.warn('[Firestore] Error leyendo inventoryCategories:', err);
+    cb(DEFAULT_INVENTORY_CATEGORIES);
+  });
+}
+
+/**
+ * Guarda el array de categorías en complejos/{complejoId}
+ */
+export async function saveInventoryCategories(
+  complexId: string,
+  categories: string[]
+): Promise<void> {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const compRef = doc(db, COMPLEJOS_COLLECTION, targetId);
+  await updateDoc(compRef, {
+    inventoryCategories: categories
+  });
+}
+
+/**
+ * Escucha los productos del complejo activo
+ */
+export function subscribeToProducts(
+  complexId: string,
+  cb: (products: Product[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const colRef = collection(db, PRODUCTS_COLLECTION);
+  const q = query(colRef, where('complejoId', '==', targetId));
+
+  return onSnapshot(q, (snap) => {
+    const list: Product[] = [];
+    snap.forEach((d) => {
+      const data = d.data();
+      list.push({
+        id: d.id,
+        complejoId: data.complejoId || targetId,
+        name: data.name || 'Sin nombre',
+        categoryId: data.categoryId || 'Bebidas',
+        purchasePrice: Number(data.purchasePrice || 0),
+        salePrice: Number(data.salePrice || 0),
+        stock: Number(data.stock || 0),
+        status: data.status === 'inactivo' ? 'inactivo' : 'activo',
+        createdAt: data.createdAt,
+        updatedAt: data.updatedAt
+      });
+    });
+
+    if (snap.empty) {
+      // Sembrar productos iniciales si el complejo no tiene ninguno cargado
+      const defaultProducts = [
+        { name: 'Coca Cola 2.5L', categoryId: 'Bebidas', purchasePrice: 2000, salePrice: 3500, stock: 24, status: 'activo' },
+        { name: 'Agua Mineral 500ml', categoryId: 'Bebidas', purchasePrice: 800, salePrice: 1500, stock: 30, status: 'activo' },
+        { name: 'Papas Fritas 150g', categoryId: 'Snacks', purchasePrice: 1200, salePrice: 2500, stock: 18, status: 'activo' }
+      ];
+      Promise.all(
+        defaultProducts.map(p => 
+          addDoc(colRef, {
+            ...p,
+            complejoId: targetId,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp()
+          })
+        )
+      ).catch(() => {});
+    }
+
+    cb(list);
+  }, (err) => {
+    console.warn('[Firestore] Error escuchando productos:', err);
+    cb([]);
+  });
+}
+
+/**
+ * Guarda o actualiza un producto en Firestore
+ */
+export async function saveProductInFirestore(
+  complexId: string,
+  product: Partial<Product>
+): Promise<string> {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const colRef = collection(db, PRODUCTS_COLLECTION);
+  const prodId = product.id || `prod_${Date.now()}`;
+  const prodRef = doc(colRef, prodId);
+
+  const payload: any = {
+    complejoId: targetId,
+    name: (product.name || '').trim(),
+    categoryId: (product.categoryId || 'Bebidas').trim(),
+    purchasePrice: Number(product.purchasePrice || 0),
+    salePrice: Number(product.salePrice || 0),
+    stock: Number(product.stock || 0),
+    status: product.status || 'activo',
+    updatedAt: serverTimestamp()
+  };
+
+  if (!product.id) {
+    payload.createdAt = serverTimestamp();
+  }
+
+  await setDoc(prodRef, payload, { merge: true });
+  return prodId;
+}
+
+/**
+ * Elimina un producto. Si tiene ventas históricas, cambia su status a 'inactivo'
+ * para preservar referencias e inmutabilidad histórica.
+ */
+export async function deleteProductInFirestore(
+  productId: string,
+  complexId: string
+): Promise<void> {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  try {
+    // Verificar si el producto tiene ventas históricas en transactions
+    const qTx = query(collection(db, TRANSACTIONS_COLLECTION), where('complejoId', '==', targetId));
+    const txSnap = await getDocs(qTx);
+    let hasSales = false;
+    for (const d of txSnap.docs) {
+      const items = d.data().items;
+      if (Array.isArray(items)) {
+        if (items.some((it: any) => it.productId === productId)) {
+          hasSales = true;
+          break;
+        }
+      }
+    }
+
+    const prodRef = doc(db, PRODUCTS_COLLECTION, productId);
+    if (hasSales) {
+      // Regla de Eliminación: cambiar status a 'inactivo'
+      await updateDoc(prodRef, { 
+        status: 'inactivo',
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      // Sin ventas: borrado definitivo
+      await deleteDoc(prodRef);
+    }
+  } catch (err) {
+    console.warn('[Firestore] Error al eliminar producto, aplicando soft-delete:', err);
+    try {
+      await updateDoc(doc(db, PRODUCTS_COLLECTION, productId), { 
+        status: 'inactivo',
+        updatedAt: serverTimestamp()
+      });
+    } catch (e2) {}
+  }
+}
+
+/**
+ * Impacta la transacción de venta del POS en Firestore:
+ * 1. Crea documento en transactions con foto congelada de productos y desglose de pagos
+ * 2. Descuenta cantidades vendidas en products (increment(-qty))
+ * 3. Si hay pagos tipo 'fiado', incrementa deuda en users/{userId} (increment(montoFiado))
+ */
+export async function executePOSSale(sale: {
+  complejoId: string;
+  items: TransactionItem[];
+  payments: TransactionPayment[];
+  total: number;
+  userId?: string;
+  userName?: string;
+  notes?: string;
+}): Promise<string> {
+  const targetId = (!sale.complejoId || sale.complejoId === 'complejo_central') ? 'B' : sale.complejoId;
+  const batch = writeBatch(db);
+  const txRef = doc(collection(db, TRANSACTIONS_COLLECTION));
+
+  const hasFiado = sale.payments.some(p => p.method === 'fiado' && p.amount > 0);
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  const txData = {
+    complejoId: targetId,
+    type: 'ingreso',
+    source: 'mostrador',
+    total: Number(sale.total || 0),
+    amount: Number(sale.total || 0),
+    payments: sale.payments.map(p => ({
+      method: p.method,
+      amount: Number(p.amount || 0)
+    })),
+    // Foto inmutable del precio en el momento de la venta
+    items: sale.items.map(it => ({
+      productId: it.productId || null,
+      name: it.name,
+      quantity: Number(it.quantity || 1),
+      unitPrice: Number(it.unitPrice || 0),
+      subtotal: Number(it.subtotal || (Number(it.quantity || 1) * Number(it.unitPrice || 0)))
+    })),
+    userId: sale.userId || null,
+    userName: sale.userName || (sale.userId ? 'Cliente Registrado' : 'Cliente Mostrador'),
+    paymentStatus: hasFiado ? 'fiado' : 'paid',
+    category: 'Venta Mostrador',
+    description: sale.items.map(it => `${it.quantity}x ${it.name}`).join(', '),
+    notes: sale.notes || '',
+    date: dateStr,
+    createdAt: serverTimestamp()
+  };
+
+  batch.set(txRef, txData);
+
+  // 2. Descontar stock en products
+  for (const item of sale.items) {
+    if (item.productId) {
+      const prodRef = doc(db, PRODUCTS_COLLECTION, item.productId);
+      batch.update(prodRef, {
+        stock: increment(-Number(item.quantity || 1)),
+        updatedAt: serverTimestamp()
+      });
+    }
+  }
+
+  // 3. Deudas (Fiado): Si existe un pago tipo 'fiado', sumar a debt en users/{userId}
+  if (hasFiado && sale.userId) {
+    const fiadoAmount = sale.payments
+      .filter(p => p.method === 'fiado')
+      .reduce((sum, p) => sum + Number(p.amount || 0), 0);
+
+    if (fiadoAmount > 0) {
+      const userRef = doc(db, USERS_COLLECTION, String(sale.userId));
+      batch.update(userRef, {
+        debt: increment(fiadoAmount),
+        updatedAt: serverTimestamp()
+      });
+    }
+  }
+
+  await batch.commit();
+  return txRef.id;
+}
+
+/**
+ * Salda la deuda de un fiado en una transacción existente:
+ * - Actualiza la transacción original cambiando su método de 'fiado' al nuevo método
+ * - Cambia paymentStatus a 'paid'
+ * - Resta el monto del campo debt del usuario en users/{userId}
+ */
+export async function settleFiadoTransaction(params: {
+  transactionId: string;
+  fiadoAmount: number;
+  newMethod: 'efectivo' | 'transferencia' | 'tarjeta';
+  userId?: string;
+}): Promise<void> {
+  const txRef = doc(db, TRANSACTIONS_COLLECTION, params.transactionId);
+  const snap = await getDoc(txRef);
+  if (!snap.exists()) {
+    throw new Error('Transacción no encontrada');
+  }
+
+  const txData = snap.data();
+  const currentPayments: TransactionPayment[] = Array.isArray(txData.payments) ? txData.payments : [];
+
+  let replaced = false;
+  const updatedPayments = currentPayments.map(p => {
+    if (p.method === 'fiado' && !replaced) {
+      replaced = true;
+      return {
+        method: params.newMethod,
+        amount: p.amount
+      };
+    }
+    return p;
+  });
+
+  if (!replaced) {
+    updatedPayments.push({
+      method: params.newMethod,
+      amount: params.fiadoAmount
+    });
+  }
+
+  const stillHasFiado = updatedPayments.some(p => p.method === 'fiado' && p.amount > 0);
+
+  await updateDoc(txRef, {
+    payments: updatedPayments,
+    paymentStatus: stillHasFiado ? 'fiado' : 'paid',
+    settledAt: serverTimestamp()
+  });
+
+  // Restar de la deuda del cliente
+  const targetUserId = params.userId || txData.userId;
+  if (targetUserId && params.fiadoAmount > 0) {
+    try {
+      const userRef = doc(db, USERS_COLLECTION, String(targetUserId));
+      await updateDoc(userRef, {
+        debt: increment(-Number(params.fiadoAmount)),
+        updatedAt: serverTimestamp()
+      });
+    } catch (err) {
+      console.warn(`[Firestore] Error al restar deuda del usuario ${targetUserId}:`, err);
+    }
+  }
+}
+
+/**
+ * Escucha las transacciones en tiempo real
+ */
+export function subscribeToTransactions(
+  complexId: string,
+  cb: (transactions: any[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const colRef = collection(db, TRANSACTIONS_COLLECTION);
+  const q = query(colRef, where('complejoId', '==', targetId));
+
+  return onSnapshot(q, (snap) => {
+    const list: any[] = [];
+    snap.forEach((d) => {
+      list.push({
+        id: d.id,
+        ...d.data()
+      });
+    });
+    // Ordenar de más reciente a más antiguo
+    list.sort((a, b) => {
+      const tA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+      const tB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      return tB - tA;
+    });
+    cb(list);
+  }, (err) => {
+    console.warn('[Firestore] Error escuchando transacciones:', err);
+    cb([]);
+  });
+}

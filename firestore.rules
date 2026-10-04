@@ -101,6 +101,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // Products collection (Catálogo e Inventario)
+    match /products/{productId} {
+      allow read, write: if true;
+    }
+
     // Support tickets
     match /support_tickets/{ticketId} {
       allow read, write: if true;

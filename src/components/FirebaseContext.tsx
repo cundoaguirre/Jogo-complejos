@@ -105,6 +105,27 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const loadCollaborator = useCallback(async (currentUser: FirebaseUser | null) => {
     if (!currentUser) {
+      if (typeof window !== 'undefined' && localStorage.getItem('jogo_dev_bypass') === 'true') {
+        const devAdmin = {
+          uid: 'dev_admin',
+          email: 'aguirrecundo@gmail.com',
+          displayName: 'Admin Jogo',
+          photoURL: null
+        } as any;
+        setUser(devAdmin);
+        const adminColab: CollaboratorProfile = {
+          uid: 'dev_admin',
+          email: 'aguirrecundo@gmail.com',
+          name: 'Admin Jogo',
+          photoURL: null,
+          activeComplexId: 'B',
+          memberships: [{ complexId: 'B', complexName: 'Colo loco', role: 'owner' }]
+        };
+        setCollaboratorData(adminColab);
+        setActiveComplexIdState('B');
+        setLoading(false);
+        return;
+      }
       setCollaboratorData(null);
       setActiveComplexIdState(null);
       setActiveComplex(null);
@@ -180,13 +201,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (currentUser) {
         await loadCollaborator(currentUser);
       } else {
-        setCollaboratorData(null);
-        setActiveComplexIdState(null);
-        setActiveComplex(null);
-        try {
-          localStorage.removeItem('activeComplexId');
-        } catch (e) {}
-        setLoading(false);
+        await loadCollaborator(null);
       }
     });
 

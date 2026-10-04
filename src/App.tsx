@@ -2,7 +2,7 @@ import React, { Component, useState, useEffect, useRef, useCallback, useMemo } f
 import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from 'motion/react';
 import { 
   LayoutDashboard, Users, Calendar, TrendingUp, TrendingDown, DollarSign, CalendarCheck, Percent, Clock, 
-  Search, Bell, Menu, X, Phone, MapPin, Star, ChevronRight, ChevronDown, Plus, Sparkles,
+  Search, Bell, Menu, X, Phone, MapPin, Star, ChevronLeft, ChevronRight, ChevronDown, List, Plus, Sparkles,
   Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
   Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, BarChart2, MoreVertical, FileText, Download,
   MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle
@@ -20,7 +20,7 @@ import { useFirebase } from './components/FirebaseContext';
 import { ActivationView } from './components/ActivationView';
 import { LandingAuthView } from './components/LandingAuthView';
 import { calculateUserLifecycleMetrics, formatDDMMYY } from './lib/userMetrics';
-import { doc, getDoc, getDocs, collection, query, where, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, getDocs, collection, query, where, serverTimestamp, addDoc } from 'firebase/firestore';
 import { db, auth } from './lib/firebase';
 import { 
   getActiveComplexId,
@@ -36,8 +36,15 @@ import {
   saveClientInFirestore,
   deleteClientInFirestore,
   subscribeToVenueProfile,
-  saveVenueProfileInFirestore
+  saveVenueProfileInFirestore,
+  subscribeToTransactions,
+  settleFiadoTransaction
 } from './lib/firestoreSync';
+import { POSView } from './components/POSView';
+import { POSModal } from './components/POSModal';
+import { CatalogInventorySection } from './components/CatalogInventorySection';
+import { CuentasCorrientesSection } from './components/CuentasCorrientesSection';
+import { POSCartProvider } from './components/POSCartContext';
 
 // --- Components ---
 
@@ -1081,21 +1088,50 @@ const CreateMatchModal = ({
   complexId?: string,
   onNavigate?: (tab: NavTabId | string) => void
 }) => {
-  const [step, setStep] = useState(1);
-  const [data, setData] = useState<any>({ court_id: null, host_id: '', date: '', time: '', payment_status: 'pending' });
-  const [isAddingClient, setIsAddingClient] = useState(false);
-  const [newClient, setNewClient] = useState({ name: '', phone: '' });
-  const [userSearch, setUserSearch] = useState('');
-  const [isSelectOpen, setIsSelectOpen] = useState(false);
+  // REGLA TAXATIVA: Formulario continuo en 1 solo paso compacto (sin Step 1 / Step 2)
+  const [data, setData] = useState<any>({ 
+    court_id: '', 
+    host_id: '', 
+    clientName: '',
+    clientPhone: '',
+    clientEmail: '',
+    date: '', 
+    time: '', 
+    status: 'confirmado',
+    payment_status: 'pending',
+    amount_paid: 0,
+    notes: ''
+  });
+
+  const [existingBookings, setExistingBookings] = useState<any[]>([]);
   const [venue, setVenue] = useState<any>(null);
 
+  // Desplegable de búsqueda de cliente
+  const [userSearch, setUserSearch] = useState('');
+  const [isSelectUserOpen, setIsSelectUserOpen] = useState(false);
+
+  // Modal anidado para + Nuevo Cliente
+  const [isAddingNewUser, setIsAddingNewUser] = useState(false);
+  const [newUserForm, setNewUserForm] = useState({ name: '', phone: '', email: '', category: 'jugador' });
+
+  // Suscripciones en tiempo real a Firestore para horarios del complejo y turnos existentes
+  useEffect(() => {
+    if (!isOpen || !complexId) return;
+    const unsubVenue = subscribeToVenueProfile(complexId, (profile) => {
+      if (profile) setVenue(profile);
+    });
+    const unsubBookings = subscribeToBookings(complexId, (bList) => {
+      setExistingBookings(Array.isArray(bList) ? bList : []);
+    });
+    return () => {
+      unsubVenue();
+      unsubBookings();
+    };
+  }, [isOpen, complexId]);
+
+  // Inicialización de datos al abrir o cambiar initialData
   useEffect(() => {
     if (!isOpen) return;
-
-    // Real-time Firestore venue profile subscription
-    const unsubVenue = subscribeToVenueProfile(complexId, (venueProfile) => {
-      if (venueProfile) setVenue(venueProfile);
-    });
 
     const isEvent = initialData && (
       initialData.nativeEvent || 
@@ -1112,65 +1148,174 @@ const CreateMatchModal = ({
       initialData.date
     );
 
+    let initialCourtId = courts.length > 0 ? courts[0].id : '';
+    let initialDate = new Date().toISOString().split('T')[0];
+    let initialTime = '18:00';
+    let initialHostId = '';
+    let initialClientName = '';
+    let initialClientPhone = '';
+    let initialClientEmail = '';
+    let initialStatus = 'confirmado';
+    let initialPaymentStatus = 'pending';
+    let initialAmountPaid = 0;
+    let initialNotes = '';
+
     if (isRealMatch) {
-      let time = '';
-      let date = '';
+      if (initialData.court_id || initialData.courtId) {
+        initialCourtId = initialData.court_id || initialData.courtId;
+      }
       const rawDateStr = initialData.start_time || initialData.startTime || initialData.date;
       if (rawDateStr && typeof rawDateStr === 'string') {
         const startDate = new Date(rawDateStr);
         if (!isNaN(startDate.getTime())) {
-          time = initialData.startTime || initialData.time || startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-          date = initialData.date || `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${String(startDate.getDate()).padStart(2, '0')}`;
+          initialTime = initialData.startTime || initialData.time || startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+          initialDate = initialData.date || `${startDate.getFullYear()}-${String(startDate.getMonth() + 1).padStart(2, '0')}-${String(startDate.getDate()).padStart(2, '0')}`;
         }
       }
-      if (!time) time = initialData.startTime || initialData.time || '18:00';
-      if (!date) date = initialData.date || new Date().toISOString().split('T')[0];
-
-      setData({
-        id: initialData.id,
-        court_id: initialData.court_id || initialData.courtId || (courts.length > 0 ? courts[0].id : null),
-        host_id: initialData.host_id || initialData.userId || '',
-        clientName: initialData.userName || initialData.clientName || '',
-        clientPhone: initialData.userPhone || initialData.clientPhone || '',
-        date,
-        time,
-        payment_status: initialData.payment_status || initialData.paymentStatus || 'pending',
-        amount_paid: initialData.amount_paid ?? initialData.deposit ?? 0,
-        notes: initialData.notes || ''
-      });
-      setStep(1);
-    } else {
-      setData({ 
-        court_id: courts.length > 0 ? courts[0].id : null, 
-        host_id: '', 
-        date: '', 
-        time: '', 
-        payment_status: 'pending',
-        amount_paid: 0,
-        notes: ''
-      });
-      setStep(1);
+      if (initialData.date) initialDate = initialData.date;
+      if (initialData.startTime || initialData.time) initialTime = (initialData.startTime || initialData.time).substring(0, 5);
+      
+      initialHostId = initialData.host_id || initialData.userId || '';
+      initialClientName = initialData.userName || initialData.clientName || '';
+      initialClientPhone = initialData.userPhone || initialData.clientPhone || '';
+      initialClientEmail = initialData.userEmail || initialData.clientEmail || '';
+      initialStatus = initialData.status || 'confirmado';
+      initialPaymentStatus = initialData.payment_status || initialData.paymentStatus || 'pending';
+      initialAmountPaid = Number(initialData.amount_paid ?? initialData.deposit ?? 0);
+      initialNotes = initialData.notes || '';
+    } else if (initialData && typeof initialData === 'object') {
+      if (initialData.date) initialDate = initialData.date;
+      if (initialData.courtId || initialData.court_id) initialCourtId = initialData.courtId || initialData.court_id;
+      if (initialData.startTime || initialData.time) initialTime = (initialData.startTime || initialData.time).substring(0, 5);
     }
 
-    return () => {
-      unsubVenue();
-    };
-  }, [isOpen, initialData, courts, complexId]);
+    const currentCourt = courts.find(c => String(c.id) === String(initialCourtId)) || (courts.length > 0 ? courts[0] : null);
+    const courtPrice = Number(currentCourt?.price_per_hour ?? currentCourt?.price ?? 0);
+    if (initialPaymentStatus === 'partial' && initialAmountPaid === 0 && courtPrice > 0) {
+      initialAmountPaid = Math.round(courtPrice * 0.1);
+    } else if (initialPaymentStatus === 'paid' && initialAmountPaid === 0 && courtPrice > 0) {
+      initialAmountPaid = courtPrice;
+    }
+
+    setData({
+      id: isRealMatch ? initialData.id : undefined,
+      court_id: initialCourtId,
+      host_id: initialHostId,
+      clientName: initialClientName,
+      clientPhone: initialClientPhone,
+      clientEmail: initialClientEmail,
+      date: initialDate,
+      time: initialTime,
+      status: initialStatus,
+      payment_status: initialPaymentStatus,
+      amount_paid: initialAmountPaid,
+      notes: initialNotes
+    });
+    setIsSelectUserOpen(false);
+    setUserSearch('');
+  }, [isOpen, initialData, courts]);
 
   if (!isOpen) return null;
 
+  const selectedCourt = courts.find(c => String(c.id) === String(data.court_id)) || (courts.length > 0 ? courts[0] : null);
+  const priceTotal = Number(selectedCourt?.price_per_hour ?? selectedCourt?.price ?? 0);
+
+  // 3. Hora: Desplegable con filtro reactivo de turnos ocupados
+  const getAvailableHours = () => {
+    const defaultHours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
+    let hoursRange: number[] = defaultHours;
+
+    if (venue && Array.isArray(venue.hours) && data.date) {
+      const [y, m, d] = data.date.split('-').map(Number);
+      const selectedDateObj = new Date(y, m - 1, d);
+      if (!isNaN(selectedDateObj.getTime())) {
+        const dayNames = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+        const targetDayName = dayNames[selectedDateObj.getDay()];
+        const hourConfig = venue.hours.find((h: any) => {
+          const dName = String(h?.day || '').toLowerCase().replace('é', 'e').replace('á', 'a');
+          return dName === targetDayName.replace('é', 'e').replace('á', 'a');
+        });
+
+        if (hourConfig && hourConfig.open === false) {
+          return [];
+        }
+
+        if (hourConfig) {
+          const startH = parseInt(hourConfig.start?.split(':')[0] || hourConfig.openTime?.split(':')[0] || '14', 10);
+          let endH = parseInt(hourConfig.end?.split(':')[0] || hourConfig.closeTime?.split(':')[0] || '0', 10);
+          if (isNaN(endH) || endH === 0 || hourConfig.crossesMidnight || hourConfig.end === '00:00') {
+            endH = 24;
+          }
+
+          const generated: number[] = [];
+          if (startH <= endH) {
+            for (let i = startH; i <= endH; i++) generated.push(i);
+          } else {
+            for (let i = startH; i <= 24; i++) generated.push(i);
+            for (let i = 0; i <= endH; i++) generated.push(i);
+          }
+          if (generated.length > 0) hoursRange = generated;
+        }
+      }
+    }
+
+    // Excluir automáticamente horarios confirmados o jugados para la cancha y fecha elegidas (los cancelados vuelven a estar disponibles)
+    const occupiedHours = new Set<string>();
+    if (data.court_id && data.date && existingBookings.length > 0) {
+      for (const b of existingBookings) {
+        if (!b) continue;
+        if (data.id && String(b.id) === String(data.id)) continue;
+
+        const bStatus = String(b.status || '').toLowerCase();
+        if (bStatus === 'cancelado' || bStatus === 'cancelled') continue;
+
+        const sameCourt = String(b.court_id) === String(data.court_id) || 
+                          String(b.courtId) === String(data.court_id) ||
+                          (selectedCourt && (b.court_name === selectedCourt.name || b.courtName === selectedCourt.name));
+        if (!sameCourt) continue;
+
+        const bDate = b.date || (b.start_time ? String(b.start_time).split('T')[0] : '');
+        if (bDate !== data.date) continue;
+
+        const bTime = b.startTime || (b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : '');
+        if (bTime) {
+          occupiedHours.add(bTime.substring(0, 5));
+        }
+      }
+    }
+
+    const result: string[] = [];
+    for (const h of hoursRange) {
+      const timeStr = h === 24 ? "00:00" : `${String(h % 24).padStart(2, '0')}:00`;
+      if (!occupiedHours.has(timeStr) || (data.time && data.time.substring(0, 5) === timeStr)) {
+        if (!result.includes(timeStr)) result.push(timeStr);
+      }
+    }
+
+    return result;
+  };
+
+  const availableHours = getAvailableHours();
+  const displayHours = (data.time && !availableHours.includes(data.time)) 
+    ? [data.time, ...availableHours].sort() 
+    : availableHours;
+
+  // Guardado de la reserva
   const handleSubmit = () => {
-    const startDateTime = new Date(`${data.date}T${data.time}`);
-    const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000);
-    const selectedCourt = courts.find(c => String(c.id) === String(data.court_id));
     const selectedHost = users.find(u => String(u.id) === String(data.host_id));
     const clientName = selectedHost?.name || data.clientName || 'Cliente';
     const clientPhone = selectedHost?.phone || data.clientPhone || '';
     const clientEmail = selectedHost?.email || data.clientEmail || '';
-    const endTimeStr = endDateTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+
+    const [y, m, d] = (data.date || '').split('-').map(Number);
+    const [hh, mm] = (data.time || '18:00').split(':').map(Number);
+    const startDateTime = (!isNaN(y) && !isNaN(m) && !isNaN(d)) 
+      ? new Date(y, m - 1, d, isNaN(hh) ? 18 : hh, isNaN(mm) ? 0 : mm)
+      : new Date();
+    const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000);
+    const endTimeStr = `${String(endDateTime.getHours()).padStart(2, '0')}:${String(endDateTime.getMinutes()).padStart(2, '0')}`;
     const courtName = selectedCourt?.name || 'Cancha';
-    const price = Number(selectedCourt?.price_per_hour ?? selectedCourt?.price ?? 0);
-    const deposit = Number(data.amount_paid || data.deposit || 0);
+    const deposit = data.payment_status === 'paid' ? priceTotal : (data.payment_status === 'partial' ? Number(data.amount_paid || 0) : 0);
 
     onCreate({
       ...data,
@@ -1189,372 +1334,475 @@ const CreateMatchModal = ({
       start_time: startDateTime.toISOString(),
       end_time: endDateTime.toISOString(),
       durationMinutes: 60,
-      price,
-      price_total: price,
+      price: priceTotal,
+      price_total: priceTotal,
       deposit,
       amount_paid: deposit,
       status: data.status || 'confirmado',
-      paymentStatus: data.payment_status || (deposit >= price && price > 0 ? 'pagado' : deposit > 0 ? 'seña' : 'pendiente'),
+      paymentStatus: data.payment_status === 'paid' ? 'pagado' : data.payment_status === 'partial' ? 'seña' : 'pendiente',
       notes: data.notes || ''
     });
     onClose();
-    setStep(1);
   };
 
-  const handleQuickAddUser = () => {
-    if (newClient.name && newClient.phone && onQuickAddUser) {
-      onQuickAddUser(newClient);
-      setIsAddingClient(false);
-      setNewClient({ name: '', phone: '' });
+  // Alta anidada de usuario sin desmontar el modal de reserva
+  const handleSaveNewUser = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newUserForm.name.trim() || !newUserForm.phone.trim()) return;
+
+    const newUserData = {
+      name: newUserForm.name.trim(),
+      phone: newUserForm.phone.trim(),
+      email: newUserForm.email.trim(),
+      category: newUserForm.category || 'jugador',
+      status: 'activo'
+    };
+
+    if (onQuickAddUser) {
+      onQuickAddUser(newUserData);
     }
+
+    // Auto-seleccionar el usuario creado y conservar intactos los demás campos
+    setData((prev: any) => ({
+      ...prev,
+      host_id: `temp_${Date.now()}`,
+      clientName: newUserData.name,
+      clientPhone: newUserData.phone,
+      clientEmail: newUserData.email
+    }));
+
+    setIsAddingNewUser(false);
+    setNewUserForm({ name: '', phone: '', email: '', category: 'jugador' });
   };
 
-  const getAvailableHours = () => {
-    const defaultHours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23];
-    if (!venue || !Array.isArray(venue.hours) || !data.date) {
-      return defaultHours.map(h => `${h.toString().padStart(2, '0')}:00`);
-    }
-
-    const [y, m, d] = data.date.split('-');
-    const selectedDateObj = new Date(parseInt(y), parseInt(m) - 1, parseInt(d));
-    if (isNaN(selectedDateObj.getTime())) {
-      return defaultHours.map(h => `${h.toString().padStart(2, '0')}:00`);
-    }
-    
-    // getDay() gives 0 for Sunday
-    const dayNames = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado'];
-    const dayName = dayNames[selectedDateObj.getDay()];
-
-    const hourConfig = venue.hours.find((h: any) => h.day === dayName);
-
-    if (!hourConfig || !hourConfig.open) {
-      return defaultHours.map(h => `${h.toString().padStart(2, '0')}:00`);
-    }
-
-    const startH = parseInt(hourConfig.start?.split(':')[0] || '8');
-    let endH = parseInt(hourConfig.end?.split(':')[0] || '23');
-    if (endH === 0) endH = 24;
-
-    let availableHours: number[] = [];
-    if (startH <= endH) {
-      for (let i = startH; i < endH; i++) {
-        availableHours.push(i);
-      }
-    } else {
-      for (let i = startH; i < 24; i++) {
-        availableHours.push(i);
-      }
-      for (let i = 0; i < endH; i++) {
-        availableHours.push(i);
-      }
-    }
-    if (availableHours.length === 0) availableHours = defaultHours;
-
-    // Filter past hours if today
-    const now = new Date();
-    const isToday = selectedDateObj.getDate() === now.getDate() && 
-                    selectedDateObj.getMonth() === now.getMonth() && 
-                    selectedDateObj.getFullYear() === now.getFullYear();
-    
-    if (isToday) {
-      const currentHour = now.getHours();
-      availableHours = availableHours.filter(h => h > currentHour);
-    }
-
-    return availableHours.map(h => `${h.toString().padStart(2, '0')}:00`);
-  };
+  const selectedUserName = users.find(u => String(u.id) === String(data.host_id))?.name || data.clientName;
+  const filteredUsers = users.filter(u => userSearch === '' || u.name.toLowerCase().includes(userSearch.toLowerCase()) || (u.phone && u.phone.includes(userSearch)));
 
   return (
-    <div 
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onClose();
-      }}
-    >
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        onClick={(e) => e.stopPropagation()}
-        className="bg-white w-full max-w-lg rounded-2xl p-6 shadow-xl h-[80vh] overflow-y-auto"
+    <>
+      <div 
+        className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onClose();
+        }}
       >
-        <div className="flex justify-between items-center mb-6">
-          <h2 className="text-xl font-bold">Nueva Reserva</h2>
-          <button 
-            type="button" 
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onClose();
-            }}
-          >
-            <X size={20} className="text-gray-400" />
-          </button>
-        </div>
+        <motion.div 
+          initial={{ opacity: 0, scale: 0.96 }}
+          animate={{ opacity: 1, scale: 1 }}
+          onClick={(e) => e.stopPropagation()}
+          className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl shadow-2xl p-4 sm:p-5 flex flex-col max-h-[92vh] border border-gray-100 dark:border-slate-800"
+        >
+          {/* Cabecera Compacta */}
+          <div className="flex justify-between items-center pb-3 border-b border-gray-100 dark:border-slate-800 shrink-0">
+            <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white">
+              {data.id ? 'Editar Reserva' : 'Nueva Reserva'}
+            </h2>
+            <button 
+              type="button" 
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onClose();
+              }}
+              className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 p-1 cursor-pointer"
+            >
+              <X size={18} />
+            </button>
+          </div>
 
-        {step === 1 && (
-          <div className="space-y-4">
-            <h3 className="font-medium text-gray-900">1. Selecciona Cancha</h3>
-            {courts.length === 0 ? (
-              <div className="p-6 text-center bg-amber-50 border border-amber-200 rounded-2xl">
-                <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-600 flex items-center justify-center mx-auto mb-3">
-                  <AlertCircle size={24} />
-                </div>
-                <h4 className="font-bold text-gray-900 mb-1">No hay canchas registradas</h4>
-                <p className="text-xs text-gray-600 max-w-sm mx-auto mb-4">
-                  Para poder registrar reservas, primero debes agregar al menos una cancha en la configuración del complejo.
-                </p>
-                {onNavigate && (
-                  <button 
-                    type="button"
-                    onClick={() => {
-                      onClose();
-                      onNavigate('profile');
-                    }}
-                    className="bg-emerald-600 text-white px-4 py-2.5 rounded-xl font-bold text-xs hover:bg-emerald-700 transition-colors shadow-sm cursor-pointer"
-                  >
-                    Ir a Perfil a Configurar Canchas
-                  </button>
+          {/* Formulario Continuo en 1 Solo Paso Compacto */}
+          <div className="space-y-3 pt-3 overflow-y-auto pr-1 flex-1 text-xs sm:text-sm">
+            {/* 1. Cliente: Buscador con desplegable + Botón '+ Nuevo Cliente' */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider">
+                  Cliente *
+                </label>
+                <button 
+                  type="button"
+                  onClick={() => setIsAddingNewUser(true)}
+                  className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-md cursor-pointer border border-emerald-200/60 dark:border-emerald-800/40"
+                >
+                  <Plus size={11} strokeWidth={2.5} />
+                  <span>Nuevo Cliente</span>
+                </button>
+              </div>
+
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsSelectUserOpen(!isSelectUserOpen)}
+                  className="w-full h-9.5 px-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-left flex justify-between items-center focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer"
+                >
+                  <span className={selectedUserName ? "text-gray-900 dark:text-white font-medium truncate" : "text-gray-400 truncate"}>
+                    {selectedUserName || "Buscar o seleccionar cliente..."}
+                  </span>
+                  <ChevronDown size={15} className="text-gray-400 shrink-0 ml-1" />
+                </button>
+
+                {isSelectUserOpen && (
+                  <div className="absolute z-20 w-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
+                    <div className="p-2 border-b border-gray-100 dark:border-slate-700 flex items-center bg-gray-50 dark:bg-slate-900/50">
+                      <Search size={14} className="text-gray-400 ml-1 shrink-0" />
+                      <input 
+                        type="text"
+                        placeholder="Buscar por nombre o teléfono..."
+                        className="w-full px-2 py-1 bg-transparent outline-none text-xs text-gray-900 dark:text-white"
+                        value={userSearch}
+                        onChange={e => setUserSearch(e.target.value)}
+                        autoFocus
+                      />
+                    </div>
+                    <div className="max-h-40 overflow-y-auto divide-y divide-gray-50 dark:divide-slate-700/50">
+                      {filteredUsers.map((u, uIdx) => (
+                        <div 
+                          key={`select-user-${u.id || uIdx}-${uIdx}`}
+                          onClick={() => {
+                            setData((prev: any) => ({
+                              ...prev,
+                              host_id: u.id,
+                              clientName: u.name,
+                              clientPhone: u.phone || '',
+                              clientEmail: u.email || ''
+                            }));
+                            setIsSelectUserOpen(false);
+                            setUserSearch('');
+                          }}
+                          className="p-2.5 hover:bg-gray-50 dark:hover:bg-slate-700/50 cursor-pointer flex items-center justify-between transition-colors"
+                        >
+                          <div className="min-w-0 pr-2">
+                            <span className="font-semibold text-gray-900 dark:text-white truncate block">{u.name}</span>
+                            {u.phone && <span className="text-[11px] text-gray-400 dark:text-slate-400 block">{u.phone}</span>}
+                          </div>
+                          {String(data.host_id) === String(u.id) && <Check size={14} className="text-emerald-500 shrink-0" />}
+                        </div>
+                      ))}
+                      {filteredUsers.length === 0 && (
+                        <div className="p-3 text-center text-xs text-gray-400 dark:text-slate-500">
+                          No se encontraron usuarios. Usa "+ Nuevo Cliente".
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 )}
               </div>
-            ) : (
-              <>
-                <div className="grid gap-3">
-                  {courts.map((court, cIdx) => (
-                    <div 
-                      key={`modal-court-${court.id || cIdx}-${cIdx}`}
-                      onClick={() => setData({...data, court_id: court.id})}
-                      className={cn(
-                        "p-3 rounded-xl border flex items-center gap-3 cursor-pointer transition-all",
-                        data.court_id === court.id ? "border-emerald-600 bg-emerald-50 ring-1 ring-emerald-600" : "border-gray-200 hover:border-emerald-200"
-                      )}
-                    >
-                      <img src={court.image_url} className="w-16 h-16 rounded-lg object-cover" />
-                      <div>
-                        <div className="font-bold text-sm">{court.name}</div>
-                        <div className="text-xs text-gray-500">{court.type} • ${(court.price_per_hour || 0).toLocaleString()}/h</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <button type="button" 
-                  disabled={!data.court_id}
-                  onClick={() => setStep(2)}
-                  className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold mt-4 disabled:opacity-50 cursor-pointer"
-                >
-                  Siguiente
-                </button>
-              </>
-            )}
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="space-y-4">
-            <h3 className="font-medium text-gray-900">2. Detalles</h3>
-            <div>
-              <div className="flex justify-between items-center mb-1">
-                <label className="block text-xs font-bold text-gray-500">Cliente (Host)</label>
-                <button type="button" 
-                  onClick={() => setIsAddingClient(!isAddingClient)}
-                  className="text-xs font-bold text-emerald-600 flex items-center gap-1 hover:text-emerald-700"
-                >
-                  <Plus size={12} /> Nuevo Cliente
-                </button>
-              </div>
-              
-              {isAddingClient ? (
-                <div className="bg-gray-50 p-3 rounded-xl border border-gray-200 mb-3 space-y-2">
-                  <input 
-                    type="text" 
-                    placeholder="Nombre completo" 
-                    className="w-full p-2 text-sm border rounded-lg"
-                    value={newClient.name}
-                    onChange={e => setNewClient({...newClient, name: e.target.value})}
-                  />
-                  <div className="flex gap-2">
-                    <input 
-                      type="tel" 
-                      placeholder="Teléfono" 
-                      className="flex-1 p-2 text-sm border rounded-lg"
-                      value={newClient.phone}
-                      onChange={e => setNewClient({...newClient, phone: e.target.value})}
-                    />
-                    <button type="button" 
-                      onClick={handleQuickAddUser}
-                      disabled={!newClient.name || !newClient.phone}
-                      className="bg-emerald-600 text-white px-3 rounded-lg text-sm font-bold disabled:opacity-50"
-                    >
-                      Guardar
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="relative">
-                  <button 
-                    type="button"
-                    onClick={() => setIsSelectOpen(!isSelectOpen)}
-                    className="w-full p-3 bg-gray-50 rounded-xl border-none text-left flex justify-between items-center focus:ring-2 focus:ring-emerald-500"
-                  >
-                    <span className={data.host_id ? "text-gray-900 font-medium" : "text-gray-500"}>
-                      {data.host_id ? users.find(u => u.id === data.host_id)?.name : "Seleccionar usuario..."}
-                    </span>
-                    <ChevronDown size={16} className="text-gray-400" />
-                  </button>
-                  
-                  {isSelectOpen && (
-                    <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-xl shadow-lg overflow-hidden">
-                      <div className="p-2 border-b border-gray-100 flex items-center bg-gray-50">
-                        <Search size={16} className="text-gray-400 ml-2" />
-                        <input 
-                          type="text"
-                          placeholder="Buscar cliente..."
-                          className="w-full p-2 bg-transparent outline-none text-sm"
-                          value={userSearch}
-                          onChange={e => setUserSearch(e.target.value)}
-                          autoFocus
-                        />
-                      </div>
-                      <div className="max-h-48 overflow-y-auto">
-                        {users.filter(u => userSearch === '' || u.name.toLowerCase().includes(userSearch.toLowerCase())).map((u, uIdx) => (
-                          <div 
-                            key={`select-user-${u.id || uIdx}-${uIdx}`}
-                            onClick={() => {
-                              setData({...data, host_id: u.id});
-                              setIsSelectOpen(false);
-                              setUserSearch('');
-                            }}
-                            className="p-3 hover:bg-gray-50 cursor-pointer text-sm flex items-center justify-between transition-colors"
-                          >
-                            <div>
-                              <span className="font-medium text-gray-900">{u.name}</span>
-                              {u.phone && <span className="text-gray-500 ml-2 text-xs">{u.phone}</span>}
-                            </div>
-                            {data.host_id === u.id && <Check size={16} className="text-emerald-500" />}
-                          </div>
-                        ))}
-                        {users.filter(u => userSearch === '' || u.name.toLowerCase().includes(userSearch.toLowerCase())).length === 0 && (
-                          <div className="p-3 text-sm text-gray-500 text-center">No se encontraron usuarios</div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
-            <div className="grid grid-cols-2 gap-4">
+
+            {/* 2 & 3. Fecha y Hora */}
+            <div className="grid grid-cols-2 gap-2.5">
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Fecha</label>
+                <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                  Fecha *
+                </label>
                 <input 
                   type="date" 
-                  min={new Date().toISOString().split('T')[0]}
                   value={data.date || ''}
-                  className="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 text-sm font-medium outline-none focus:ring-2 focus:ring-emerald-500" 
-                  onChange={e => setData({...data, date: e.target.value})} 
+                  onChange={e => setData({ ...data, date: e.target.value })}
+                  className="w-full h-9.5 px-2.5 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500" 
                 />
               </div>
+
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Hora</label>
+                <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                  Hora *
+                </label>
                 <select 
-                  className="w-full p-3 bg-gray-50 rounded-xl border border-gray-200 font-medium text-gray-900 disabled:opacity-50 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
-                  onChange={e => setData({...data, time: e.target.value})}
-                  value={data.time || ""}
-                  disabled={!data.date || getAvailableHours().length === 0}
+                  value={data.time || ''}
+                  onChange={e => setData({ ...data, time: e.target.value })}
+                  disabled={!data.date || displayHours.length === 0}
+                  className="w-full h-9.5 px-2 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50"
                 >
                   <option value="" disabled>
-                    {!data.date ? 'Seleccionar fecha primero' : getAvailableHours().length === 0 ? 'Cerrado ese día' : 'Seleccionar Hora'}
+                    {!data.date ? 'Elige fecha' : displayHours.length === 0 ? 'Sin horarios' : 'Seleccionar'}
                   </option>
-                  {getAvailableHours().map((time, tIdx) => (
-                    <option key={`time-opt-${time}-${tIdx}`} value={time}>
-                      {time}
+                  {displayHours.map((time, tIdx) => (
+                    <option key={`opt-time-${time}-${tIdx}`} value={time}>
+                      {time} hs
                     </option>
                   ))}
                 </select>
               </div>
             </div>
-            
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Estado del Turno</label>
-                <div className="flex gap-2">
-                  {[
-                    { id: 'confirmado', label: 'Confirmado' },
-                    { id: 'jugado', label: 'Jugado' },
-                    { id: 'cancelado', label: 'Cancelado' }
-                  ].map(st => (
+
+            {/* 4. Cancha: Desplegable con formato [Nombre de Cancha] - $[Precio] */}
+            <div>
+              <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                Cancha *
+              </label>
+              <select
+                value={data.court_id ? String(data.court_id) : ''}
+                onChange={e => {
+                  const newCourtId = e.target.value;
+                  const court = courts.find(c => String(c.id) === String(newCourtId));
+                  const newPrice = Number(court?.price_per_hour ?? court?.price ?? 0);
+                  setData((prev: any) => {
+                    let newAmount = prev.amount_paid;
+                    if (prev.payment_status === 'partial') {
+                      newAmount = Math.round(newPrice * 0.1);
+                    } else if (prev.payment_status === 'paid') {
+                      newAmount = newPrice;
+                    }
+                    return {
+                      ...prev,
+                      court_id: newCourtId,
+                      amount_paid: newAmount
+                    };
+                  });
+                }}
+                className="w-full h-9.5 px-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+              >
+                {courts.map((court, cIdx) => (
+                  <option key={`court-opt-${court.id || cIdx}`} value={String(court.id)}>
+                    {court.name} - ${Number(court.price_per_hour ?? court.price ?? 0).toLocaleString()}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 5. Estado del Turno: Selector segmentado [Próximo] | [Jugado] | [Cancelado] */}
+            <div>
+              <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                Estado del Turno
+              </label>
+              <div className="grid grid-cols-3 gap-1.5 p-1 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200/70 dark:border-slate-700">
+                {[
+                  { id: 'confirmado', label: 'Próximo' },
+                  { id: 'jugado', label: 'Jugado' },
+                  { id: 'cancelado', label: 'Cancelado' }
+                ].map(st => {
+                  const isActive = (data.status || 'confirmado') === st.id;
+                  return (
                     <button
                       type="button"
-                      key={`turno-status-${st.id}`}
-                      onClick={() => setData({...data, status: st.id})}
+                      key={`status-tab-${st.id}`}
+                      onClick={() => setData({ ...data, status: st.id })}
                       className={cn(
-                        "flex-1 py-2 rounded-lg text-xs font-bold border transition-colors cursor-pointer",
-                        (data.status || 'confirmado') === st.id
-                          ? "bg-slate-800 text-white border-slate-800"
-                          : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                        "py-1.5 rounded-lg text-xs font-bold transition-all text-center cursor-pointer",
+                        isActive
+                          ? st.id === 'cancelado' 
+                            ? "bg-red-600 text-white shadow-xs" 
+                            : st.id === 'jugado' 
+                            ? "bg-emerald-600 text-white shadow-xs" 
+                            : "bg-blue-600 text-white shadow-xs"
+                          : "text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white"
                       )}
                     >
                       {st.label}
                     </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Estado de Pago</label>
-                <div className="flex gap-2">
-                  {['pending', 'partial', 'paid'].map((status, sIdx) => (
-                    <button type="button"
-                      key={`payment-status-opt-${status}-${sIdx}`}
-                      onClick={() => setData({...data, payment_status: status})}
-                      className={cn(
-                        "flex-1 py-2 rounded-lg text-xs font-bold capitalize border transition-colors cursor-pointer",
-                        data.payment_status === status 
-                          ? "bg-emerald-600 text-white border-emerald-600" 
-                          : "bg-white text-gray-500 border-gray-200 hover:bg-gray-50"
-                      )}
-                    >
-                      {status === 'pending' ? 'Pendiente' : status === 'partial' ? 'Seña' : 'Pagado'}
-                    </button>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             </div>
 
-            {data.payment_status === 'partial' && (
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Monto Señado</label>
-                <div className="relative">
-                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-bold">$</span>
-                  <input 
-                    type="number"
-                    value={data.amount_paid || ''}
-                    onChange={e => setData({...data, amount_paid: Number(e.target.value)})}
-                    className="w-full pl-8 pr-3 py-2 bg-white border border-gray-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-emerald-500 outline-none"
-                    placeholder="Ej: 15000"
-                  />
-                </div>
-              </div>
-            )}
-
+            {/* 6. Estado de Pago y Descuento Reactivo: [Seña] | [Pendiente] | [Pagado] */}
             <div>
-              <label className="block text-xs font-bold text-gray-500 mb-1">Notas u Observaciones</label>
+              <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                Estado de Pago
+              </label>
+              <div className="grid grid-cols-3 gap-1.5 p-1 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200/70 dark:border-slate-700">
+                {[
+                  { id: 'partial', label: 'Seña' },
+                  { id: 'pending', label: 'Pendiente' },
+                  { id: 'paid', label: 'Pagado' }
+                ].map(pay => {
+                  const isActive = data.payment_status === pay.id;
+                  return (
+                    <button
+                      type="button"
+                      key={`pay-tab-${pay.id}`}
+                      onClick={() => {
+                        let newAmount = 0;
+                        if (pay.id === 'partial') {
+                          newAmount = Math.round(priceTotal * 0.1);
+                        } else if (pay.id === 'paid') {
+                          newAmount = priceTotal;
+                        }
+                        setData({
+                          ...data,
+                          payment_status: pay.id,
+                          amount_paid: newAmount
+                        });
+                      }}
+                      className={cn(
+                        "py-1.5 rounded-lg text-xs font-bold transition-all text-center cursor-pointer",
+                        isActive
+                          ? "bg-emerald-600 text-white shadow-xs"
+                          : "text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white"
+                      )}
+                    >
+                      {pay.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Campo Condicional de Seña con Cálculo Reactivo */}
+              {data.payment_status === 'partial' && (
+                <div className="mt-2 p-2.5 bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-800/40 rounded-xl space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-bold text-gray-700 dark:text-slate-300">Monto de Seña ($)</span>
+                    <span className="text-[10px] text-gray-400 font-mono">(Sugerido 10%: ${Math.round(priceTotal * 0.1).toLocaleString()})</span>
+                  </div>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-bold text-xs">$</span>
+                    <input 
+                      type="number"
+                      min={0}
+                      max={priceTotal}
+                      value={data.amount_paid ?? ''}
+                      onChange={e => {
+                        const val = Math.max(0, Number(e.target.value));
+                        setData({ ...data, amount_paid: val });
+                      }}
+                      className="w-full h-8.5 pl-7 pr-3 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-xs font-bold outline-none focus:ring-2 focus:ring-emerald-500"
+                      placeholder={`Ej: ${Math.round(priceTotal * 0.1)}`}
+                    />
+                  </div>
+                  <div className="flex justify-between items-center text-[11px] pt-0.5 text-gray-600 dark:text-slate-400">
+                    <span>Total: <strong className="font-mono text-gray-900 dark:text-white">${priceTotal.toLocaleString()}</strong></span>
+                    <span>Resta por pagar: <strong className="font-mono text-amber-600 dark:text-amber-400 font-bold">${Math.max(0, priceTotal - Number(data.amount_paid || 0)).toLocaleString()}</strong></span>
+                  </div>
+                </div>
+              )}
+
+              {data.payment_status === 'paid' && (
+                <div className="mt-1.5 flex justify-between items-center text-[11px] px-1 text-gray-600 dark:text-slate-400">
+                  <span>Total: <strong className="font-mono text-gray-900 dark:text-white">${priceTotal.toLocaleString()}</strong></span>
+                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">Pagado total • Resta: $0</span>
+                </div>
+              )}
+
+              {data.payment_status === 'pending' && (
+                <div className="mt-1.5 flex justify-between items-center text-[11px] px-1 text-gray-600 dark:text-slate-400">
+                  <span>Total: <strong className="font-mono text-gray-900 dark:text-white">${priceTotal.toLocaleString()}</strong></span>
+                  <span>Resta por pagar: <strong className="font-mono text-red-600 dark:text-red-400 font-bold">${priceTotal.toLocaleString()}</strong></span>
+                </div>
+              )}
+            </div>
+
+            {/* 7. Notas u Observaciones */}
+            <div>
+              <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                Notas u Observaciones
+              </label>
               <input 
                 type="text"
                 placeholder="Observaciones de la reserva..."
                 value={data.notes || ''}
-                onChange={e => setData({...data, notes: e.target.value})}
-                className="w-full p-2.5 text-xs bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-emerald-500"
+                onChange={e => setData({ ...data, notes: e.target.value })}
+                className="w-full h-8.5 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
               />
             </div>
-            <div className="flex gap-3 pt-4">
-              <button type="button" onClick={() => setStep(1)} className="flex-1 py-3 rounded-xl font-bold text-gray-600 bg-gray-100">Atrás</button>
-              <button type="button" onClick={handleSubmit} disabled={!data.host_id || !data.date || !data.time} className="flex-[2] bg-emerald-600 text-white py-3 rounded-xl font-bold disabled:opacity-50">Confirmar Reserva</button>
-            </div>
           </div>
-        )}
-      </motion.div>
-    </div>
+
+          {/* Botones de Acción al Pie */}
+          <div className="flex gap-2.5 pt-3 mt-2 border-t border-gray-100 dark:border-slate-800 shrink-0">
+            <button 
+              type="button" 
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onClose();
+              }}
+              className="flex-1 py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+            >
+              Cancelar
+            </button>
+            <button 
+              type="button" 
+              onClick={handleSubmit} 
+              disabled={(!data.host_id && !data.clientName) || !data.date || !data.time || !data.court_id}
+              className="flex-[1.5] py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md disabled:opacity-50 cursor-pointer"
+            >
+              Confirmar Reserva
+            </button>
+          </div>
+        </motion.div>
+      </div>
+
+      {/* 2.2. Modal Anidado '+ Nuevo Cliente' sobre la pantalla actual */}
+      {isAddingNewUser && (
+        <div 
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+          onClick={() => setIsAddingNewUser(false)}
+        >
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-sm shadow-2xl p-5 border border-gray-100 dark:border-slate-800 space-y-3.5"
+          >
+            <div className="flex justify-between items-center pb-2 border-b border-gray-100 dark:border-slate-800">
+              <h3 className="font-bold text-sm sm:text-base text-gray-900 dark:text-white">Nuevo Cliente</h3>
+              <button 
+                type="button" 
+                onClick={() => setIsAddingNewUser(false)}
+                className="text-gray-400 hover:text-gray-600 p-1 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveNewUser} className="space-y-3 text-xs sm:text-sm">
+              <div>
+                <label className="block text-[11px] font-bold text-gray-600 dark:text-slate-400 mb-1">Nombre y Apellido *</label>
+                <input 
+                  type="text" 
+                  required
+                  placeholder="Ej: Marcos Rojo"
+                  value={newUserForm.name}
+                  onChange={e => setNewUserForm({ ...newUserForm, name: e.target.value })}
+                  className="w-full h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-emerald-500 text-gray-900 dark:text-white"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-gray-600 dark:text-slate-400 mb-1">Teléfono *</label>
+                <input 
+                  type="tel" 
+                  required
+                  placeholder="Ej: 1122334455"
+                  value={newUserForm.phone}
+                  onChange={e => setNewUserForm({ ...newUserForm, phone: e.target.value })}
+                  className="w-full h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-emerald-500 text-gray-900 dark:text-white"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-gray-600 dark:text-slate-400 mb-1">Email (Opcional)</label>
+                <input 
+                  type="email" 
+                  placeholder="cliente@email.com"
+                  value={newUserForm.email}
+                  onChange={e => setNewUserForm({ ...newUserForm, email: e.target.value })}
+                  className="w-full h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-emerald-500 text-gray-900 dark:text-white"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button 
+                  type="button" 
+                  onClick={() => setIsAddingNewUser(false)}
+                  className="flex-1 py-2 rounded-xl text-xs font-bold text-gray-600 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 transition-colors cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={!newUserForm.name.trim() || !newUserForm.phone.trim()}
+                  className="flex-1 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
+                >
+                  Guardar Cliente
+                </button>
+              </div>
+            </form>
+          </motion.div>
+        </div>
+      )}
+    </>
   );
 };
 
@@ -2821,6 +3069,168 @@ const RetentionStats = ({ onClose, complexId = 'complejo_central' }: { onClose: 
   );
 };
 
+// Helper: Local date in format YYYY-MM-DD without timezone shifts
+function getTodayLocalYMD(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// Helper: Safely add/subtract days without timezone drift
+function shiftDateYMD(dateStr: string, deltaDays: number): string {
+  if (!dateStr || !dateStr.includes('-')) return getTodayLocalYMD();
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d + deltaDays);
+  const curY = dt.getFullYear();
+  const curM = String(dt.getMonth() + 1).padStart(2, '0');
+  const curD = String(dt.getDate()).padStart(2, '0');
+  return `${curY}-${curM}-${curD}`;
+}
+
+// Helper: Get array of 7 days (Monday to Sunday) containing dateStr
+function getWeekDaysArray(dateStr: string) {
+  if (!dateStr || !dateStr.includes('-')) dateStr = getTodayLocalYMD();
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const ref = new Date(y, m - 1, d);
+  const dayOfWeek = ref.getDay(); // 0 is Sunday, 1 is Monday ... 6 is Saturday
+  // Monday is index 1. If Sunday (0), offset is -6. Otherwise 1 - dayOfWeek.
+  const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+  const monday = new Date(y, m - 1, d + mondayOffset);
+
+  const labels = ['Lun', 'Mar', 'Mie', 'Jue', 'Vie', 'Sab', 'Dom'];
+  const todayStr = getTodayLocalYMD();
+
+  return Array.from({ length: 7 }, (_, i) => {
+    const cur = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
+    const curY = cur.getFullYear();
+    const curM = String(cur.getMonth() + 1).padStart(2, '0');
+    const curD = String(cur.getDate()).padStart(2, '0');
+    const curStr = `${curY}-${curM}-${curD}`;
+    return {
+      dateStr: curStr,
+      dayLabel: labels[i],
+      dayNumber: curD,
+      isToday: curStr === todayStr,
+      isSelected: curStr === dateStr
+    };
+  });
+}
+
+function formatMonthYearHeading(dateStr: string): string {
+  if (!dateStr || !dateStr.includes('-')) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  const monthName = dt.toLocaleString('es-ES', { month: 'long' });
+  return `${monthName.charAt(0).toUpperCase() + monthName.slice(1)} ${y}`;
+}
+
+function formatListCardDateTime(dateStr?: string, timeStr?: string): string {
+  if (!dateStr) return timeStr ? `${timeStr}hs` : '-';
+  const parts = dateStr.split('-');
+  const cleanTime = timeStr ? timeStr.substring(0, 5) : '00:00';
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    const d = parseInt(parts[2], 10);
+    const months = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sept', 'oct', 'nov', 'dic'];
+    const monthName = months[m - 1] || '';
+    return `${d} de ${monthName}, ${cleanTime}hs`;
+  }
+  return `${dateStr}, ${cleanTime}hs`;
+}
+
+// 4.2. Componente de Tarjeta de Turno en Lista (Grilla de Alineación 2 Columnas x 3 Filas)
+const MatchListCard = ({ 
+  match, 
+  category, 
+  courtsCount, 
+  onClick 
+}: { 
+  match: Match, 
+  category: 'en_juego' | 'proximos' | 'jugados' | 'cancelados', 
+  courtsCount: number, 
+  onClick: () => void 
+}) => {
+  const deposit = Number(match.deposit ?? match.amount_paid ?? 0);
+  const totalPrice = Number(match.price_total ?? match.price ?? 0);
+  const clientName = match.host_name || match.userName || (match as any).user_name || (match as any).clientName || 'Cliente';
+  const courtName = match.courtName || match.court_name || 'Cancha';
+  const showCourt = courtsCount > 1;
+
+  const matchDate = match.date || (match.start_time ? String(match.start_time).split('T')[0] : '');
+  const matchTime = match.startTime || (match.start_time && match.start_time.includes('T') ? match.start_time.split('T')[1].substring(0, 5) : '');
+
+  return (
+    <div
+      onClick={onClick}
+      className="p-3 sm:p-3.5 hover:bg-gray-50/70 dark:hover:bg-slate-800/40 transition-colors cursor-pointer flex flex-col justify-between gap-1 border-b border-gray-100 dark:border-slate-800 last:border-b-0"
+    >
+      {/* Grilla de Alineación (2 Columnas x 3 Filas) */}
+
+      {/* Fila 1 (Superior): Fecha y hora legible (izq.) <---> Badge de Estado (der.) */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-gray-500 dark:text-slate-400 text-xs sm:text-sm font-medium truncate">
+          <Clock size={13} className="text-gray-400 shrink-0" />
+          <span className="truncate">{formatListCardDateTime(matchDate, matchTime)}</span>
+        </div>
+        <div className="shrink-0">
+          {category === 'en_juego' && (
+            <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-semibold text-xs animate-pulse">
+              <span className="w-2 h-2 rounded-full bg-red-500" />
+              <span>En juego</span>
+            </div>
+          )}
+          {category === 'proximos' && (
+            <span className="text-blue-600 dark:text-blue-400 font-semibold text-xs">
+              Próximo
+            </span>
+          )}
+          {category === 'jugados' && (
+            <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-xs">
+              Jugado
+            </span>
+          )}
+          {category === 'cancelados' && (
+            <span className="text-gray-500 dark:text-slate-400 font-semibold text-xs">
+              Cancelado
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Fila 2 (Media): Nombre del cliente en negrita (izq.) <---> Monto total del turno (der.) */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-bold text-gray-900 dark:text-white text-sm sm:text-base truncate">
+          {clientName}
+        </span>
+        <span className="font-bold text-gray-900 dark:text-white text-sm sm:text-base font-mono shrink-0">
+          ${totalPrice.toLocaleString()}
+        </span>
+      </div>
+
+      {/* Fila 3 (Inferior): Nombre de la cancha (izq., visible solo si hay >1 cancha registrada) <---> Seña abonada (der.) */}
+      <div className="flex items-center justify-between gap-2 min-h-[1.25rem]">
+        <div className="text-xs text-gray-500 dark:text-slate-400 font-medium truncate">
+          {showCourt ? courtName : ''}
+        </div>
+        <div className="text-xs font-medium shrink-0">
+          {deposit > 0 ? (
+            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+              Seña: ${deposit.toLocaleString()}
+            </span>
+          ) : (
+            <span className="text-gray-400 dark:text-slate-500">
+              Seña: $0
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const ScheduleView = ({ 
   onMatchClick, 
   onNewBooking, 
@@ -2830,27 +3240,66 @@ const ScheduleView = ({
   onNavigate
 }: { 
   onMatchClick: (match: Match) => void, 
-  onNewBooking: () => void, 
-  onUpdateStatus: (id: number | string, status: string) => void, 
+  onNewBooking: (prefillData?: any) => void, 
+  onUpdateStatus?: (id: number | string, status: string) => void, 
   refreshKey?: number,
   complexId?: string,
   onNavigate?: (tab: NavTabId | string) => void
 }) => {
+  // 1. Selector Dual de Vista: Calendario vs. Lista
+  const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
+
+  // 2. Navegación Temporal Semanal: Fecha seleccionada manejada estrictamente como string YYYY-MM-DD local
+  const [selectedDateStr, setSelectedDateStr] = useState<string>(() => getTodayLocalYMD());
+
+  // Firestore snapshots in memory
   const [matches, setMatches] = useState<Match[]>([]);
   const [courts, setCourts] = useState<Court[]>([]);
-  const [selectedDate, setSelectedDate] = useState(new Date());
-  const [selectedCourtIds, setSelectedCourtIds] = useState<(number | string)[]>([]);
-  const [rowHeight, setRowHeight] = useState(64);
-  const [currentTime, setCurrentTime] = useState(new Date());
+  
+  // 1.3. Multiselección de Canchas en Grilla persistida en localStorage
+  const [selectedCourtIds, setSelectedCourtIds] = useState<(string | number)[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('jogo_agenda_selected_courts');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch (e) {}
+    }
+    return [];
+  });
+
   const [venueHours, setVenueHours] = useState<any[]>([]);
+  const [currentTime, setCurrentTime] = useState<Date>(new Date());
+
+  // 3.4. Zoom persistido en localStorage (default: 64px, rango 32px a 120px)
+  const [slotHeight, setSlotHeight] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('jogo_agenda_zoom');
+        if (saved) {
+          const val = parseInt(saved, 10);
+          if (!isNaN(val) && val >= 32 && val <= 120) return val;
+        }
+      } catch (e) {}
+    }
+    return 64;
+  });
+
+  // Collapsible state for the 4 list sections (cancelados colapsado por defecto)
+  const [collapsedSections, setCollapsedSections] = useState<{ [key: string]: boolean }>({
+    cancelados: true
+  });
+
+  const toggleSection = (sectionKey: string) => {
+    setCollapsedSections(prev => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
+  };
+
+  // Pinch-to-zoom gesture refs and handlers
   const viewportRef = useRef<HTMLDivElement>(null);
   const initialPinchDist = useRef<number | null>(null);
-  const initialRowHeight = useRef<number | null>(null);
-  const lastTapTime = useRef<number>(0);
-
-  const toggleRowHeightDensity = () => {
-    setRowHeight(prev => (prev === 96 ? 48 : 96));
-  };
+  const initialSlotHeight = useRef<number | null>(null);
 
   const handleTouchStart = (e: React.TouchEvent) => {
     if (e.touches.length === 2) {
@@ -2859,63 +3308,68 @@ const ScheduleView = ({
         e.touches[0].clientY - e.touches[1].clientY
       );
       initialPinchDist.current = dist;
-      initialRowHeight.current = rowHeight;
+      initialSlotHeight.current = slotHeight;
     }
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
-    if (e.touches.length === 2 && initialPinchDist.current !== null && initialRowHeight.current !== null) {
-      if (e.cancelable) {
-        e.preventDefault();
-      }
+    if (e.touches.length === 2 && initialPinchDist.current !== null && initialSlotHeight.current !== null) {
+      if (e.cancelable) e.preventDefault();
       const dist = Math.hypot(
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY
       );
       const scale = dist / initialPinchDist.current;
-      const newHeight = Math.max(40, Math.min(150, initialRowHeight.current * scale));
-      setRowHeight(newHeight);
+      const newHeight = Math.round(Math.max(32, Math.min(120, initialSlotHeight.current * scale)));
+      setSlotHeight(newHeight);
     }
   };
 
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    initialPinchDist.current = null;
-    initialRowHeight.current = null;
-
-    if (e.changedTouches.length === 1) {
-      const now = Date.now();
-      const timeSinceLastTap = now - lastTapTime.current;
-
-      if (timeSinceLastTap > 0 && timeSinceLastTap < 300) {
-        toggleRowHeightDensity();
-        lastTapTime.current = 0;
-      } else {
-        lastTapTime.current = now;
-      }
+  const handleTouchEnd = () => {
+    if (initialPinchDist.current !== null) {
+      initialPinchDist.current = null;
+      initialSlotHeight.current = null;
+      try {
+        localStorage.setItem('jogo_agenda_zoom', String(slotHeight));
+      } catch (e) {}
     }
   };
 
-  const selectedDateStr = safeFormatDate(selectedDate, 'yyyy-MM-dd') || format(selectedDate, 'yyyy-MM-dd');
+  const updateZoomStep = (delta: number) => {
+    setSlotHeight(prev => {
+      const next = Math.max(32, Math.min(120, prev + delta));
+      try {
+        localStorage.setItem('jogo_agenda_zoom', String(next));
+      } catch (e) {}
+      return next;
+    });
+  };
 
-  // 100% Real Firestore Connection:
-  // - Listens to 'bookings' collection filtered by complexId and date == selectedDate
-  // - Listens to 'courts' collection associated with complexId
-  // - Listens to 'venue_profile' document for operating hours
+  // Firestore reactive subscriptions (Multi-tenant scoped to complexId)
   useEffect(() => {
     if (!complexId) return;
 
+    // Escucha todos los turnos del complejo activo en tiempo real
     const unsubBookings = subscribeToBookings(complexId, (bookingsList) => {
       setMatches(Array.isArray(bookingsList) ? bookingsList : []);
-    }, selectedDateStr);
+    });
 
+    // Escucha las canchas del complejo activo
     const unsubCourts = subscribeToCourts(complexId, (courtsList) => {
       const validCourts = Array.isArray(courtsList) ? courtsList : [];
       setCourts(validCourts);
       if (validCourts.length > 0) {
-        setSelectedCourtIds(prev => prev.length === 0 ? [validCourts[0].id] : prev);
+        setSelectedCourtIds(prev => {
+          const valid = prev.filter(id => validCourts.some(c => String(c.id) === String(id)));
+          if (valid.length > 0) return valid;
+          return [validCourts[0].id];
+        });
+      } else {
+        setSelectedCourtIds([]);
       }
     });
 
+    // Escucha horarios de operación del complejo
     const unsubVenue = subscribeToVenueProfile(complexId, (venueData) => {
       if (venueData && Array.isArray(venueData.hours)) {
         setVenueHours(venueData.hours);
@@ -2927,206 +3381,352 @@ const ScheduleView = ({
       unsubCourts();
       unsubVenue();
     };
-  }, [complexId, selectedDateStr, refreshKey]);
+  }, [complexId, refreshKey]);
+
+  // Persistir selección de canchas al cambiar
+  useEffect(() => {
+    if (selectedCourtIds.length > 0) {
+      try {
+        localStorage.setItem('jogo_agenda_selected_courts', JSON.stringify(selectedCourtIds));
+      } catch (e) {}
+    }
+  }, [selectedCourtIds]);
+
+  const toggleCourtSelection = (courtId: string | number) => {
+    setSelectedCourtIds(prev => {
+      const isSelected = prev.some(id => String(id) === String(courtId));
+      if (isSelected) {
+        if (prev.length <= 1) return prev; // Mantener al menos una cancha activa
+        return prev.filter(id => String(id) !== String(courtId));
+      } else {
+        return [...prev, courtId];
+      }
+    });
+  };
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 60000);
     return () => clearInterval(timer);
   }, []);
 
-  // Calculate dynamic start/end hours based on selected day
-  const getDayHours = () => {
-    if (!venueHours || !venueHours.length) return { start: 8, end: 23 };
-    
-    const dayName = safeFormatDate(selectedDate, 'EEEE', { locale: es }, '').toLowerCase();
-    // Map date-fns day name to our data structure (Lunes, Martes...)
-    const dayMap: {[key: string]: string} = {
-      'lunes': 'Lunes', 'martes': 'Martes', 'miércoles': 'Miércoles', 'miercoles': 'Miércoles',
-      'jueves': 'Jueves', 'viernes': 'Viernes', 'sábado': 'Sábado', 'sabado': 'Sábado', 'domingo': 'Domingo'
-    };
-    
-    const targetName = dayMap[dayName] || 'Lunes';
-    const dayConfig = venueHours.find(h => h && h.day && h.day.toLowerCase() === targetName.toLowerCase());
-    if (!dayConfig) return { start: 8, end: 23 }; // Default fallback if no config
-    if (!dayConfig.open) return { start: 0, end: -1 }; // Closed
+  // Canchas activas filtradas para la proyección en paralelo
+  const displayedCourts = useMemo(() => {
+    const selected = courts.filter(c => selectedCourtIds.some(id => String(id) === String(c.id)));
+    if (selected.length > 0) return selected;
+    return courts.length > 0 ? [courts[0]] : [];
+  }, [courts, selectedCourtIds]);
 
-    const start = parseInt((dayConfig.start || '08:00').split(':')[0], 10) || 8;
-    let end = parseInt((dayConfig.end || '23:00').split(':')[0], 10) || 23;
-    if (end === 0) end = 24; // Handle midnight
-    
-    if (end < start) {
-      end += 24;
+  const weekDays = useMemo(() => getWeekDaysArray(selectedDateStr), [selectedDateStr]);
+
+  // 3.1. Rango Horario Dinámico y Resolución de Cierre (Regla Opción B)
+  const { isOpenDay, timeSlots } = useMemo(() => {
+    const [y, m, d] = selectedDateStr.split('-').map(Number);
+    const dt = new Date(y, m - 1, d);
+    const dayIndex = dt.getDay(); // 0 es Domingo
+    const dayNames = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+    const targetDayName = dayNames[dayIndex];
+
+    const dayConfig = Array.isArray(venueHours) && venueHours.length > 0 ? venueHours.find(h => {
+      const dName = String(h?.day || '').toLowerCase().replace('é', 'e').replace('á', 'a');
+      return dName === targetDayName.replace('é', 'e').replace('á', 'a');
+    }) : null;
+
+    if (dayConfig && dayConfig.open === false) {
+      return { isOpenDay: false, timeSlots: [] };
     }
-    
-    return { start, end: Math.max(start, end - 1) }; // -1 because loop is inclusive of start but we want slots
-  };
 
-  const { start: startHour, end: endHour } = getDayHours();
-  const timeSlots = Array.from({ length: Math.max(0, endHour - startHour + 1) }, (_, i) => i + startHour);
+    const startStr = dayConfig?.start || dayConfig?.openTime || '14:00';
+    const endStr = dayConfig?.end || dayConfig?.closeTime || '00:00';
 
-  const getMatchForSlot = (courtId: number | string, rawHour: number) => {
-    if (!Array.isArray(matches)) return null;
+    const startH = parseInt(startStr.split(':')[0], 10) || 14;
+    let endH = parseInt(endStr.split(':')[0], 10);
+    if (isNaN(endH)) endH = 0;
+
+    const slots: number[] = [];
+    // Regla Opción B: Si el horario de cierre indica 00:00 (o crossesMidnight: true), el negocio finaliza su operación a la 01:00 am.
+    // Por lo tanto, la grilla debe generar e incluir obligatoriamente el slot que inicia a las 00:00 y finaliza a las 01:00 (slot 24, mostrado como 00:00).
+    if (endH === 0 || endStr === '00:00' || dayConfig?.crossesMidnight) {
+      for (let h = startH; h <= 24; h++) {
+        slots.push(h);
+      }
+    } else if (endH < startH) {
+      for (let h = startH; h <= 24 + endH; h++) {
+        slots.push(h);
+      }
+    } else {
+      for (let h = startH; h <= endH; h++) {
+        slots.push(h);
+      }
+    }
+
+    return { isOpenDay: true, timeSlots: slots };
+  }, [selectedDateStr, venueHours]);
+
+  // Match lookup para una cancha y un slot específicos
+  const getMatchForCourtSlot = (courtId: string | number, rawHour: number) => {
+    const targetHour = rawHour % 24;
+    const courtObj = courts.find(c => String(c.id) === String(courtId));
     return matches.find(m => {
-      if (!m || !m.start_time) return false;
-      const matchDate = safeParseDate(m.start_time);
-      if (!matchDate) return false;
-      const slotDate = new Date(selectedDate);
-      if (rawHour >= 24) {
-        slotDate.setDate(slotDate.getDate() + 1);
-      }
-      const isSameHour = matchDate.getHours() === (rawHour % 24);
-      const isSameDayMatch = matchDate.getDate() === slotDate.getDate() &&
-                             matchDate.getMonth() === slotDate.getMonth() &&
-                             matchDate.getFullYear() === slotDate.getFullYear();
-      const isSameCourt = String(m.court_id) === String(courtId) || String((m as any).courtId) === String(courtId);
-      return isSameDayMatch && isSameHour && isSameCourt;
+      if (!m) return false;
+      const sameCourt = String(m.court_id) === String(courtId) || 
+                        String((m as any).courtId) === String(courtId) ||
+                        (courtObj && m.court_name && m.court_name === courtObj.name) ||
+                        (courtObj && m.courtName && m.courtName === courtObj.name);
+      if (!sameCourt) return false;
+
+      const matchDateStr = m.date || (m.start_time ? String(m.start_time).split('T')[0] : '');
+      if (matchDateStr !== selectedDateStr) return false;
+
+      const startTimeStr = m.startTime || (m.start_time && m.start_time.includes('T') ? m.start_time.split('T')[1].substring(0, 5) : '');
+      const matchHour = startTimeStr ? parseInt(startTimeStr.split(':')[0], 10) : (m.start_time ? new Date(m.start_time).getHours() : -1);
+
+      return matchHour === targetHour;
     });
   };
 
-  const getBlockedByForSlot = (courtId: number | string, rawHour: number) => {
-    if (!Array.isArray(courts)) return null;
-    const court = courts.find(c => c && String(c.id) === String(courtId));
-    if (!court || !(court as any).blockedCourts || !(court as any).blockedCourts.length) return null;
-    
-    // Check if any of the blocked courts has a match in this slot
-    for (const blockedId of (court as any).blockedCourts) {
-      const matchOnBlocked = getMatchForSlot(blockedId, rawHour);
-      if (matchOnBlocked) {
-        const blockerCourt = courts.find(c => c && String(c.id) === String(blockedId));
-        return blockerCourt ? blockerCourt.name : 'Otra cancha';
-      }
-    }
-    return null;
-  };
-
-  const changeDate = (days: number) => {
-    const newDate = new Date(selectedDate);
-    newDate.setDate(newDate.getDate() + days);
-    setSelectedDate(newDate);
-  };
-
-  const toggleCourtSelection = (courtId: number | string) => {
-    setSelectedCourtIds(prev => {
-      if (prev.includes(courtId)) {
-        // Don't allow deselecting the last court
-        if (prev.length === 1) return prev;
-        return prev.filter(id => id !== courtId);
-      } else {
-        return [...prev, courtId].sort((a, b) => {
-          const idxA = courts.findIndex(c => c.id === a);
-          const idxB = courts.findIndex(c => c.id === b);
-          return idxA - idxB;
-        });
-      }
-    });
-  };
-
-  // Calculate position of current time line
+  // Posición de la línea de hora actual
   const getCurrentTimePosition = () => {
-    const now = currentTime;
-    let currentHour = now.getHours();
-    const currentMinute = now.getMinutes();
-    
-    const isToday = isSameDay(selectedDate, now);
-    const isYesterday = isSameDay(new Date(selectedDate.getTime() + 86400000), now);
-    
-    if (!isToday && !isYesterday) return null;
-    
-    if (isYesterday && currentHour < (endHour % 24)) {
-       currentHour += 24;
-    } else if (isYesterday) {
-       return null;
-    } else if (isToday && currentHour < startHour && currentHour < (endHour % 24)) {
-       currentHour += 24;
+    const todayYMD = getTodayLocalYMD();
+    if (selectedDateStr !== todayYMD) return null;
+    if (timeSlots.length === 0) return null;
+
+    const startH = timeSlots[0];
+    const endH = timeSlots[timeSlots.length - 1];
+
+    let curH = currentTime.getHours();
+    const curM = currentTime.getMinutes();
+
+    if (curH === 0 && endH >= 24) {
+      curH = 24;
     }
 
-    if (currentHour < startHour || currentHour > endHour) return null;
+    if (curH < startH || curH > endH) return null;
 
-    const hourIndex = currentHour - startHour;
-    const minutePercentage = currentMinute / 60;
-    
-    return (hourIndex + minutePercentage) * rowHeight;
+    const hourFraction = (curH - startH) + (curM / 60);
+    return hourFraction * slotHeight;
   };
 
   const currentTimePos = getCurrentTimePosition();
-  const isTodayDate = isSameDay(selectedDate, currentTime) || isSameDay(new Date(selectedDate.getTime() + 86400000), currentTime);
 
-  // Filter bookings for the selected date
-  const dayBookings = matches.filter(m => {
-    if (!m || !m.start_time) return false;
-    const matchDate = safeParseDate(m.start_time);
-    if (!matchDate) return false;
-    return isSameDay(matchDate, selectedDate);
-  });
+  // Partidos confirmados para el día seleccionado
+  const dayBookingsCount = useMemo(() => {
+    return matches.filter(m => (m.date === selectedDateStr || (m.start_time && m.start_time.startsWith(selectedDateStr))) && String(m.status).toLowerCase() !== 'cancelado').length;
+  }, [matches, selectedDateStr]);
+
+  // 4.1. Clasificación estricta de partidos para la Vista Lista
+  const { enJuego, proximos, jugados, cancelados } = useMemo(() => {
+    const nowMs = currentTime.getTime();
+    const ej: Match[] = [];
+    const prox: Match[] = [];
+    const jug: Match[] = [];
+    const canc: Match[] = [];
+
+    for (const m of matches) {
+      if (!m) continue;
+      const status = String(m.status || '').toLowerCase();
+      if (status === 'cancelado' || status === 'cancelled') {
+        canc.push(m);
+        continue;
+      }
+
+      const dateStr = m.date || (m.start_time ? String(m.start_time).split('T')[0] : '');
+      const startTimeStr = m.startTime || (m.start_time && m.start_time.includes('T') ? m.start_time.split('T')[1].substring(0, 5) : '18:00');
+      const endTimeStr = m.endTime || (m.end_time && m.end_time.includes('T') ? m.end_time.split('T')[1].substring(0, 5) : '19:00');
+
+      let startMs = 0;
+      let endMs = 0;
+      if (dateStr && startTimeStr) {
+        const [y, mo, d] = dateStr.split('-').map(Number);
+        const [sh, sm] = startTimeStr.split(':').map(Number);
+        const [eh, em] = endTimeStr.split(':').map(Number);
+        const sDate = new Date(y, mo - 1, d, sh, sm || 0);
+        let eDate = new Date(y, mo - 1, d, eh, em || 0);
+        if (eDate <= sDate) {
+          eDate = new Date(y, mo - 1, d + 1, eh, em || 0);
+        }
+        startMs = sDate.getTime();
+        endMs = eDate.getTime();
+      } else if (m.start_time) {
+        startMs = new Date(m.start_time).getTime();
+        endMs = m.end_time ? new Date(m.end_time).getTime() : startMs + 3600000;
+      }
+
+      if (status === 'jugado' || status === 'completed') {
+        jug.push(m);
+      } else if (startMs <= nowMs && nowMs < endMs) {
+        ej.push(m);
+      } else if (startMs > nowMs) {
+        prox.push(m);
+      } else {
+        jug.push(m);
+      }
+    }
+
+    // Próximos: de menor a mayor distancia temporal (ascendente)
+    prox.sort((a, b) => {
+      const tA = new Date((a.date || '2000-01-01') + 'T' + (a.startTime || '00:00')).getTime();
+      const tB = new Date((b.date || '2000-01-01') + 'T' + (b.startTime || '00:00')).getTime();
+      return tA - tB;
+    });
+
+    // En juego: ascendente
+    ej.sort((a, b) => {
+      const tA = new Date((a.date || '2000-01-01') + 'T' + (a.startTime || '00:00')).getTime();
+      const tB = new Date((b.date || '2000-01-01') + 'T' + (b.startTime || '00:00')).getTime();
+      return tA - tB;
+    });
+
+    // Jugados: de más reciente a más antiguo (descendente)
+    jug.sort((a, b) => {
+      const tA = new Date((a.date || '2000-01-01') + 'T' + (a.startTime || '00:00')).getTime();
+      const tB = new Date((b.date || '2000-01-01') + 'T' + (b.startTime || '00:00')).getTime();
+      return tB - tA;
+    });
+
+    // Cancelados: de más reciente a más antiguo (descendente)
+    canc.sort((a, b) => {
+      const tA = new Date((a.date || '2000-01-01') + 'T' + (a.startTime || '00:00')).getTime();
+      const tB = new Date((b.date || '2000-01-01') + 'T' + (b.startTime || '00:00')).getTime();
+      return tB - tA;
+    });
+
+    return { enJuego: ej, proximos: prox, jugados: jug, cancelados: canc };
+  }, [matches, currentTime]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-140px)] lg:h-auto space-y-4">
-      {/* Calendar Header */}
-      <div className="flex items-center justify-between bg-white dark:bg-slate-900 p-4 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm">
-        <div className="flex items-center gap-4">
-          <button type="button" onClick={() => changeDate(-1)} className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full text-gray-500">
-            <ChevronRight className="rotate-180" size={20} />
-          </button>
-          <div className="text-center">
-            <h2 className="font-bold text-lg text-gray-900 dark:text-white capitalize">
-              {safeFormatDate(selectedDate, 'EEEE d MMMM', { locale: es }, 'Fecha')}
-            </h2>
-            {dayBookings.length === 0 ? (
-              <p className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold tracking-wide">
-                No hay reservas para esta fecha
-              </p>
-            ) : (
-              <p className="text-xs text-gray-500 dark:text-slate-400 font-medium tracking-wider">
-                {dayBookings.length} {dayBookings.length === 1 ? 'reserva confirmada' : 'reservas confirmadas'}
-              </p>
-            )}
-          </div>
-          <button type="button" onClick={() => changeDate(1)} className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full text-gray-500">
-            <ChevronRight size={20} />
-          </button>
-        </div>
-        
-        <div className="flex items-center gap-2">
-          {/* Zoom Control */}
-          <div className="hidden sm:flex items-center gap-2 bg-gray-50 dark:bg-slate-800 rounded-lg p-1 mr-2">
-            <button type="button" onClick={() => setRowHeight(Math.max(40, rowHeight - 10))} className="p-1 hover:bg-white dark:hover:bg-slate-700 rounded text-gray-500 text-xs font-bold cursor-pointer">-</button>
-            <span className="text-xs font-mono text-gray-400 w-8 text-center">Zoom</span>
-            <button type="button" onClick={() => setRowHeight(Math.min(120, rowHeight + 10))} className="p-1 hover:bg-white dark:hover:bg-slate-700 rounded text-gray-500 text-xs font-bold cursor-pointer">+</button>
-          </div>
-
-          <button 
-            type="button" 
-            disabled={courts.length === 0}
-            onClick={() => {
-              if (courts.length > 0) {
-                onNewBooking();
-              }
-            }} 
-            title={courts.length === 0 ? "Primero debes configurar al menos una cancha en Perfil" : "Crear nueva reserva"}
+    <div className="flex flex-col space-y-4 pb-32 relative">
+      {/* 1.2. Selector de Vista: Montado directamente sobre fondo blanco limpio, centrado horizontalmente */}
+      <div className="bg-white dark:bg-slate-900 p-2 sm:p-2.5 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm flex items-center justify-between relative">
+        <div className="flex items-center justify-center gap-2 mx-auto">
+          <button
+            type="button"
+            onClick={() => setViewMode('calendar')}
             className={cn(
-              "px-4 py-2 rounded-xl text-sm font-bold shadow-lg flex items-center gap-2 transition-all active:scale-95",
-              courts.length > 0 
-                ? "bg-emerald-600 text-white shadow-emerald-900/20 hover:bg-emerald-700 cursor-pointer" 
-                : "bg-gray-200 dark:bg-slate-800 text-gray-400 cursor-not-allowed opacity-60 shadow-none"
+              "py-1.5 px-4 rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer",
+              viewMode === 'calendar'
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "bg-transparent text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-200 border-none shadow-none"
             )}
           >
-            <Plus size={18} /> <span className="hidden sm:inline">Nueva Reserva</span>
+            <Calendar size={15} />
+            <span>Calendario</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('list')}
+            className={cn(
+              "py-1.5 px-4 rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer",
+              viewMode === 'list'
+                ? "bg-emerald-600 text-white shadow-sm"
+                : "bg-transparent text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-200 border-none shadow-none"
+            )}
+          >
+            <List size={15} />
+            <span>Lista</span>
           </button>
         </div>
+
+        {/* Zoom Controls (para escritorio / accesibilidad en vista Calendario) */}
+        {viewMode === 'calendar' && (
+          <div className="hidden sm:flex items-center gap-1 absolute right-3 top-1/2 -translate-y-1/2 bg-gray-50 dark:bg-slate-800 rounded-xl px-2 py-1 border border-gray-200/60 dark:border-slate-700">
+            <button 
+              type="button" 
+              onClick={() => updateZoomStep(-8)}
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white dark:hover:bg-slate-700 text-gray-600 dark:text-slate-300 text-sm font-bold cursor-pointer transition-colors"
+              title="Reducir altura (Zoom Out)"
+            >
+              -
+            </button>
+            <span className="text-[11px] font-mono text-gray-400 dark:text-slate-500 px-1 font-semibold">
+              {slotHeight}px
+            </span>
+            <button 
+              type="button" 
+              onClick={() => updateZoomStep(8)}
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white dark:hover:bg-slate-700 text-gray-600 dark:text-slate-300 text-sm font-bold cursor-pointer transition-colors"
+              title="Aumentar altura (Zoom In)"
+            >
+              +
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Clean Empty State Notification when no reservations exist for selected day */}
-      {dayBookings.length === 0 && courts.length > 0 && (
-        <div className="bg-emerald-50/80 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/40 rounded-2xl py-2.5 px-4 flex items-center justify-between text-xs text-emerald-800 dark:text-emerald-300 shadow-xs">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            <span className="font-bold">No hay reservas para esta fecha</span>
+      {/* 2.1. Supresión del Calendario en Lista: El bloque semanal solo se renderiza en modo Calendario */}
+      {viewMode === 'calendar' && (
+        <div className="bg-white dark:bg-slate-900 p-3 sm:p-4 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm space-y-3">
+          <div className="flex items-center justify-between px-1">
+            <button
+              type="button"
+              onClick={() => setSelectedDateStr(prev => shiftDateYMD(prev, -7))}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full text-gray-600 dark:text-slate-400 transition-colors cursor-pointer"
+              title="Semana anterior"
+              aria-label="Semana anterior"
+            >
+              <ChevronLeft size={20} />
+            </button>
+
+            <div className="text-center">
+              <h3 className="font-bold text-base sm:text-lg text-gray-900 dark:text-white capitalize">
+                {formatMonthYearHeading(selectedDateStr)}
+              </h3>
+              <p className="text-[11px] text-gray-500 dark:text-slate-400">
+                {dayBookingsCount === 0 
+                  ? 'Sin reservas confirmadas' 
+                  : `${dayBookingsCount} ${dayBookingsCount === 1 ? 'reserva confirmada' : 'reservas confirmadas'}`}
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setSelectedDateStr(prev => shiftDateYMD(prev, 7))}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full text-gray-600 dark:text-slate-400 transition-colors cursor-pointer"
+              title="Semana siguiente"
+              aria-label="Semana siguiente"
+            >
+              <ChevronRight size={20} />
+            </button>
           </div>
-          <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400">Todos los horarios libres</span>
+
+          {/* 7 Columnas: Lun a Dom */}
+          <div className="grid grid-cols-7 gap-1 sm:gap-2">
+            {weekDays.map((day) => {
+              const isSelected = day.dateStr === selectedDateStr;
+              return (
+                <button
+                  type="button"
+                  key={`weekday-${day.dateStr}`}
+                  onClick={() => setSelectedDateStr(day.dateStr)}
+                  className={cn(
+                    "flex flex-col items-center justify-center py-2 sm:py-2.5 rounded-xl transition-all cursor-pointer relative",
+                    isSelected
+                      ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/20 font-bold"
+                      : "hover:bg-gray-50 dark:hover:bg-slate-800/80 text-gray-600 dark:text-slate-400"
+                  )}
+                >
+                  <span className={cn(
+                    "text-[10px] sm:text-xs font-medium uppercase tracking-wider mb-0.5",
+                    isSelected ? "text-emerald-100" : "text-gray-500 dark:text-slate-400"
+                  )}>
+                    {day.dayLabel}
+                  </span>
+                  <span className={cn(
+                    "text-base sm:text-lg font-bold leading-none",
+                    isSelected ? "text-white" : "text-gray-800 dark:text-slate-200"
+                  )}>
+                    {day.dayNumber}
+                  </span>
+                  {day.isToday && !isSelected && (
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mt-1" />
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* Empty State when no courts exist */}
+      {/* Manejo de Canchas Vacías */}
       {courts.length === 0 ? (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 md:p-12 text-center my-4 shadow-sm">
           <div className="w-16 h-16 rounded-3xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto mb-4 border border-amber-200/60 dark:border-amber-800/40">
@@ -3146,189 +3746,371 @@ const ScheduleView = ({
             </button>
           )}
         </div>
-      ) : (
-        <>
-          {/* Court Tabs (Multi-select) */}
-          <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-2 flex gap-2 overflow-x-auto">
-        {courts.map((court, cIdx) => (
-          <button type="button"
-            key={`sched-court-tab-${court.id || cIdx}-${cIdx}`}
-            onClick={() => toggleCourtSelection(court.id)}
-            className={cn(
-              "flex-1 py-2 px-4 rounded-xl text-sm font-bold transition-all whitespace-nowrap flex items-center justify-center gap-2",
-              selectedCourtIds.includes(court.id)
-                ? "bg-emerald-600 text-white shadow-md" 
-                : "bg-gray-50 text-gray-500 hover:bg-gray-100"
-            )}
-          >
-            {selectedCourtIds.includes(court.id) && <div className="w-2 h-2 rounded-full bg-white animate-pulse" />}
-            {court.name}
-          </button>
-        ))}
-      </div>
-
-      
-      {/* Calendar Grid */}
-      <div 
-        id="reservations-grid-viewport"
-        className="flex-1 overflow-auto bg-white rounded-2xl border border-gray-100 shadow-sm relative select-none"
-        ref={viewportRef}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-        onDoubleClick={toggleRowHeightDensity}
-        style={{ touchAction: 'pan-x pan-y' }}
-      >
-        <div className="relative" style={{ minWidth: `${Math.max(100, selectedCourtIds.length * 90 + 64)}px` }}>
-          
-          {/* Current Time Line */}
-          {isTodayDate && currentTimePos !== null && (
-            <div 
-              className="absolute left-0 right-0 z-10 flex items-center pointer-events-none"
-              style={{ top: `${currentTimePos}px` }}
-            >
-              <div className="w-16 text-right pr-2 text-xs font-bold text-red-500 bg-white/80 backdrop-blur-sm rounded-r sticky left-0 z-20">
-                {format(currentTime, 'HH:mm')}
-              </div>
-              <div className="flex-1 h-[2px] bg-red-500 shadow-sm relative">
-                <div className="absolute right-0 -top-1 w-2 h-2 rounded-full bg-red-500" />
-              </div>
-            </div>
-          )}
-          
-          {/* Time Slots */}
-          <div className="relative">
-            {timeSlots.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-20 text-gray-400">
-                <Moon size={48} className="mb-4 opacity-50" />
-                <p className="font-bold text-lg">Cerrado este día</p>
-                <p className="text-sm">Configura los horarios en tu Perfil.</p>
-              </div>
-            ) : timeSlots.map((rawHour, hIdx) => {
-              const hour = rawHour % 24;
+      ) : viewMode === 'calendar' ? (
+        /* =================================================================== */
+        /* 3. VISTA CALENDARIO (GRILLA HORARIA TRADICIONAL CON MULTISELECCIÓN) */
+        /* =================================================================== */
+        <div className="space-y-3">
+          {/* 1.1. Barra de Canchas en Calendario: Sin fondo gris perimetral en no seleccionadas, selectores planos */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm p-1.5 flex gap-1 overflow-x-auto no-scrollbar">
+            {courts.map((court, cIdx) => {
+              const isSelected = selectedCourtIds.some(id => String(id) === String(court.id));
               return (
-              <div 
-                key={`grid-row-${rawHour}-${hIdx}`} 
-                className="flex border-b border-gray-50 group hover:bg-gray-50/30 transition-colors"
-                style={{ height: `${rowHeight}px` }}
-              >
-                {/* Time Label */}
-                <div className="w-16 flex-shrink-0 border-r border-gray-100 flex items-start justify-center pt-2 bg-gray-50/30 text-xs font-mono text-gray-400 select-none sticky left-0 z-20 bg-white">
-                  {`${hour.toString().padStart(2, '0')}:00`}
-                </div>
-                
-                {/* Court Slots */}
-                {selectedCourtIds.map((courtId, index) => (
-                  <div 
-                    key={`slot-${rawHour}-${courtId}-${index}`} 
-                    className={cn(
-                      "flex-1 relative p-1 border-r border-gray-50 last:border-r-0 min-w-[90px]",
-                      selectedCourtIds.length > 1 && index % 2 === 0 ? "bg-gray-50/10" : ""
-                    )}
-                  >
-                    {(() => {
-                      const match = getMatchForSlot(courtId, rawHour);
-                      
-                      if (match) {
-                        const matchStart = new Date(match.start_time);
-                        const matchEnd = new Date(match.end_time);
-                        const now = new Date();
-                        let matchStatus = 'upcoming';
-
-                        if (now > matchEnd) {
-                          matchStatus = 'past';
-                        } else if (now >= matchStart && now <= matchEnd) {
-                          matchStatus = 'live';
-                        }
-
-                        // Calculate paid players logic
-                        const maxPlayers = match.max_players || 10;
-                        const paidPercentage = match.price_total ? (match.amount_paid || 0) / match.price_total : (match.payment_status === 'paid' ? 1 : 0);
-                        const paidPlayers = Math.round(paidPercentage * maxPlayers);
-
-                        // Compact view if many courts selected or rowHeight is small
-                        const isDetailed = rowHeight >= 75;
-                        const isCompact = !isDetailed && selectedCourtIds.length > 2;
-                          
-                        return (
-                          <motion.div
-                            initial={{ opacity: 0, scale: 0.95 }}
-                            animate={{ opacity: 1, scale: 1 }}
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              onMatchClick(match);
-                            }}
-                            className={cn(
-                              "h-full w-full rounded-lg cursor-pointer border shadow-sm transition-all hover:shadow-md flex flex-col justify-between overflow-hidden relative",
-                              paidPlayers >= maxPlayers ? "bg-emerald-100 border-emerald-300" :
-                              paidPlayers >= 6 ? "bg-yellow-100 border-yellow-300" :
-                              "bg-red-100 border-red-300",
-                              (matchStatus === "past" && match.payment_status !== 'paid') ? "animate-pulse" : "",
-                              rowHeight < 60 ? "p-1" : "p-1.5"
-                            )}
-                          >
-                            <div className={cn("flex gap-1", isCompact ? "flex-col items-start" : "justify-between items-start")}>
-                              <div className="font-bold text-xs text-gray-900 truncate flex-1 leading-tight flex items-center gap-1.5 w-full">
-                                {matchStatus === 'live' && (
-                                  <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse flex-shrink-0" />
-                                )}
-                                <span className="truncate">{match.host_name}</span>
-                              </div>
-                              <div className={cn("text-[10px] font-mono font-bold text-gray-900 flex-shrink-0", isCompact ? "mt-0.5" : "ml-auto")}>
-                                ${match.price_total?.toLocaleString()}
-                              </div>
-                            </div>
-
-                            {/* Detailed view extra indicators */}
-                            {isDetailed && (
-                              <div className="mt-1 pt-1 border-t border-black/5 flex items-center justify-between text-[9px] text-gray-700 font-medium">
-                                <span className={cn(
-                                  "px-1.5 py-0.5 rounded font-bold uppercase text-[8px]",
-                                  match.payment_status === 'paid' ? "bg-emerald-200 text-emerald-800" :
-                                  match.payment_status === 'partial' ? "bg-yellow-200 text-yellow-800" :
-                                  "bg-red-200 text-red-800"
-                                )}>
-                                  {match.payment_status === 'paid' ? 'Pagado' : match.payment_status === 'partial' ? 'Parcial' : 'Pendiente'}
-                                </span>
-                                <span className="font-mono text-gray-600">
-                                  {paidPlayers}/{maxPlayers} jug.
-                                </span>
-                              </div>
-                            )}
-                          </motion.div>
-                        );
-                      } else {
-                        const blockedBy = getBlockedByForSlot(courtId, rawHour);
-                        if (blockedBy) {
-                          return (
-                            <div className="h-full w-full rounded-lg bg-gray-100 border border-gray-200 flex flex-col items-center justify-center p-1 text-center cursor-not-allowed overflow-hidden">
-                              <ShieldCheck size={14} className="text-gray-400 mb-0.5 flex-shrink-0" />
-                              <span className="text-[9px] font-bold text-gray-500 leading-tight">Bloqueada por {blockedBy}</span>
-                            </div>
-                          );
-                        } else {
-                          return (
-                            <div onClick={() => {
-                              // We could pass selected date/time/court here, but for now it just triggers modal
-                              onNewBooking();
-                            }} className="h-full w-full rounded-lg hover:bg-gray-50 transition-colors cursor-pointer flex items-center justify-center opacity-0 hover:opacity-100 group-hover:opacity-50 border border-transparent hover:border-gray-200 hover:border-dashed">
-                              <Plus size={16} className="text-gray-300" />
-                            </div>
-                          );
-                        }
-                      }
-                    })()}
-                  </div>
-                ))}
-              </div>
+                <button
+                  type="button"
+                  key={`sched-court-tab-${court.id || cIdx}-${cIdx}`}
+                  onClick={() => toggleCourtSelection(court.id)}
+                  className={cn(
+                    "flex-1 py-1.5 px-3.5 rounded-xl text-xs sm:text-sm font-bold transition-all whitespace-nowrap flex items-center justify-center gap-1.5 cursor-pointer",
+                    isSelected
+                      ? "bg-emerald-600 text-white shadow-sm"
+                      : "bg-transparent text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-200 border-none shadow-none"
+                  )}
+                  title={isSelected ? "Toca para ocultar columna" : "Toca para comparar columna"}
+                >
+                  {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+                  <span>{court.name}</span>
+                </button>
               );
             })}
           </div>
+
+          {/* 1.3. Grilla Horaria Proyectada en Paralelo con Multiselección y Pinch-to-zoom */}
+          <div
+            id="reservations-grid-viewport"
+            ref={viewportRef}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
+            style={{ touchAction: 'pan-x pan-y' }}
+            className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden select-none"
+          >
+            {!isOpenDay || timeSlots.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-20 text-gray-400">
+                <Moon size={48} className="mb-4 opacity-50 text-gray-300 dark:text-slate-600" />
+                <p className="font-bold text-lg text-gray-700 dark:text-slate-300">Cerrado este día</p>
+                <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">Configura los horarios en la sección de Perfil.</p>
+              </div>
+            ) : (
+              <div className="relative">
+                {/* Cabecera de Columnas si hay 2 o más canchas seleccionadas */}
+                {displayedCourts.length > 1 && (
+                  <div className="flex border-b border-gray-100 dark:border-slate-800 bg-gray-50/80 dark:bg-slate-800/80 sticky top-0 z-20">
+                    <div className="w-16 flex-shrink-0 border-r border-gray-100 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-800/50" />
+                    {displayedCourts.map((c, idx) => (
+                      <div 
+                        key={`col-header-${c.id}`} 
+                        className={cn(
+                          "flex-1 py-2 px-2 text-center text-xs font-bold text-gray-700 dark:text-slate-200 border-r border-gray-100 dark:border-slate-800 last:border-r-0 truncate",
+                          idx % 2 === 1 ? "bg-gray-50/40 dark:bg-slate-800/40" : ""
+                        )}
+                      >
+                        {c.name}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Línea de hora actual */}
+                {currentTimePos !== null && (
+                  <div 
+                    className="absolute left-0 right-0 z-20 flex items-center pointer-events-none"
+                    style={{ top: `${currentTimePos + (displayedCourts.length > 1 ? 33 : 0)}px` }}
+                  >
+                    <div className="w-16 text-right pr-2 text-[10px] font-bold text-red-500 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-r sticky left-0 z-30">
+                      {format(currentTime, 'HH:mm')}
+                    </div>
+                    <div className="flex-1 h-[2px] bg-red-500 shadow-sm relative">
+                      <div className="absolute right-0 -top-1 w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                    </div>
+                  </div>
+                )}
+
+                {/* Slots Horarios */}
+                <div className="divide-y divide-gray-100 dark:divide-slate-800">
+                  {timeSlots.map((rawHour, hIdx) => {
+                    const hourLabel = rawHour === 24 ? "00:00" : `${String(rawHour % 24).padStart(2, '0')}:00`;
+
+                    return (
+                      <div
+                        key={`grid-slot-row-${rawHour}-${hIdx}`}
+                        className="flex items-stretch hover:bg-gray-50/40 dark:hover:bg-slate-800/40 transition-colors"
+                        style={{ height: `${slotHeight}px` }}
+                      >
+                        {/* Columna Horaria */}
+                        <div className="w-16 flex-shrink-0 border-r border-gray-100 dark:border-slate-800 flex items-start justify-center pt-2 text-xs font-mono font-medium text-gray-400 dark:text-slate-500 bg-gray-50/30 dark:bg-slate-800/30 sticky left-0 z-10">
+                          {hourLabel}
+                        </div>
+
+                        {/* Celdas para cada cancha seleccionada en paralelo */}
+                        {displayedCourts.map((court, cIdx) => {
+                          const match = getMatchForCourtSlot(court.id, rawHour);
+                          const isCompact = slotHeight < 46 || displayedCourts.length > 2;
+
+                          return (
+                            <div 
+                              key={`grid-cell-${court.id}-${rawHour}`}
+                              className={cn(
+                                "flex-1 p-1 sm:p-1.5 relative border-r border-gray-100 dark:border-slate-800 last:border-r-0 min-w-0",
+                                displayedCourts.length > 1 && cIdx % 2 === 1 ? "bg-gray-50/20 dark:bg-slate-800/20" : ""
+                              )}
+                            >
+                              {match ? (
+                                /* Tarjeta de Partido Reservado en Grilla */
+                                <div
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    onMatchClick(match);
+                                  }}
+                                  className={cn(
+                                    "h-full w-full rounded-xl cursor-pointer shadow-xs transition-all hover:shadow-md flex flex-col justify-between overflow-hidden p-2 border",
+                                    match.payment_status === 'paid' 
+                                      ? "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-950 dark:text-emerald-200" 
+                                      : match.payment_status === 'partial'
+                                      ? "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-950 dark:text-amber-200"
+                                      : "bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-950 dark:text-red-200"
+                                  )}
+                                >
+                                  <div className="flex items-center justify-between gap-1">
+                                    <div className="font-bold text-xs truncate flex items-center gap-1 min-w-0">
+                                      <span className="truncate">{match.host_name || match.userName || 'Cliente'}</span>
+                                    </div>
+                                    <div className="text-[10px] font-mono font-bold shrink-0">
+                                      ${Number(match.price_total ?? match.price ?? 0).toLocaleString()}
+                                    </div>
+                                  </div>
+
+                                  {!isCompact && (
+                                    <div className="flex items-center justify-between text-[10px] font-medium pt-1 border-t border-black/5 dark:border-white/5">
+                                      <span className={cn(
+                                        "px-1.5 py-0.5 rounded font-bold uppercase text-[9px]",
+                                        match.payment_status === 'paid' ? "bg-emerald-200/80 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100" :
+                                        match.payment_status === 'partial' ? "bg-amber-200/80 dark:bg-amber-800 text-amber-900 dark:text-amber-100" :
+                                        "bg-red-200/80 dark:bg-red-800 text-red-900 dark:text-red-100"
+                                      )}>
+                                        {match.payment_status === 'paid' ? 'Pagado' : match.payment_status === 'partial' ? 'Seña' : 'Pendiente'}
+                                      </span>
+                                      {Number(match.deposit || match.amount_paid || 0) > 0 && (
+                                        <span className="text-emerald-700 dark:text-emerald-400 font-mono text-[9px] truncate">
+                                          Seña: ${Number(match.deposit || match.amount_paid || 0).toLocaleString()}
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                /* 3.3. Creación Rápida por Clic Contextual en Espacio Libre */
+                                <div
+                                  onClick={() => {
+                                    const hourStr = rawHour === 24 ? "00:00" : `${String(rawHour % 24).padStart(2, '0')}:00`;
+                                    const nextHour = (rawHour + 1) % 24;
+                                    const endHourStr = `${String(nextHour).padStart(2, '0')}:00`;
+                                    onNewBooking({
+                                      court_id: court.id,
+                                      courtId: court.id,
+                                      courtName: court.name,
+                                      date: selectedDateStr,
+                                      startTime: hourStr,
+                                      time: hourStr,
+                                      endTime: endHourStr,
+                                      isPrefilledFromSlot: true
+                                    });
+                                  }}
+                                  className="h-full w-full rounded-xl border border-dashed border-gray-200 dark:border-slate-800 hover:border-emerald-400 dark:hover:border-emerald-600 hover:bg-emerald-50/30 dark:hover:bg-emerald-950/20 transition-all cursor-pointer flex items-center justify-center group"
+                                  title={`Tocar para reservar ${court.name} a las ${hourLabel}`}
+                                >
+                                  <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-emerald-600 dark:text-emerald-400 text-[11px] font-semibold">
+                                    <Plus size={13} />
+                                    <span>Reservar</span>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
-      </>
+      ) : (
+        /* =================================================================== */
+        /* 2. VISTA LISTA: CONSOLA UNIFICADA DE PARTIDOS EN 4 BLOQUES         */
+        /* =================================================================== */
+        <div className="space-y-4">
+          {/* 2.2. Sección 1: En juego - Título plano sin pastillas ni punto titilante */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden">
+            <button
+              type="button"
+              onClick={() => toggleSection('en_juego')}
+              className="w-full p-4 flex items-center justify-between hover:bg-gray-50/60 dark:hover:bg-slate-800/50 transition-colors text-left cursor-pointer"
+            >
+              <h3 className="font-bold text-sm sm:text-base text-gray-900 dark:text-white">
+                En juego ({enJuego.length})
+              </h3>
+              <ChevronDown 
+                size={18} 
+                className={cn("text-gray-400 transition-transform duration-200", collapsedSections.en_juego ? "-rotate-90" : "rotate-0")} 
+              />
+            </button>
+
+            {!collapsedSections.en_juego && (
+              <div className="border-t border-gray-100 dark:border-slate-800 divide-y divide-gray-100 dark:divide-slate-800">
+                {enJuego.length === 0 ? (
+                  <p className="text-xs text-gray-400 dark:text-slate-500 py-3 text-center italic">
+                    No hay partidos en juego en este momento.
+                  </p>
+                ) : (
+                  enJuego.map((m, idx) => (
+                    <MatchListCard 
+                      key={`list-ej-${m.id || idx}`} 
+                      match={m} 
+                      category="en_juego" 
+                      courtsCount={courts.length} 
+                      onClick={() => onMatchClick(m)} 
+                    />
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 2.2. Sección 2: Próximos - Título plano sin pastillas */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden">
+            <button
+              type="button"
+              onClick={() => toggleSection('proximos')}
+              className="w-full p-4 flex items-center justify-between hover:bg-gray-50/60 dark:hover:bg-slate-800/50 transition-colors text-left cursor-pointer"
+            >
+              <h3 className="font-bold text-sm sm:text-base text-gray-900 dark:text-white">
+                Próximos ({proximos.length})
+              </h3>
+              <ChevronDown 
+                size={18} 
+                className={cn("text-gray-400 transition-transform duration-200", collapsedSections.proximos ? "-rotate-90" : "rotate-0")} 
+              />
+            </button>
+
+            {!collapsedSections.proximos && (
+              <div className="border-t border-gray-100 dark:border-slate-800 divide-y divide-gray-100 dark:divide-slate-800">
+                {proximos.length === 0 ? (
+                  <p className="text-xs text-gray-400 dark:text-slate-500 py-3 text-center italic">
+                    No hay próximos partidos programados.
+                  </p>
+                ) : (
+                  proximos.map((m, idx) => (
+                    <MatchListCard 
+                      key={`list-prox-${m.id || idx}`} 
+                      match={m} 
+                      category="proximos" 
+                      courtsCount={courts.length} 
+                      onClick={() => onMatchClick(m)} 
+                    />
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 2.2. Sección 3: Jugados - Título plano sin pastillas */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden">
+            <button
+              type="button"
+              onClick={() => toggleSection('jugados')}
+              className="w-full p-4 flex items-center justify-between hover:bg-gray-50/60 dark:hover:bg-slate-800/50 transition-colors text-left cursor-pointer"
+            >
+              <h3 className="font-bold text-sm sm:text-base text-gray-900 dark:text-white">
+                Jugados ({jugados.length})
+              </h3>
+              <ChevronDown 
+                size={18} 
+                className={cn("text-gray-400 transition-transform duration-200", collapsedSections.jugados ? "-rotate-90" : "rotate-0")} 
+              />
+            </button>
+
+            {!collapsedSections.jugados && (
+              <div className="border-t border-gray-100 dark:border-slate-800 divide-y divide-gray-100 dark:divide-slate-800">
+                {jugados.length === 0 ? (
+                  <p className="text-xs text-gray-400 dark:text-slate-500 py-3 text-center italic">
+                    No hay partidos disputados registrados.
+                  </p>
+                ) : (
+                  jugados.map((m, idx) => (
+                    <MatchListCard 
+                      key={`list-jug-${m.id || idx}`} 
+                      match={m} 
+                      category="jugados" 
+                      courtsCount={courts.length} 
+                      onClick={() => onMatchClick(m)} 
+                    />
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* 2.2. Sección 4: Cancelados - Título plano sin pastillas */}
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden">
+            <button
+              type="button"
+              onClick={() => toggleSection('cancelados')}
+              className="w-full p-4 flex items-center justify-between hover:bg-gray-50/60 dark:hover:bg-slate-800/50 transition-colors text-left cursor-pointer"
+            >
+              <h3 className="font-bold text-sm sm:text-base text-gray-700 dark:text-slate-300">
+                Cancelados ({cancelados.length})
+              </h3>
+              <ChevronDown 
+                size={18} 
+                className={cn("text-gray-400 transition-transform duration-200", collapsedSections.cancelados ? "-rotate-90" : "rotate-0")} 
+              />
+            </button>
+
+            {!collapsedSections.cancelados && (
+              <div className="border-t border-gray-100 dark:border-slate-800 divide-y divide-gray-100 dark:divide-slate-800">
+                {cancelados.length === 0 ? (
+                  <p className="text-xs text-gray-400 dark:text-slate-500 py-3 text-center italic">
+                    No hay reservas canceladas.
+                  </p>
+                ) : (
+                  cancelados.map((m, idx) => (
+                    <MatchListCard 
+                      key={`list-canc-${m.id || idx}`} 
+                      match={m} 
+                      category="cancelados" 
+                      courtsCount={courts.length} 
+                      onClick={() => onMatchClick(m)} 
+                    />
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        </div>
       )}
+
+      {/* 3. Botón Flotante de Acción (FAB +) - Coordenadas homologadas idénticas con Finanzas */}
+      <button
+        type="button"
+        onClick={() => {
+          const firstCourt = displayedCourts[0] || courts[0];
+          onNewBooking({
+            date: selectedDateStr,
+            courtId: firstCourt?.id,
+            court_id: firstCourt?.id,
+            courtName: firstCourt?.name,
+            isPrefilledFromSlot: false
+          });
+        }}
+        className="fixed bottom-24 right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-xl shadow-emerald-900/30 flex items-center justify-center hover:bg-emerald-700 transition-transform hover:scale-105 z-40 active:scale-95 cursor-pointer"
+        title="Crear Nueva Reserva"
+        aria-label="Crear Nueva Reserva"
+      >
+        <Plus size={28} strokeWidth={2.5} />
+      </button>
     </div>
   );
 };
@@ -4170,13 +4952,21 @@ const FinanceChartModal = ({ isOpen, onClose, complexId = 'complejo_central' }: 
   );
 };
 
-const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string }) => {
+const FinanceView = ({ 
+  complexId = 'complejo_central',
+  onNavigateToUserProfile 
+}: { 
+  complexId?: string;
+  onNavigateToUserProfile?: (userId: string) => void;
+}) => {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [rawBookings, setRawBookings] = useState<any[]>([]);
+  const [rawFirestoreTxs, setRawFirestoreTxs] = useState<any[]>([]);
   const [rawManualTxs, setRawManualTxs] = useState<Transaction[]>([]);
   const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'year'>('today');
-  const [txFilterTab, setTxFilterTab] = useState<'all' | 'income' | 'expense'>('all');
+  const [txFilterTab, setTxFilterTab] = useState<'all' | 'income' | 'expense' | 'fiados'>('all');
   const [summaries, setSummaries] = useState<Record<string, { income: number, expense: number, balance: number, reservas: number, otros: number, pendiente: number, growth: number, ocupacion: number }>>({
     today: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
     week: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
@@ -4184,7 +4974,9 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
     year: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 }
   });
   
+  const [isPOSModalOpen, setIsPOSModalOpen] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSettlingLoading, setIsSettlingLoading] = useState(false);
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
   const [newTx, setNewTx] = useState({
     type: 'income' as 'income' | 'expense',
@@ -4194,6 +4986,23 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
     description: ''
   });
   const [customCategory, setCustomCategory] = useState('');
+
+  const handleSettleFiado = async (tx: Transaction, method: 'efectivo' | 'transferencia' | 'tarjeta') => {
+    setIsSettlingLoading(true);
+    try {
+      await settleFiadoTransaction({
+        transactionId: String(tx.id),
+        fiadoAmount: Number(tx.amount || 0),
+        newMethod: method,
+        userId: tx.userId ? String(tx.userId) : undefined
+      });
+      setSelectedTx(null);
+    } catch (err: any) {
+      alert(`Error al saldar fiado: ${err?.message || 'Error desconocido'}`);
+    } finally {
+      setIsSettlingLoading(false);
+    }
+  };
 
   const periods = ['today', 'week', 'month'];
 
@@ -4216,8 +5025,8 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
     }
   };
 
-  // Recomputes finance summaries and period transactions from real Firestore bookings
-  const recomputeFromBookings = useCallback((bookingsList: any[], manualTxsList: Transaction[], currentSelectedPeriod: string) => {
+  // Recomputes finance summaries and period transactions from real Firestore bookings & POS transactions
+  const recomputeFromData = useCallback((bookingsList: any[], manualTxsList: Transaction[], firestoreTxsList: any[], currentSelectedPeriod: string) => {
     const today = new Date();
     const todayStr = safeFormatDate(today, 'yyyy-MM-dd') || format(today, 'yyyy-MM-dd');
 
@@ -4249,6 +5058,11 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
       });
 
       const pManual = (manualTxsList || []).filter(t => checkInPeriod(t.date, p));
+      
+      const pFirestore = (firestoreTxsList || []).filter(t => {
+        const tDate = t.date || (t.createdAt?.toDate ? format(t.createdAt.toDate(), 'yyyy-MM-dd') : null);
+        return checkInPeriod(tDate, p);
+      });
 
       let reservasTotal = 0;
       let pendienteTotal = 0;
@@ -4262,10 +5076,29 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
         }
       });
 
-      const manualIncome = pManual.filter(t => t.type === 'income').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
-      const manualExpense = pManual.filter(t => t.type === 'expense').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+      let firestoreIncome = 0;
+      let firestoreExpense = 0;
 
-      const incomeTotal = reservasTotal + manualIncome;
+      pFirestore.forEach(t => {
+        const amt = Number(t.total ?? t.amount ?? 0);
+        if (t.type === 'venta' || t.type === 'income') {
+          firestoreIncome += amt;
+          if (t.paymentStatus === 'fiado') {
+            const fiadoAmt = Array.isArray(t.payments) 
+              ? t.payments.filter((pay: any) => pay.method === 'fiado').reduce((s: number, pay: any) => s + Number(pay.amount || 0), 0)
+              : amt;
+            pendienteTotal += fiadoAmt;
+          }
+        } else if (t.type === 'expense' || t.type === 'gasto') {
+          firestoreExpense += amt;
+        }
+      });
+
+      const manualIncome = pManual.filter(t => t.type === 'income').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
+      const manualExpense = pManual.filter(t => t.type === 'expense').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0) + firestoreExpense;
+
+      const otrosTotal = manualIncome + firestoreIncome;
+      const incomeTotal = reservasTotal + otrosTotal;
       const balanceTotal = incomeTotal - manualExpense;
       const slots = p === 'today' ? 12 : p === 'week' ? 84 : 360;
       const ocupacionPct = pBookings.length > 0 ? Math.min(100, Math.round((pBookings.length / slots) * 100)) : 0;
@@ -4275,7 +5108,7 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
         expense: manualExpense,
         balance: balanceTotal,
         reservas: reservasTotal,
-        otros: manualIncome,
+        otros: otrosTotal,
         pendiente: pendienteTotal,
         growth: 0,
         ocupacion: ocupacionPct
@@ -4304,41 +5137,88 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
       };
     });
 
+    const activePeriodFirestore = (firestoreTxsList || []).filter(t => {
+      const tDate = t.date || (t.createdAt?.toDate ? format(t.createdAt.toDate(), 'yyyy-MM-dd') : null);
+      return checkInPeriod(tDate, currentSelectedPeriod);
+    });
+
+    const firestoreMappedTxs: Transaction[] = activePeriodFirestore.map(t => {
+      const isVenta = t.type === 'venta';
+      const isGasto = t.type === 'expense' || t.type === 'gasto';
+      const type = isVenta ? 'income' : (isGasto ? 'expense' : (t.type || 'income'));
+
+      let desc = t.description;
+      if (!desc && Array.isArray(t.items)) {
+        desc = t.items.map((it: any) => `${it.quantity}x ${it.name}`).join(', ');
+      }
+      if (!desc && t.userName) {
+        desc = `Cliente: ${t.userName}`;
+      }
+
+      return {
+        id: t.id,
+        type: type as any,
+        category: t.category || (isVenta ? 'Venta Mostrador' : 'Gasto'),
+        amount: Number(t.total ?? t.amount ?? 0),
+        date: t.date || (t.createdAt?.toDate ? format(t.createdAt.toDate(), 'yyyy-MM-dd') : todayStr),
+        description: desc || (isVenta ? 'Venta Mostrador' : 'Movimiento'),
+        payments: t.payments,
+        items: t.items,
+        userId: t.userId,
+        userName: t.userName,
+        paymentStatus: t.paymentStatus,
+        complejoId: t.complejoId
+      };
+    });
+
     const activePeriodManual = (manualTxsList || []).filter(t => checkInPeriod(t.date, currentSelectedPeriod));
 
-    const merged = [...activePeriodManual, ...bookingTxs].sort((a, b) => {
+    const merged = [...firestoreMappedTxs, ...activePeriodManual, ...bookingTxs];
+    const uniqueMap = new Map<string | number, Transaction>();
+    for (const item of merged) {
+      if (!uniqueMap.has(item.id)) {
+        uniqueMap.set(item.id, item);
+      }
+    }
+
+    const sorted = Array.from(uniqueMap.values()).sort((a, b) => {
       const dateA = safeParseDate(a.date)?.getTime() || 0;
       const dateB = safeParseDate(b.date)?.getTime() || 0;
       return dateB - dateA;
     });
 
-    setTransactions(merged);
+    setTransactions(sorted);
   }, []);
 
-  // Subscribe to real Firestore bookings for complexId
+  // Subscribe to real Firestore bookings and transactions for complexId
   useEffect(() => {
-    if (!complexId) return;
+    if (!targetId) return;
 
-    const unsubBookings = subscribeToBookings(complexId, (bookingsList) => {
+    const unsubBookings = subscribeToBookings(targetId, (bookingsList) => {
       const list = Array.isArray(bookingsList) ? bookingsList : [];
       setRawBookings(list);
-      recomputeFromBookings(list, rawManualTxs, period);
+    });
+
+    const unsubTxs = subscribeToTransactions(targetId, (txList) => {
+      const list = Array.isArray(txList) ? txList : [];
+      setRawFirestoreTxs(list);
     });
 
     return () => {
       unsubBookings();
+      unsubTxs();
     };
-  }, [complexId, recomputeFromBookings]);
+  }, [targetId]);
 
-  // Recalculate when period changes
+  // Recalculate when period or datasets change
   useEffect(() => {
-    recomputeFromBookings(rawBookings, rawManualTxs, period);
-  }, [period, rawBookings, rawManualTxs, recomputeFromBookings]);
+    recomputeFromData(rawBookings, rawManualTxs, rawFirestoreTxs, period);
+  }, [period, rawBookings, rawManualTxs, rawFirestoreTxs, recomputeFromData]);
 
   // Load manual transactions from localStorage if any
   useEffect(() => {
     try {
-      const stored = localStorage.getItem(`jogo_manual_txs_${complexId}`);
+      const stored = localStorage.getItem(`jogo_manual_txs_${targetId}`);
       if (stored) {
         const parsed = JSON.parse(stored);
         if (Array.isArray(parsed)) {
@@ -4348,7 +5228,7 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
     } catch (e) {
       console.warn('Error loading manual transactions from storage:', e);
     }
-  }, [complexId]);
+  }, [targetId]);
 
   const handleSaveTx = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -4373,10 +5253,27 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
     setRawManualTxs(prev => {
       const updated = [localTx, ...prev];
       try {
-        localStorage.setItem(`jogo_manual_txs_${complexId}`, JSON.stringify(updated));
+        localStorage.setItem(`jogo_manual_txs_${targetId}`, JSON.stringify(updated));
       } catch (err) {}
       return updated;
     });
+
+    // Save also to Firestore transactions
+    try {
+      await addDoc(collection(db, 'transactions'), {
+        complejoId: targetId,
+        type: newTx.type,
+        category: categoryToSave,
+        amount: Number(newTx.amount),
+        total: Number(newTx.amount),
+        description: notesWithMethod,
+        date: todayStr,
+        paymentMethod: newTx.paymentMethod,
+        createdAt: serverTimestamp()
+      });
+    } catch (err) {
+      console.warn('Error saving tx to Firestore:', err);
+    }
     
     setIsModalOpen(false);
     setNewTx({ type: 'income', amount: '', category: 'Alquiler de Cancha', paymentMethod: 'MercadoPago', description: '' });
@@ -4385,251 +5282,276 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
 
   const filteredTransactions = transactions.filter(t => {
     if (txFilterTab === 'all') return true;
-    return t.type === txFilterTab;
+    if (txFilterTab === 'income') return t.type === 'income';
+    if (txFilterTab === 'expense') return t.type === 'expense';
+    if (txFilterTab === 'fiados') {
+      return t.paymentStatus === 'fiado' || (Array.isArray(t.payments) && t.payments.some((p: any) => p.method === 'fiado'));
+    }
+    return true;
   });
 
   return (
     <div className="space-y-4 pb-24">
-      {/* 1. Cabecera (Resumen Financiero) */}
-      <div className="px-1 md:px-0">
-        <div className="flex justify-between items-end mb-0">
-          <div className="pb-3 pl-1 md:pl-2">
-            <h2 className="text-base sm:text-lg md:text-xl font-bold text-gray-900 whitespace-nowrap tracking-tight">
-              {period === 'today' ? '¿Cómo te fue hoy?' : period === 'week' ? '¿Cómo te fue esta semana?' : '¿Cómo te fue este mes?'}
-            </h2>
-          </div>
-          <div className="flex items-end relative z-10">
-            {['today', 'week', 'month'].map((p, pIdx) => (
-              <button type="button"
-                key={`fin-period-btn-${p}-${pIdx}`}
-                onClick={() => changePeriod(p)}
-                className={cn(
-                  "px-3 sm:px-4 md:px-6 py-2 sm:py-3 text-xs sm:text-sm font-bold rounded-t-2xl transition-all relative",
-                  period === p 
-                    ? "bg-white text-emerald-600 shadow-[0_-4px_10px_-4px_rgba(0,0,0,0.1)]" 
-                    : "bg-transparent text-gray-400 hover:text-gray-600"
-                )}
-              >
-                {p === 'today' ? 'Hoy' : p === 'week' ? 'Sem' : 'Mes'}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-3xl rounded-tr-none md:rounded-tr-3xl shadow-sm border border-gray-100 p-6 relative z-20 -mt-px w-full">
-          <div className="w-full touch-pan-y" style={{ overflowX: 'clip', overflowY: 'visible' }}>
-            <motion.div
-              drag="x"
-              dragConstraints={{ left: 0, right: 0 }}
-              dragElastic={0.8}
-              onDragEnd={handleDragEnd}
-              animate={{ x: `calc(-${periods.indexOf(period) * 100}% - ${periods.indexOf(period) * 16}px)` }}
-              transition={{ type: "spring", bounce: 0.2, duration: 0.5 }}
-              className="flex w-full cursor-grab active:cursor-grabbing gap-4"
-            >
-              {periods.map((p, pIdx) => {
-                const s = summaries[p] || { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 };
-                const isPositiveGrowth = s.growth >= 0;
-
-                return (
-                  <div key={`finance-summary-slide-${p}-${pIdx}`} className="w-full shrink-0 flex flex-col justify-center">
-                    {p === 'month' ? (
-                      <div className="space-y-4">
-                        <div className="flex justify-between items-center text-gray-500 text-sm sm:text-base font-medium">
-                          <span>Ingresos</span>
-                          <span>+${s.income.toLocaleString()}</span>
-                        </div>
-                        <div className="flex justify-between items-center text-gray-500 text-sm sm:text-base font-medium border-b border-gray-100 pb-4">
-                          <span>Egresos</span>
-                          <span>-${s.expense.toLocaleString()}</span>
-                        </div>
-                        <div className="flex flex-col pt-2">
-                          <div className="flex justify-between items-center mb-1">
-                            <div className="text-sm sm:text-base text-gray-900 font-bold">Resultado neto</div>
-                            <div className="text-xl sm:text-2xl md:text-3xl font-black text-gray-900 tracking-tight">
-                              ${s.balance.toLocaleString()}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className={cn(
-                              "text-xs font-bold px-2.5 py-0.5 rounded-full inline-flex items-center whitespace-nowrap shrink-0",
-                              isPositiveGrowth ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
-                            )}>
-                              {isPositiveGrowth ? '+' : ''}{s.growth}% {isPositiveGrowth ? '↑' : '↓'}
-                            </span>
-                            <span className="text-xs text-gray-500 font-medium whitespace-nowrap shrink-0">del mes anterior</span>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="space-y-8">
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <div className="flex items-center gap-2 mb-2">
-                              <span className="text-sm sm:text-base font-bold text-gray-900">Ingresos</span>
-                              <Eye size={20} className="text-emerald-600" />
-                            </div>
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className={cn(
-                                "text-xs font-bold px-2.5 py-0.5 rounded-full inline-flex items-center whitespace-nowrap shrink-0",
-                                isPositiveGrowth ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
-                              )}>
-                                {isPositiveGrowth ? '+' : ''}{s.growth}% {isPositiveGrowth ? '↑' : '↓'}
-                              </span>
-                              <span className="text-xs text-gray-500 font-medium whitespace-nowrap shrink-0">
-                                {p === 'today' ? 'de ayer' : 'de sem anterior'}
-                              </span>
-                            </div>
-                          </div>
-                          <div className="text-xl sm:text-2xl md:text-3xl font-black text-emerald-600 tracking-tight">
-                            ${s.income.toLocaleString()}
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-3 gap-2 sm:gap-3">
-                          <div 
-                            className="relative bg-emerald-50 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-emerald-100 active:scale-95"
-                            onMouseEnter={() => setActiveTooltip('reservas-' + p)}
-                            onMouseLeave={() => setActiveTooltip(null)}
-                            onTouchStart={() => setActiveTooltip('reservas-' + p)}
-                            onTouchEnd={() => setActiveTooltip(null)}
-                          >
-                            <AnimatePresence>
-                              {activeTooltip === 'reservas-' + p && (
-                                <motion.div 
-                                  key={`tooltip-reservas-${p}`}
-                                  initial={{ opacity: 0, y: 5, scale: 0.95 }}
-                                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                                  exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                                  className="absolute bottom-full mb-2 left-0 sm:left-1/2 sm:-translate-x-1/2 w-40 bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
-                                >
-                                  Ingresos por alquiler de canchas
-                                  <div className="absolute top-full left-10 sm:left-1/2 sm:-translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                            <CalendarCheck size={18} className="text-emerald-700 mb-1" />
-                            <span className="text-emerald-600 text-xs sm:text-sm font-bold truncate w-full">
-                              {p === 'today' 
-                                ? `${s.reservas.toLocaleString()}` 
-                                : `${s.income > 0 ? Math.round((s.reservas / s.income) * 100) : 0}%`}
-                            </span>
-                          </div>
-
-                          <div 
-                            className="relative bg-emerald-50 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-emerald-100 active:scale-95"
-                            onMouseEnter={() => setActiveTooltip('otros-' + p)}
-                            onMouseLeave={() => setActiveTooltip(null)}
-                            onTouchStart={() => setActiveTooltip('otros-' + p)}
-                            onTouchEnd={() => setActiveTooltip(null)}
-                          >
-                            <AnimatePresence>
-                              {activeTooltip === 'otros-' + p && (
-                                <motion.div 
-                                  key={`tooltip-otros-${p}`}
-                                  initial={{ opacity: 0, y: 5, scale: 0.95 }}
-                                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                                  exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                                  className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-40 bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
-                                >
-                                  Ingresos por buffet, tienda y otros
-                                  <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                            <ShoppingBag size={18} className="text-emerald-700 mb-1" />
-                            <span className="text-emerald-600 text-xs sm:text-sm font-bold truncate w-full">
-                              {p === 'today' 
-                                ? `${s.otros.toLocaleString()}` 
-                                : `${s.income > 0 ? Math.round((s.otros / s.income) * 100) : 0}%`}
-                            </span>
-                          </div>
-
-                          {p === 'today' ? (
-                            <div 
-                              className="relative bg-red-50 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-red-100 active:scale-95"
-                              onMouseEnter={() => setActiveTooltip('pendiente-' + p)}
-                              onMouseLeave={() => setActiveTooltip(null)}
-                              onTouchStart={() => setActiveTooltip('pendiente-' + p)}
-                              onTouchEnd={() => setActiveTooltip(null)}
-                            >
-                              <AnimatePresence>
-                                {activeTooltip === 'pendiente-' + p && (
-                                  <motion.div 
-                                    key={`tooltip-pendiente-${p}`}
-                                    initial={{ opacity: 0, y: 5, scale: 0.95 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                                    exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                                    className="absolute bottom-full mb-2 right-0 sm:right-auto sm:left-1/2 sm:-translate-x-1/2 w-[150px] bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
-                                  >
-                                    Pagos pendientes de cobro
-                                    <div className="absolute top-full right-10 sm:right-auto sm:left-1/2 sm:-translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
-                              <Clock size={18} className="text-red-700 mb-1" />
-                              <span className="text-red-600 text-xs sm:text-sm font-bold truncate w-full">
-                                ${s.pendiente.toLocaleString()}
-                              </span>
-                            </div>
-                          ) : (
-                            <div 
-                              className="relative bg-gray-100 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-gray-200 active:scale-95"
-                              onMouseEnter={() => setActiveTooltip('ocupacion-' + p)}
-                              onMouseLeave={() => setActiveTooltip(null)}
-                              onTouchStart={() => setActiveTooltip('ocupacion-' + p)}
-                              onTouchEnd={() => setActiveTooltip(null)}
-                            >
-                              <AnimatePresence>
-                                {activeTooltip === 'ocupacion-' + p && (
-                                  <motion.div 
-                                    key={`tooltip-ocupacion-${p}`}
-                                    initial={{ opacity: 0, y: 5, scale: 0.95 }}
-                                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                                    exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                                    className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-40 bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
-                                  >
-                                    Porcentaje de turnos ocupados
-                                    <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
-                              <Users size={18} className="text-gray-600 mb-1" />
-                              <span className="text-gray-600 text-xs sm:text-sm font-bold truncate w-full">
-                                {s.ocupacion}%
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      </div>
+      {/* 1. Cabecera (Resumen Financiero - Tarjeta Principal) */}
+          <div className="px-1 md:px-0">
+            <div className="flex justify-between items-end mb-0">
+              <div className="pb-3 pl-1 md:pl-2">
+                <h2 className="text-base sm:text-lg md:text-xl font-bold text-gray-900 whitespace-nowrap tracking-tight">
+                  {period === 'today' ? '¿Cómo te fue hoy?' : period === 'week' ? '¿Cómo te fue esta semana?' : '¿Cómo te fue este mes?'}
+                </h2>
+              </div>
+              <div className="flex items-end relative z-10">
+                {['today', 'week', 'month'].map((p, pIdx) => (
+                  <button type="button"
+                    key={`fin-period-btn-${p}-${pIdx}`}
+                    onClick={() => changePeriod(p)}
+                    className={cn(
+                      "px-3 sm:px-4 md:px-6 py-2 sm:py-3 text-xs sm:text-sm font-bold rounded-t-2xl transition-all relative",
+                      period === p 
+                        ? "bg-white text-emerald-600 shadow-[0_-4px_10px_-4px_rgba(0,0,0,0.1)]" 
+                        : "bg-transparent text-gray-400 hover:text-gray-600"
                     )}
-                  </div>
-                );
-              })}
-            </motion.div>
+                  >
+                    {p === 'today' ? 'Hoy' : p === 'week' ? 'Sem' : 'Mes'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="bg-white rounded-3xl rounded-tr-none md:rounded-tr-3xl shadow-sm border border-gray-100 p-6 relative z-20 -mt-px w-full">
+              <div className="w-full touch-pan-y" style={{ overflowX: 'clip', overflowY: 'visible' }}>
+                <motion.div
+                  drag="x"
+                  dragConstraints={{ left: 0, right: 0 }}
+                  dragElastic={0.8}
+                  onDragEnd={handleDragEnd}
+                  animate={{ x: `calc(-${periods.indexOf(period) * 100}% - ${periods.indexOf(period) * 16}px)` }}
+                  transition={{ type: "spring", bounce: 0.2, duration: 0.5 }}
+                  className="flex w-full cursor-grab active:cursor-grabbing gap-4"
+                >
+                  {periods.map((p, pIdx) => {
+                    const s = summaries[p] || { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 };
+                    const isPositiveGrowth = s.growth >= 0;
+
+                    return (
+                      <div key={`finance-summary-slide-${p}-${pIdx}`} className="w-full shrink-0 flex flex-col justify-center">
+                        {p === 'month' ? (
+                          <div className="space-y-4">
+                            <div className="flex justify-between items-center text-gray-500 text-sm sm:text-base font-medium">
+                              <span>Ingresos</span>
+                              <span>+${s.income.toLocaleString()}</span>
+                            </div>
+                            <div className="flex justify-between items-center text-gray-500 text-sm sm:text-base font-medium border-b border-gray-100 pb-4">
+                              <span>Egresos</span>
+                              <span>-${s.expense.toLocaleString()}</span>
+                            </div>
+                            <div className="flex flex-col pt-2">
+                              <div className="flex justify-between items-center mb-1">
+                                <div className="text-sm sm:text-base text-gray-900 font-bold">Resultado neto</div>
+                                <div className="text-xl sm:text-2xl md:text-3xl font-black text-gray-900 tracking-tight">
+                                  ${s.balance.toLocaleString()}
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={cn(
+                                  "text-xs font-bold px-2.5 py-0.5 rounded-full inline-flex items-center whitespace-nowrap shrink-0",
+                                  isPositiveGrowth ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
+                                )}>
+                                  {isPositiveGrowth ? '+' : ''}{s.growth}% {isPositiveGrowth ? '↑' : '↓'}
+                                </span>
+                                <span className="text-xs text-gray-500 font-medium whitespace-nowrap shrink-0">del mes anterior</span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-8">
+                            <div className="flex justify-between items-start">
+                              <div>
+                                <div className="flex items-center gap-2 mb-2">
+                                  <span className="text-sm sm:text-base font-bold text-gray-900">Ingresos</span>
+                                  <Eye size={20} className="text-emerald-600" />
+                                </div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className={cn(
+                                    "text-xs font-bold px-2.5 py-0.5 rounded-full inline-flex items-center whitespace-nowrap shrink-0",
+                                    isPositiveGrowth ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
+                                  )}>
+                                    {isPositiveGrowth ? '+' : ''}{s.growth}% {isPositiveGrowth ? '↑' : '↓'}
+                                  </span>
+                                  <span className="text-xs text-gray-500 font-medium whitespace-nowrap shrink-0">
+                                    {p === 'today' ? 'de ayer' : 'de sem anterior'}
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="text-xl sm:text-2xl md:text-3xl font-black text-emerald-600 tracking-tight">
+                                ${s.income.toLocaleString()}
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-3 gap-2 sm:gap-3">
+                              <div 
+                                className="relative bg-emerald-50 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-emerald-100 active:scale-95"
+                                onMouseEnter={() => setActiveTooltip('reservas-' + p)}
+                                onMouseLeave={() => setActiveTooltip(null)}
+                                onTouchStart={() => setActiveTooltip('reservas-' + p)}
+                                onTouchEnd={() => setActiveTooltip(null)}
+                              >
+                                <AnimatePresence>
+                                  {activeTooltip === 'reservas-' + p && (
+                                    <motion.div 
+                                      key={`tooltip-reservas-${p}`}
+                                      initial={{ opacity: 0, y: 5, scale: 0.95 }}
+                                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                                      exit={{ opacity: 0, y: 5, scale: 0.95 }}
+                                      className="absolute bottom-full mb-2 left-0 sm:left-1/2 sm:-translate-x-1/2 w-40 bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
+                                    >
+                                      Ingresos por alquiler de canchas
+                                      <div className="absolute top-full left-10 sm:left-1/2 sm:-translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                                <CalendarCheck size={18} className="text-emerald-700 mb-1" />
+                                <span className="text-emerald-600 text-xs sm:text-sm font-bold truncate w-full">
+                                  {p === 'today' 
+                                    ? `${s.reservas.toLocaleString()}` 
+                                    : `${s.income > 0 ? Math.round((s.reservas / s.income) * 100) : 0}%`}
+                                </span>
+                              </div>
+
+                              <div 
+                                className="relative bg-emerald-50 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-emerald-100 active:scale-95"
+                                onMouseEnter={() => setActiveTooltip('otros-' + p)}
+                                onMouseLeave={() => setActiveTooltip(null)}
+                                onTouchStart={() => setActiveTooltip('otros-' + p)}
+                                onTouchEnd={() => setActiveTooltip(null)}
+                              >
+                                <AnimatePresence>
+                                  {activeTooltip === 'otros-' + p && (
+                                    <motion.div 
+                                      key={`tooltip-otros-${p}`}
+                                      initial={{ opacity: 0, y: 5, scale: 0.95 }}
+                                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                                      exit={{ opacity: 0, y: 5, scale: 0.95 }}
+                                      className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-40 bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
+                                    >
+                                      Ingresos por mostrador, buffet y otros
+                                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                                <ShoppingBag size={18} className="text-emerald-700 mb-1" />
+                                <span className="text-emerald-600 text-xs sm:text-sm font-bold truncate w-full">
+                                  {p === 'today' 
+                                    ? `${s.otros.toLocaleString()}` 
+                                    : `${s.income > 0 ? Math.round((s.otros / s.income) * 100) : 0}%`}
+                                </span>
+                              </div>
+
+                              {p === 'today' ? (
+                                <div 
+                                  className="relative bg-red-50 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-red-100 active:scale-95"
+                                  onMouseEnter={() => setActiveTooltip('pendiente-' + p)}
+                                  onMouseLeave={() => setActiveTooltip(null)}
+                                  onTouchStart={() => setActiveTooltip('pendiente-' + p)}
+                                  onTouchEnd={() => setActiveTooltip(null)}
+                                >
+                                  <AnimatePresence>
+                                    {activeTooltip === 'pendiente-' + p && (
+                                      <motion.div 
+                                        key={`tooltip-pendiente-${p}`}
+                                        initial={{ opacity: 0, y: 5, scale: 0.95 }}
+                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                        exit={{ opacity: 0, y: 5, scale: 0.95 }}
+                                        className="absolute bottom-full mb-2 right-0 sm:right-auto sm:left-1/2 sm:-translate-x-1/2 w-[150px] bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
+                                      >
+                                        Pagos pendientes de cobro y fiados
+                                        <div className="absolute top-full right-10 sm:right-auto sm:left-1/2 sm:-translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                      </motion.div>
+                                    )}
+                                  </AnimatePresence>
+                                  <Clock size={18} className="text-red-700 mb-1" />
+                                  <span className="text-red-600 text-xs sm:text-sm font-bold truncate w-full">
+                                    ${s.pendiente.toLocaleString()}
+                                  </span>
+                                </div>
+                              ) : (
+                                <div 
+                                  className="relative bg-gray-100 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-gray-200 active:scale-95"
+                                  onMouseEnter={() => setActiveTooltip('ocupacion-' + p)}
+                                  onMouseLeave={() => setActiveTooltip(null)}
+                                  onTouchStart={() => setActiveTooltip('ocupacion-' + p)}
+                                  onTouchEnd={() => setActiveTooltip(null)}
+                                >
+                                  <AnimatePresence>
+                                    {activeTooltip === 'ocupacion-' + p && (
+                                      <motion.div 
+                                        key={`tooltip-ocupacion-${p}`}
+                                        initial={{ opacity: 0, y: 5, scale: 0.95 }}
+                                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                                        exit={{ opacity: 0, y: 5, scale: 0.95 }}
+                                        className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-40 bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
+                                      >
+                                        Porcentaje de turnos ocupados
+                                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
+                                      </motion.div>
+                                    )}
+                                  </AnimatePresence>
+                                  <Users size={18} className="text-gray-600 mb-1" />
+                                  <span className="text-gray-600 text-xs sm:text-sm font-bold truncate w-full">
+                                    {s.ocupacion}%
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </motion.div>
+              </div>
+            </div>
           </div>
+
+      {/* 2. Filtros de Transacciones (Debajo de la tarjeta principal) */}
+      <div className="flex items-center justify-between gap-2 overflow-x-auto px-1 py-1 no-scrollbar mb-2">
+        <div className="flex gap-2">
+          {[
+            { id: 'all', label: 'Todos' },
+            { id: 'income', label: 'Ingresos' },
+            { id: 'expense', label: 'Egresos' },
+            { id: 'fiados', label: 'Fiados' }
+          ].map((tab) => (
+            <button
+              type="button"
+              key={`fin-tab-${tab.id}`}
+              onClick={() => setTxFilterTab(tab.id as any)}
+              className={cn(
+                "px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5",
+                txFilterTab === tab.id
+                  ? "bg-emerald-600 text-white shadow-xs"
+                  : "bg-white dark:bg-slate-800 text-gray-500 dark:text-slate-300 border border-gray-100 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700/50"
+              )}
+            >
+              <span>{tab.label}</span>
+              {tab.id === 'fiados' && transactions.filter(t => t.paymentStatus === 'fiado').length > 0 && (
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 font-bold">
+                  {transactions.filter(t => t.paymentStatus === 'fiado').length}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
-      </div>
-      {/* 2. Pestañas de Navegación Interna */}
-      <div className="flex gap-2 overflow-x-auto px-2 py-2 no-scrollbar">
-        {[
-          { id: 'all', label: 'Flujo de Caja' },
-          { id: 'income', label: 'Ingresos Detallados' },
-          { id: 'expense', label: 'Egresos Detallados' }
-        ].map((tab, tIdx) => (
-          <button type="button"
-            key={`fin-internal-tab-${tab.id}-${tIdx}`}
-            onClick={() => setTxFilterTab(tab.id as any)}
-            className={cn(
-              "px-5 py-2.5 rounded-full text-sm font-bold whitespace-nowrap transition-all cursor-pointer",
-              txFilterTab === tab.id 
-                ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20" 
-                : "bg-white dark:bg-slate-800 text-gray-500 dark:text-slate-300 border border-gray-100 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700/50"
-            )}
-          >
-            {tab.label}
-          </button>
-        ))}
+
+        <button
+          type="button"
+          onClick={() => setIsModalOpen(true)}
+          className="text-xs font-bold text-gray-400 hover:text-emerald-600 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer pr-1"
+          title="Carga manual de ingreso o gasto administrativo"
+        >
+          <Plus size={13} />
+          <span>Carga manual</span>
+        </button>
       </div>
 
       {/* 3. Lista de Transacciones */}
@@ -4653,12 +5575,24 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
                   <div className="flex items-center gap-3 flex-1 min-w-0">
                     <div className="w-10 h-10 rounded-full bg-gray-100 text-gray-500 flex items-center justify-center flex-shrink-0 border border-gray-200">
                       {tx.category?.includes('Alquiler') ? <Calendar size={18} /> :
-                       tx.category?.includes('Buffet') ? <Coffee size={18} /> :
+                       (tx.category?.includes('Buffet') || tx.category?.includes('Mostrador') || tx.category?.includes('Kiosco') || tx.items) ? <ShoppingBag size={18} className="text-emerald-600" /> :
                        tx.category?.includes('Mantenimiento') ? <Wallet size={18} /> :
                        <DollarSign size={18} />}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="font-bold text-gray-900 text-[13px] sm:text-sm whitespace-nowrap tracking-tight">{tx.category}</div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="font-bold text-gray-900 text-[13px] sm:text-sm whitespace-nowrap tracking-tight">{tx.category}</span>
+                        {tx.userName && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-gray-100 text-gray-700 truncate max-w-[130px]">
+                            {tx.userName}
+                          </span>
+                        )}
+                        {tx.paymentStatus === 'fiado' && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800">
+                            Fiado
+                          </span>
+                        )}
+                      </div>
                       {tx.description && <div className="text-[11px] sm:text-xs text-gray-500 truncate mt-0.5">{tx.description}</div>}
                     </div>
                   </div>
@@ -4938,13 +5872,23 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
         })()}
       </div>
 
-      {/* 4. Botón Flotante */}
-      <button type="button" 
-        onClick={() => setIsModalOpen(true)}
-        className="fixed bottom-24 right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-xl shadow-emerald-900/30 flex items-center justify-center hover:bg-emerald-700 transition-transform hover:scale-105 z-40"
+      {/* 4. Botón Flotante (+): Abre directamente el Modal del Mostrador (POS) */}
+      <button 
+        type="button" 
+        onClick={() => setIsPOSModalOpen(true)}
+        className="fixed bottom-24 right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-xl shadow-emerald-900/30 flex items-center justify-center hover:bg-emerald-700 transition-transform hover:scale-105 z-40 cursor-pointer"
+        title="Abrir Mostrador (POS)"
       >
         <Plus size={28} />
       </button>
+
+      {/* Modal del Mostrador (POS) */}
+      <POSModal 
+        isOpen={isPOSModalOpen}
+        onClose={() => setIsPOSModalOpen(false)}
+        complexId={targetId}
+        onNavigateToUserProfile={onNavigateToUserProfile}
+      />
 
       {/* 5. Modal de Carga Manual */}
       <AnimatePresence>
@@ -5152,12 +6096,67 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
                 </div>
                 <div className="flex justify-between border-b border-gray-50 pb-3">
                   <span className="text-gray-900 font-bold text-sm">Método de Pago</span>
-                  <span className="text-gray-500 text-sm">Efectivo</span>
+                  <span className="text-gray-500 text-sm">
+                    {Array.isArray(selectedTx.payments) && selectedTx.payments.length > 0
+                      ? selectedTx.payments.map((p: any) => `${p.method}: $${Number(p.amount).toLocaleString()}`).join(', ')
+                      : 'Efectivo'}
+                  </span>
                 </div>
+                {selectedTx.userName && (
+                  <div className="flex justify-between border-b border-gray-50 pb-3">
+                    <span className="text-gray-900 font-bold text-sm">Cliente</span>
+                    <span className="text-gray-500 text-sm">{selectedTx.userName}</span>
+                  </div>
+                )}
+                {selectedTx.paymentStatus && (
+                  <div className="flex justify-between border-b border-gray-50 pb-3">
+                    <span className="text-gray-900 font-bold text-sm">Estado de Cobro</span>
+                    <span className={cn(
+                      "text-xs font-bold px-2 py-0.5 rounded-full capitalize",
+                      selectedTx.paymentStatus === 'fiado' ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
+                    )}>
+                      {selectedTx.paymentStatus === 'fiado' ? 'Fiado (Pendiente)' : 'Cobrado / Pagado'}
+                    </span>
+                  </div>
+                )}
+                {Array.isArray(selectedTx.items) && selectedTx.items.length > 0 && (
+                  <div className="border-b border-gray-50 pb-3">
+                    <span className="text-gray-900 font-bold text-sm block mb-1">Detalle de Productos</span>
+                    <div className="space-y-1 bg-gray-50 p-2.5 rounded-xl text-xs">
+                      {selectedTx.items.map((it: any, iIdx: number) => (
+                        <div key={`tx-item-det-${iIdx}`} className="flex justify-between">
+                          <span>{it.quantity}x {it.name}</span>
+                          <span className="font-bold">${Number(it.subtotal || (it.unitPrice * it.quantity) || 0).toLocaleString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {selectedTx.description && (
                   <div>
                     <span className="text-gray-900 font-bold text-sm block mb-1">Descripción</span>
                     <p className="text-sm text-gray-500 bg-gray-50 p-3 rounded-xl">{selectedTx.description}</p>
+                  </div>
+                )}
+
+                {selectedTx.paymentStatus === 'fiado' && (
+                  <div className="pt-3 border-t border-gray-100 dark:border-slate-800 space-y-2">
+                    <span className="text-xs font-bold text-gray-700 dark:text-slate-300 block">
+                      Cobrar y Saldar Fiado:
+                    </span>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['efectivo', 'transferencia', 'tarjeta'] as const).map((method) => (
+                        <button
+                          key={`settle-fiado-${method}`}
+                          type="button"
+                          disabled={isSettlingLoading}
+                          onClick={() => handleSettleFiado(selectedTx, method)}
+                          className="py-2 px-2 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-600 hover:text-white text-emerald-700 dark:text-emerald-400 font-bold rounded-xl text-xs transition-colors capitalize text-center border border-emerald-200 dark:border-emerald-800 disabled:opacity-50 cursor-pointer"
+                        >
+                          {method}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -5171,6 +6170,7 @@ const FinanceView = ({ complexId = 'complejo_central' }: { complexId?: string })
 
 const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = 'complejo_central' }: { onDataChange?: () => void, isDarkMode?: boolean, onToggleDarkMode?: () => void, complexId?: string }) => {
   const { user, activeComplex, collaboratorData, logout } = useFirebase();
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const [isLoading, setIsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -5779,6 +6779,9 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
             ))}
           </div>
         </div>
+
+        {/* Catálogo de Productos y Stock (Mostrador) */}
+        <CatalogInventorySection complexId={targetId} />
 
         {/* 7. Apariencia y Modo Nocturno */}
         <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-800 p-4 transition-colors">
@@ -6467,7 +7470,7 @@ const ReportsModal = ({ isOpen, onClose, complexId = 'complejo_central' }: { isO
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavTabId>('finance');
+  const [activeTab, setActiveTab] = useState<NavTabId>('schedule');
   const [isSidebarOpen, setSidebarOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [selectedMatch, setSelectedMatch] = useState<Match | null>(null);
@@ -6800,7 +7803,8 @@ export default function App() {
   }
 
   return (
-    <div className="flex w-full h-[100dvh] overflow-hidden bg-white dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 transition-colors">
+    <POSCartProvider complexId={activeComplexId}>
+      <div className="flex w-full h-[100dvh] overflow-hidden bg-white dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 transition-colors">
       <Sidebar 
         active={activeTab} 
         onNavigate={handleNavigate}
@@ -6961,7 +7965,13 @@ export default function App() {
                 />
               )}
               {activeTab === 'analytics' && <AnalyticsView key="view-analytics" complexId={activeComplexId} />}
-              {activeTab === 'finance' && <FinanceView key="view-finance" complexId={activeComplexId} />}
+              {activeTab === 'finance' && (
+                <FinanceView 
+                  key="view-finance" 
+                  complexId={activeComplexId} 
+                  onNavigateToUserProfile={handleUserClick} 
+                />
+              )}
               {activeTab === 'profile' && (
                 <ProfileView 
                   key="view-profile"
@@ -7062,5 +8072,6 @@ export default function App() {
       {/* Mobile Bottom Navigation */}
       <BottomNav active={activeTab} onNavigate={handleNavigate} />
     </div>
+  </POSCartProvider>
   );
 }
