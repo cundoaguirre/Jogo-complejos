@@ -154,11 +154,37 @@ export interface User {
   updatedAt?: string;
 }
 
+export interface ProductCategory {
+  id: string;
+  complejoId: string;
+  name: string;
+  description?: string;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export interface InventoryMovement {
+  id: string;
+  productId: string;
+  complejoId: string;
+  type: 'initial' | 'sale' | 'restock' | 'adjustment' | string;
+  typeLabel: string; // 'Stock inicial', 'Venta', 'Reposición de stock', 'Ajuste manual'
+  quantity: number; // e.g. +10 or -1
+  resultingStock: number;
+  date: string;
+  time: string;
+  formattedDate?: string;
+  actorName?: string;
+  notes?: string;
+  createdAt?: any;
+}
+
 export interface Product {
   id: string;
   complejoId: string;
   name: string;
   categoryId: string;
+  categoryName?: string;
   purchasePrice: number;
   salePrice: number;
   stock: number;

@@ -115,8 +115,11 @@ export const ActivationView: React.FC<ActivationViewProps> = ({
     try {
       let currentUser = auth.currentUser;
 
-      // If user is not yet logged in with Google, trigger popup
+      // If user is not yet logged in with Google, trigger popup with account chooser
       if (!currentUser) {
+        googleProvider.setCustomParameters({
+          prompt: 'select_account'
+        });
         const result = await signInWithPopup(auth, googleProvider);
         currentUser = result.user;
       }
@@ -177,7 +180,13 @@ export const ActivationView: React.FC<ActivationViewProps> = ({
       console.error('[Activation] Error during transactional batch commit:', err);
       setIsProcessingAuth(false);
       setStatus('ready_to_claim');
-      setErrorMessage(err.message || 'Ocurrió un error al activar el complejo con tu cuenta de Google.');
+      const isUnauthorizedDomain = err?.code === 'auth/unauthorized-domain' || err?.message?.includes('unauthorized-domain');
+      if (isUnauthorizedDomain) {
+        const domain = typeof window !== 'undefined' ? window.location.hostname : '';
+        setErrorMessage(`Dominio no autorizado en Firebase (${domain}). Agrega "${domain}" en Firebase Console > Authentication > Settings > Authorized domains.`);
+      } else {
+        setErrorMessage(err.message || 'Ocurrió un error al activar el complejo con tu cuenta de Google.');
+      }
     }
   };
 

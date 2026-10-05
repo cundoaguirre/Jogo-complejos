@@ -44,6 +44,7 @@ import { POSView } from './components/POSView';
 import { POSModal } from './components/POSModal';
 import { CatalogInventorySection } from './components/CatalogInventorySection';
 import { CuentasCorrientesSection } from './components/CuentasCorrientesSection';
+import { MostradorBottomSheet } from './components/MostradorBottomSheet';
 import { POSCartProvider } from './components/POSCartContext';
 
 // --- Components ---
@@ -6359,6 +6360,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
   };
 
   const [isSaving, setIsSaving] = useState(false);
+  const [isMostradorOpen, setIsMostradorOpen] = useState(false);
 
   const handleSaveProfile = async () => {
     setIsSaving(true);
@@ -6432,18 +6434,29 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
   return (
     <div className="bg-gray-50 min-h-full pb-24">
       {/* Top action row */}
-      <div className="pt-6 px-4 md:px-6 pb-2 flex justify-between items-center">
+      <div className="pt-6 px-4 md:px-6 pb-2 flex justify-between items-center gap-3">
         <div>
           <h1 className="text-xl font-black text-gray-900 tracking-tight">Perfil del Complejo</h1>
           <p className="text-xs text-gray-500">Gestioná tu sede, canchas y datos de contacto</p>
         </div>
-        <button type="button" 
-          onClick={() => setEditSection('info')}
-          className="p-2.5 bg-white border border-gray-200 rounded-full text-emerald-600 shadow-xs hover:bg-emerald-50 transition-colors"
-          title="Editar información"
-        >
-          <Edit3 size={18} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button 
+            type="button" 
+            onClick={() => setIsMostradorOpen(true)}
+            className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/60 dark:text-emerald-300 rounded-xl text-xs font-bold border border-emerald-200 dark:border-emerald-800 flex items-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95"
+            title="Editar mostrador"
+          >
+            <Store size={15} className="text-emerald-600 dark:text-emerald-400" />
+            <span>Editar mostrador</span>
+          </button>
+          <button type="button" 
+            onClick={() => setEditSection('info')}
+            className="p-2 bg-white border border-gray-200 rounded-xl text-emerald-600 shadow-xs hover:bg-emerald-50 transition-colors"
+            title="Editar información"
+          >
+            <Edit3 size={18} />
+          </button>
+        </div>
       </div>
 
       <div className="px-4 md:px-6 space-y-4 mt-2">
@@ -6780,8 +6793,45 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
           </div>
         </div>
 
-        {/* Catálogo de Productos y Stock (Mostrador) */}
-        <CatalogInventorySection complexId={targetId} />
+        {/* Mostrador (Categorías, Productos y Stock) */}
+        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-800 p-5 transition-colors">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="w-12 h-12 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold shadow-xs shrink-0">
+                <Store size={22} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-bold text-gray-900 dark:text-white text-base">
+                    Mostrador
+                  </h3>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 uppercase tracking-wider">
+                    Configurable
+                  </span>
+                </div>
+                <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+                  Gestioná tus categorías, catálogo de productos, precios y control de inventario
+                </p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setIsMostradorOpen(true)}
+              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-900/10 flex items-center justify-center gap-2 transition-all cursor-pointer self-start sm:self-center shrink-0"
+            >
+              <Store size={15} />
+              <span>Editar mostrador</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Mostrador Bottom Sheet */}
+        <MostradorBottomSheet
+          isOpen={isMostradorOpen}
+          onClose={() => setIsMostradorOpen(false)}
+          complexId={targetId}
+        />
 
         {/* 7. Apariencia y Modo Nocturno */}
         <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-800 p-4 transition-colors">

@@ -106,6 +106,16 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // Categorías de Mostrador
+    match /categories/{categoryId} {
+      allow read, write: if true;
+    }
+
+    // Historial inmutable de movimientos de inventario
+    match /inventory_movements/{movementId} {
+      allow read, write: if true;
+    }
+
     // Support tickets
     match /support_tickets/{ticketId} {
       allow read, write: if true;

@@ -18,6 +18,7 @@ import {
 import { collection, query, where, getDocs } from 'firebase/firestore';
 import { db } from '../lib/firebase';
 import { cn } from '../lib/utils';
+import { useFirebase } from './FirebaseContext';
 
 interface LandingAuthViewProps {
   onSignInWithGoogle: () => Promise<any>;
@@ -32,12 +33,14 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
   isDarkMode = false,
   onToggleDarkMode
 }) => {
+  const { authError, clearAuthError, signInDevMode } = useFirebase();
   const [showCodeInput, setShowCodeInput] = useState(false);
   const [activationCode, setActivationCode] = useState('');
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
   const [codeError, setCodeError] = useState<string | null>(null);
   const [verifiedVenue, setVerifiedVenue] = useState<any | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
+  const [domainCopied, setDomainCopied] = useState(false);
 
   const handleVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -153,6 +156,97 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
               )}
               <span>{isSigningIn ? 'Iniciando sesión...' : 'Iniciar sesión con Google'}</span>
             </button>
+
+            {/* Quick Demo/Dev Access Button */}
+            <button
+              type="button"
+              disabled={isSigningIn}
+              onClick={async () => {
+                setIsSigningIn(true);
+                clearAuthError();
+                await signInDevMode();
+                setIsSigningIn(false);
+              }}
+              className="w-full py-2 px-3 text-xs font-semibold text-slate-500 hover:text-emerald-600 dark:text-slate-400 dark:hover:text-emerald-400 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Sparkles size={13} className="text-emerald-500" />
+              <span>Ingresar directo como Administrador (Modo Demo / Pruebas)</span>
+            </button>
+
+            {/* Error Banner: unauthorized-domain diagnostic notice */}
+            {authError === 'unauthorized-domain' && (
+              <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/80 text-amber-900 dark:text-amber-200 space-y-3">
+                <div className="flex items-start gap-2.5">
+                  <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div className="text-xs leading-relaxed space-y-1.5">
+                    <p className="font-bold text-amber-950 dark:text-amber-200">
+                      Dominio no autorizado en Firebase (auth/unauthorized-domain)
+                    </p>
+                    <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                      Google Sign-In requiere que este dominio esté registrado en Firebase Authentication &gt; Settings &gt; Authorized domains:
+                    </p>
+                    <div className="flex items-center gap-2 p-1.5 bg-white/90 dark:bg-slate-900/90 rounded-lg border border-amber-300/60 dark:border-amber-700/60 font-mono text-[11px] text-slate-800 dark:text-slate-200">
+                      <span className="truncate flex-1 font-bold">
+                        {typeof window !== 'undefined' ? window.location.hostname : 'este dominio'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (typeof window !== 'undefined') {
+                            navigator.clipboard.writeText(window.location.hostname);
+                            setDomainCopied(true);
+                            setTimeout(() => setDomainCopied(false), 2000);
+                          }
+                        }}
+                        className="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 dark:bg-amber-900 dark:hover:bg-amber-800 text-amber-900 dark:text-amber-100 rounded text-[10px] font-bold transition-colors cursor-pointer shrink-0"
+                      >
+                        {domainCopied ? '✓ Copiado' : 'Copiar dominio'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pt-1 flex flex-col gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setIsSigningIn(true);
+                      clearAuthError();
+                      await signInDevMode();
+                      setIsSigningIn(false);
+                    }}
+                    className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-900/20 flex items-center justify-center gap-2 cursor-pointer transition-all"
+                  >
+                    <Sparkles size={14} />
+                    <span>Continuar como Administrador (Bypass Inmediato)</span>
+                  </button>
+
+                  <a
+                    href="https://console.firebase.google.com/project/crm-jogo-76af9/authentication/settings"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] text-center text-amber-800 hover:text-amber-950 dark:text-amber-300 dark:hover:text-amber-100 underline decoration-amber-400 font-medium"
+                  >
+                    Abrir configuración en Firebase Console ↗
+                  </a>
+                </div>
+              </div>
+            )}
+
+            {/* Generic Auth Error */}
+            {authError && authError !== 'unauthorized-domain' && authError !== 'popup-closed' && (
+              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
+                <AlertCircle size={14} className="flex-shrink-0" />
+                <span className="flex-1">{authError}</span>
+                <button
+                  type="button"
+                  onClick={clearAuthError}
+                  className="text-[10px] text-red-400 hover:text-red-600 underline cursor-pointer"
+                >
+                  Descartar
+                </button>
+              </div>
+            )}
 
             {/* Divider */}
             <div className="relative flex items-center justify-center my-4">

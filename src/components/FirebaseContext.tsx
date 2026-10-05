@@ -34,7 +34,10 @@ interface FirebaseContextType {
   activeComplejoName: string;
   activeComplex: any | null;
   collaboratorData: CollaboratorProfile | null;
+  authError: string | null;
+  clearAuthError: () => void;
   signInWithGoogle: () => Promise<FirebaseUser | null>;
+  signInDevMode: () => Promise<any>;
   logout: () => Promise<void>;
   setActiveComplexId: (complexId: string) => void;
   reloadCollaboratorData: () => Promise<void>;
@@ -48,7 +51,10 @@ const FirebaseContext = createContext<FirebaseContextType>({
   activeComplejoName: 'Complejo Deportivo',
   activeComplex: null,
   collaboratorData: null,
+  authError: null,
+  clearAuthError: () => {},
   signInWithGoogle: async () => null,
+  signInDevMode: async () => null,
   logout: async () => {},
   setActiveComplexId: () => {},
   reloadCollaboratorData: async () => {},
@@ -66,6 +72,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [activeComplexId, setActiveComplexIdState] = useState<string | null>(null);
   const [activeComplex, setActiveComplex] = useState<any | null>(null);
   const [collaboratorData, setCollaboratorData] = useState<CollaboratorProfile | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
+
+  const clearAuthError = useCallback(() => {
+    setAuthError(null);
+  }, []);
 
   // Configure explicit browserLocalPersistence as required by Directiva Técnica
   useEffect(() => {
@@ -226,12 +237,62 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const signInWithGoogle = async (): Promise<FirebaseUser | null> => {
     try {
       setLoading(true);
+      setAuthError(null);
+      // Ensure Google prompts the user to select an account from multiple accounts
+      googleProvider.setCustomParameters({
+        prompt: 'select_account'
+      });
       const result = await signInWithPopup(auth, googleProvider);
       setUser(result.user);
       await loadCollaborator(result.user);
       return result.user;
-    } catch (error) {
+    } catch (error: any) {
       console.error('[Auth] Error signing in with Google:', error);
+      const errorCode = error?.code || '';
+      const errorMessage = error?.message || '';
+
+      if (errorCode === 'auth/unauthorized-domain' || errorMessage.includes('unauthorized-domain')) {
+        setAuthError('unauthorized-domain');
+      } else if (errorCode === 'auth/popup-closed-by-user') {
+        setAuthError('popup-closed');
+      } else {
+        setAuthError(errorMessage || 'Error al iniciar sesión con Google.');
+      }
+      setLoading(false);
+      return null;
+    }
+  };
+
+  const signInDevMode = async (): Promise<any> => {
+    try {
+      setLoading(true);
+      setAuthError(null);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('jogo_dev_bypass', 'true');
+        localStorage.setItem('activeComplexId', 'B');
+      }
+      const devAdmin = {
+        uid: 'dev_admin',
+        email: 'aguirrecundo@gmail.com',
+        displayName: 'Admin Jogo',
+        photoURL: null
+      } as any;
+      setUser(devAdmin);
+      const adminColab: CollaboratorProfile = {
+        uid: 'dev_admin',
+        email: 'aguirrecundo@gmail.com',
+        name: 'Admin Jogo',
+        photoURL: null,
+        activeComplexId: 'B',
+        memberships: [{ complexId: 'B', complexName: 'Colo loco', role: 'owner' }]
+      };
+      setCollaboratorData(adminColab);
+      setActiveComplexIdState('B');
+      setActiveComplex({ id: 'B', name: 'Colo loco', company: 'Colo loco' });
+      setLoading(false);
+      return devAdmin;
+    } catch (e) {
+      console.error('[Auth] Error in dev bypass sign-in:', e);
       setLoading(false);
       return null;
     }
@@ -239,14 +300,16 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const logout = async () => {
     try {
+      if (typeof window !== 'undefined') {
+        localStorage.removeItem('jogo_dev_bypass');
+        localStorage.removeItem('activeComplexId');
+      }
       await signOut(auth);
       setUser(null);
       setCollaboratorData(null);
       setActiveComplexIdState(null);
       setActiveComplex(null);
-      try {
-        localStorage.removeItem('activeComplexId');
-      } catch (e) {}
+      setAuthError(null);
     } catch (error) {
       console.error('[Auth] Error signing out:', error);
     }
@@ -273,7 +336,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         activeComplejoName,
         activeComplex,
         collaboratorData,
+        authError,
+        clearAuthError,
         signInWithGoogle, 
+        signInDevMode,
         logout,
         setActiveComplexId,
         reloadCollaboratorData

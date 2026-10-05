@@ -15,7 +15,7 @@ import {
   writeBatch
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
-import type { User, Court, Match, Product, POSTransaction, TransactionPayment, TransactionItem } from '../types';
+import type { User, Court, Match, Product, ProductCategory, InventoryMovement, POSTransaction, TransactionPayment, TransactionItem } from '../types';
 
 export const COMPLEJOS_COLLECTION = 'complejos';
 export const BOOKINGS_COLLECTION = 'bookings';
@@ -23,6 +23,8 @@ export const USERS_COLLECTION = 'users';
 export const COLLABORATORS_COLLECTION = 'collaborators';
 export const PRODUCTS_COLLECTION = 'products';
 export const TRANSACTIONS_COLLECTION = 'transactions';
+export const INVENTORY_MOVEMENTS_COLLECTION = 'inventory_movements';
+export const CATEGORIES_COLLECTION = 'categories';
 
 /**
  * Returns current complexId for scoping data to the active complex (default: 'B')
@@ -729,10 +731,11 @@ export const listenToFirestoreCourts = (cb: (courts: Court[]) => void, complexId
 // DIRECTIVA MAESTRA POS, INVENTARIO Y FINANZAS
 // ============================================================================
 
-export const DEFAULT_INVENTORY_CATEGORIES = ["Bebidas", "Snacks", "Kiosco"];
+export const DEFAULT_INVENTORY_CATEGORIES: string[] = [];
 
 /**
  * Escucha las categorías de mostrador desde complejos/{complejoId}.inventoryCategories
+ * 100% configurable por el dueño, comienza vacío.
  */
 export function subscribeToInventoryCategories(
   complexId: string,
@@ -743,15 +746,16 @@ export function subscribeToInventoryCategories(
   return onSnapshot(compRef, (snap) => {
     if (snap.exists()) {
       const data = snap.data();
-      if (Array.isArray(data.inventoryCategories) && data.inventoryCategories.length > 0) {
+      if (Array.isArray(data.inventoryCategories)) {
         cb(data.inventoryCategories);
         return;
       }
     }
-    cb(DEFAULT_INVENTORY_CATEGORIES);
+    // Cero categorías preconfiguradas
+    cb([]);
   }, (err) => {
     console.warn('[Firestore] Error leyendo inventoryCategories:', err);
-    cb(DEFAULT_INVENTORY_CATEGORIES);
+    cb([]);
   });
 }
 
@@ -770,7 +774,8 @@ export async function saveInventoryCategories(
 }
 
 /**
- * Escucha los productos del complejo activo
+ * Escucha los productos del complejo activo.
+ * Cero productos predeterminados, comienza 100% vacío.
  */
 export function subscribeToProducts(
   complexId: string,
@@ -788,7 +793,8 @@ export function subscribeToProducts(
         id: d.id,
         complejoId: data.complejoId || targetId,
         name: data.name || 'Sin nombre',
-        categoryId: data.categoryId || 'Bebidas',
+        categoryId: data.categoryId || '',
+        categoryName: data.categoryName || data.categoryId || '',
         purchasePrice: Number(data.purchasePrice || 0),
         salePrice: Number(data.salePrice || 0),
         stock: Number(data.stock || 0),
@@ -798,25 +804,6 @@ export function subscribeToProducts(
       });
     });
 
-    if (snap.empty) {
-      // Sembrar productos iniciales si el complejo no tiene ninguno cargado
-      const defaultProducts = [
-        { name: 'Coca Cola 2.5L', categoryId: 'Bebidas', purchasePrice: 2000, salePrice: 3500, stock: 24, status: 'activo' },
-        { name: 'Agua Mineral 500ml', categoryId: 'Bebidas', purchasePrice: 800, salePrice: 1500, stock: 30, status: 'activo' },
-        { name: 'Papas Fritas 150g', categoryId: 'Snacks', purchasePrice: 1200, salePrice: 2500, stock: 18, status: 'activo' }
-      ];
-      Promise.all(
-        defaultProducts.map(p => 
-          addDoc(colRef, {
-            ...p,
-            complejoId: targetId,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp()
-          })
-        )
-      ).catch(() => {});
-    }
-
     cb(list);
   }, (err) => {
     console.warn('[Firestore] Error escuchando productos:', err);
@@ -825,7 +812,8 @@ export function subscribeToProducts(
 }
 
 /**
- * Guarda o actualiza un producto en Firestore
+ * Guarda o actualiza un producto en Firestore.
+ * Si es nuevo, registra el movimiento de Stock Inicial en inventory_movements.
  */
 export async function saveProductInFirestore(
   complexId: string,
@@ -833,13 +821,15 @@ export async function saveProductInFirestore(
 ): Promise<string> {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const colRef = collection(db, PRODUCTS_COLLECTION);
+  const isNew = !product.id;
   const prodId = product.id || `prod_${Date.now()}`;
   const prodRef = doc(colRef, prodId);
 
   const payload: any = {
     complejoId: targetId,
     name: (product.name || '').trim(),
-    categoryId: (product.categoryId || 'Bebidas').trim(),
+    categoryId: (product.categoryId || '').trim(),
+    categoryName: (product.categoryName || product.categoryId || '').trim(),
     purchasePrice: Number(product.purchasePrice || 0),
     salePrice: Number(product.salePrice || 0),
     stock: Number(product.stock || 0),
@@ -847,12 +837,135 @@ export async function saveProductInFirestore(
     updatedAt: serverTimestamp()
   };
 
-  if (!product.id) {
+  if (isNew) {
     payload.createdAt = serverTimestamp();
   }
 
   await setDoc(prodRef, payload, { merge: true });
+
+  // Si es un producto nuevo con stock > 0, registrar movimiento de stock inicial en el historial
+  if (isNew && payload.stock > 0) {
+    try {
+      const now = new Date();
+      const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+      const hoursStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const movRef = doc(collection(db, INVENTORY_MOVEMENTS_COLLECTION));
+      await setDoc(movRef, {
+        productId: prodId,
+        complejoId: targetId,
+        type: 'initial',
+        typeLabel: 'Stock inicial',
+        quantity: Number(payload.stock),
+        resultingStock: Number(payload.stock),
+        date: dateStr,
+        time: hoursStr,
+        actorName: 'Administrador',
+        notes: 'Carga inicial de producto',
+        createdAt: serverTimestamp()
+      });
+    } catch (e) {
+      console.warn('[Inventory] Error registrando stock inicial:', e);
+    }
+  }
+
   return prodId;
+}
+
+/**
+ * Escucha el historial de movimientos de inventario de un producto
+ */
+export function subscribeToProductMovements(
+  productId: string,
+  cb: (movements: InventoryMovement[]) => void
+): () => void {
+  if (!productId) {
+    cb([]);
+    return () => {};
+  }
+  const colRef = collection(db, INVENTORY_MOVEMENTS_COLLECTION);
+  const q = query(colRef, where('productId', '==', productId));
+
+  return onSnapshot(q, (snap) => {
+    const list: InventoryMovement[] = [];
+    snap.forEach((d) => {
+      const data = d.data();
+      list.push({
+        id: d.id,
+        productId: data.productId,
+        complejoId: data.complejoId,
+        type: data.type || 'adjustment',
+        typeLabel: data.typeLabel || 'Ajuste manual',
+        quantity: Number(data.quantity || 0),
+        resultingStock: Number(data.resultingStock || 0),
+        date: data.date || '',
+        time: data.time || '',
+        actorName: data.actorName || 'Administrador',
+        notes: data.notes || '',
+        createdAt: data.createdAt
+      });
+    });
+
+    // Ordenar de más reciente a más antiguo
+    list.sort((a, b) => {
+      const tA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
+      const tB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
+      return tB - tA;
+    });
+
+    cb(list);
+  }, (err) => {
+    console.warn('[Firestore] Error escuchando movimientos:', err);
+    cb([]);
+  });
+}
+
+/**
+ * Ajusta el stock de un producto manualmente y genera un registro inmutable en el historial
+ */
+export async function adjustProductStockInFirestore(params: {
+  complexId: string;
+  productId: string;
+  delta: number; // positivo (+X) o negativo (-X)
+  type: 'restock' | 'adjustment' | string;
+  typeLabel: string; // 'Reposición de stock' | 'Ajuste manual'
+  notes?: string;
+  actorName?: string;
+}): Promise<number> {
+  const targetId = (!params.complexId || params.complexId === 'complejo_central') ? 'B' : params.complexId;
+  const prodRef = doc(db, PRODUCTS_COLLECTION, params.productId);
+  const snap = await getDoc(prodRef);
+  if (!snap.exists()) {
+    throw new Error('Producto no encontrado');
+  }
+
+  const currentStock = Number(snap.data().stock || 0);
+  const newStock = Math.max(0, currentStock + params.delta);
+
+  await updateDoc(prodRef, {
+    stock: newStock,
+    updatedAt: serverTimestamp()
+  });
+
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const hoursStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+  const movRef = doc(collection(db, INVENTORY_MOVEMENTS_COLLECTION));
+  await setDoc(movRef, {
+    productId: params.productId,
+    complejoId: targetId,
+    type: params.type,
+    typeLabel: params.typeLabel,
+    quantity: params.delta,
+    resultingStock: newStock,
+    date: dateStr,
+    time: hoursStr,
+    actorName: params.actorName || 'Administrador',
+    notes: params.notes || '',
+    createdAt: serverTimestamp()
+  });
+
+  return newStock;
 }
 
 /**
@@ -954,13 +1067,29 @@ export async function executePOSSale(sale: {
 
   batch.set(txRef, txData);
 
-  // 2. Descontar stock en products
+  // 2. Descontar stock en products y registrar movimiento de inventario automático
+  const hoursStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
   for (const item of sale.items) {
     if (item.productId) {
       const prodRef = doc(db, PRODUCTS_COLLECTION, item.productId);
       batch.update(prodRef, {
         stock: increment(-Number(item.quantity || 1)),
         updatedAt: serverTimestamp()
+      });
+
+      // Movimiento inmutable de inventario por venta POS
+      const movRef = doc(collection(db, INVENTORY_MOVEMENTS_COLLECTION));
+      batch.set(movRef, {
+        productId: item.productId,
+        complejoId: targetId,
+        type: 'sale',
+        typeLabel: 'Venta',
+        quantity: -Number(item.quantity || 1),
+        date: dateStr,
+        time: hoursStr,
+        actorName: sale.userName || 'Punto de Venta',
+        notes: `Venta Mostrador · Ticket #${txRef.id.slice(0, 6)}`,
+        createdAt: serverTimestamp()
       });
     }
   }

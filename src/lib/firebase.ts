@@ -10,6 +10,10 @@ export const FIRESTORE_DATABASE_ID = "ai-studio-apidegestindecli-29cae824-e5de-4
 export const db = getFirestore(app, FIRESTORE_DATABASE_ID); /* CRITICAL: The app will break without this line */
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
+// Force account selection so users with multiple Google accounts can choose which one to sign in with
+googleProvider.setCustomParameters({
+  prompt: 'select_account'
+});
 
 export async function testConnection() {
   try {
