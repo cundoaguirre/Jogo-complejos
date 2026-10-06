@@ -388,7 +388,7 @@ export const POSModal: React.FC<POSModalProps> = ({
       setSelectedClient(null);
       setStep(1);
     } catch (err: any) {
-      console.error('Error finalizando venta:', err);
+      console.warn('Error finalizando venta:', err);
       alert(`Error al registrar venta: ${err?.message || 'Reintentá nuevamente'}`);
     } finally {
       setIsSubmitting(false);

@@ -265,3 +265,59 @@ export interface SupportTicket {
   channel?: 'whatsapp' | 'email' | 'system';
   created_at: string;
 }
+
+export type ComplexClientStatus = 'trial' | 'active' | 'inactive' | 'paused';
+
+export interface CanonicalComplejo {
+  id: string;
+  name: string;
+  company?: string;
+  clientStatus: ComplexClientStatus;
+  phone?: string;
+  address?: string;
+  instagram?: string;
+  description?: string;
+  courts?: any[];
+  hours?: any[];
+  isActivated?: boolean;
+  ownerUid?: string;
+  ownerEmail?: string;
+  activatedAt?: any;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
+export type InvitationStatus = 'pending' | 'claimed' | 'expired' | 'revoked';
+
+export interface SaaSInvitation {
+  token: string;
+  complexId: string;
+  complexName?: string;
+  role: 'owner' | 'admin' | 'staff' | string;
+  status: InvitationStatus;
+  createdAt: any;
+  expiresAt: any;
+  claimedByUid?: string | null;
+  claimedByEmail?: string | null;
+  claimedAt?: any | null;
+}
+
+export interface ComplexMembership {
+  complexId: string;
+  complexName: string;
+  role: string;
+  clientStatus?: ComplexClientStatus;
+}
+
+export interface CollaboratorProfile {
+  uid: string;
+  email: string | null;
+  name: string | null;
+  photoURL: string | null;
+  activeComplexId: string;
+  complexIds?: string[];
+  memberships: ComplexMembership[];
+  createdAt?: any;
+  updatedAt?: any;
+}
+

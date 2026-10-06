@@ -1,90 +1,37 @@
 import React, { useState } from 'react';
 import { 
-  ShieldCheck, 
-  Sparkles, 
-  ArrowRight, 
-  Building2, 
-  KeyRound, 
+  Lock, 
   Calendar, 
   Users, 
   TrendingUp, 
   Sun, 
   Moon, 
-  Lock,
-  CheckCircle2,
-  AlertCircle,
-  Loader2
+  AlertCircle, 
+  Loader2 
 } from 'lucide-react';
-import { collection, query, where, getDocs } from 'firebase/firestore';
-import { db } from '../lib/firebase';
-import { cn } from '../lib/utils';
 import { useFirebase } from './FirebaseContext';
 
 interface LandingAuthViewProps {
   onSignInWithGoogle: () => Promise<any>;
-  onClaimWithCode?: (code: string) => void;
   isDarkMode?: boolean;
   onToggleDarkMode?: () => void;
 }
 
 export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
   onSignInWithGoogle,
-  onClaimWithCode,
   isDarkMode = false,
   onToggleDarkMode
 }) => {
-  const { authError, clearAuthError, signInDevMode } = useFirebase();
-  const [showCodeInput, setShowCodeInput] = useState(false);
-  const [activationCode, setActivationCode] = useState('');
-  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
-  const [codeError, setCodeError] = useState<string | null>(null);
-  const [verifiedVenue, setVerifiedVenue] = useState<any | null>(null);
+  const { authError, clearAuthError } = useFirebase();
   const [isSigningIn, setIsSigningIn] = useState(false);
-  const [domainCopied, setDomainCopied] = useState(false);
-
-  const handleVerifyCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = activationCode.trim().toUpperCase();
-    if (!trimmed) {
-      setCodeError('Por favor ingresa un código de activación válido.');
-      return;
-    }
-
-    setIsVerifyingCode(true);
-    setCodeError(null);
-    setVerifiedVenue(null);
-
-    try {
-      const complexesRef = collection(db, 'complejos');
-      const q = query(complexesRef, where('activationCode', '==', trimmed));
-      const snap = await getDocs(q);
-
-      if (snap.empty) {
-        setCodeError('El código ingresado no corresponde a ningún complejo registrado.');
-        setIsVerifyingCode(false);
-        return;
-      }
-
-      const docData = snap.docs[0].data();
-      setVerifiedVenue({ id: snap.docs[0].id, ...docData });
-      setIsVerifyingCode(false);
-    } catch (err: any) {
-      console.error('Error verificando código:', err);
-      setCodeError('Error al conectar con el servidor. Intenta de nuevo.');
-      setIsVerifyingCode(false);
-    }
-  };
 
   const handleProceedGoogle = async () => {
     setIsSigningIn(true);
+    clearAuthError();
     try {
-      if (verifiedVenue && onClaimWithCode) {
-        onClaimWithCode(activationCode.trim().toUpperCase());
-      } else {
-        await onSignInWithGoogle();
-      }
+      await onSignInWithGoogle();
     } catch (err) {
-      console.error(err);
+      console.warn('[LandingAuth] Proceed error:', err);
     } finally {
       setIsSigningIn(false);
     }
@@ -109,7 +56,7 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
             <button
               type="button"
               onClick={onToggleDarkMode}
-              className="p-2 rounded-xl text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm transition-colors cursor-pointer"
+              className="p-2 rounded-xl text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs transition-colors cursor-pointer"
               title={isDarkMode ? "Cambiar a modo claro" : "Cambiar a modo oscuro"}
               aria-label="Toggle tema"
             >
@@ -142,7 +89,7 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
               type="button"
               disabled={isSigningIn}
               onClick={handleProceedGoogle}
-              className="w-full py-3.5 px-4 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-100 font-bold rounded-2xl border border-slate-300 dark:border-slate-700 shadow-sm hover:shadow transition-all flex items-center justify-center gap-3 cursor-pointer disabled:opacity-50 active:scale-[0.99]"
+              className="w-full py-3.5 px-4 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-100 font-bold rounded-2xl border border-slate-300 dark:border-slate-700 shadow-xs hover:shadow transition-all flex items-center justify-center gap-3 cursor-pointer disabled:opacity-50 active:scale-[0.99]"
             >
               {isSigningIn ? (
                 <Loader2 size={18} className="animate-spin text-emerald-600" />
@@ -157,183 +104,28 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
               <span>{isSigningIn ? 'Iniciando sesión...' : 'Iniciar sesión con Google'}</span>
             </button>
 
-            {/* Quick Demo/Dev Access Button */}
-            <button
-              type="button"
-              disabled={isSigningIn}
-              onClick={async () => {
-                setIsSigningIn(true);
-                clearAuthError();
-                await signInDevMode();
-                setIsSigningIn(false);
-              }}
-              className="w-full py-2 px-3 text-xs font-semibold text-slate-500 hover:text-emerald-600 dark:text-slate-400 dark:hover:text-emerald-400 flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
-            >
-              <Sparkles size={13} className="text-emerald-500" />
-              <span>Ingresar directo como Administrador (Modo Demo / Pruebas)</span>
-            </button>
-
-            {/* Error Banner: unauthorized-domain diagnostic notice */}
-            {authError === 'unauthorized-domain' && (
-              <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/80 text-amber-900 dark:text-amber-200 space-y-3">
-                <div className="flex items-start gap-2.5">
-                  <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                  <div className="text-xs leading-relaxed space-y-1.5">
-                    <p className="font-bold text-amber-950 dark:text-amber-200">
-                      Dominio no autorizado en Firebase (auth/unauthorized-domain)
-                    </p>
-                    <p className="text-[11px] text-amber-800 dark:text-amber-300">
-                      Google Sign-In requiere que este dominio esté registrado en Firebase Authentication &gt; Settings &gt; Authorized domains:
-                    </p>
-                    <div className="flex items-center gap-2 p-1.5 bg-white/90 dark:bg-slate-900/90 rounded-lg border border-amber-300/60 dark:border-amber-700/60 font-mono text-[11px] text-slate-800 dark:text-slate-200">
-                      <span className="truncate flex-1 font-bold">
-                        {typeof window !== 'undefined' ? window.location.hostname : 'este dominio'}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (typeof window !== 'undefined') {
-                            navigator.clipboard.writeText(window.location.hostname);
-                            setDomainCopied(true);
-                            setTimeout(() => setDomainCopied(false), 2000);
-                          }
-                        }}
-                        className="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 dark:bg-amber-900 dark:hover:bg-amber-800 text-amber-900 dark:text-amber-100 rounded text-[10px] font-bold transition-colors cursor-pointer shrink-0"
-                      >
-                        {domainCopied ? '✓ Copiado' : 'Copiar dominio'}
-                      </button>
-                    </div>
-                  </div>
+            {/* Error Notification */}
+            {authError && authError !== 'popup-closed' && (
+              <div className="p-3.5 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 text-xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <AlertCircle size={15} className="shrink-0" />
+                  <span>{authError}</span>
                 </div>
-
-                <div className="pt-1 flex flex-col gap-2">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      setIsSigningIn(true);
-                      clearAuthError();
-                      await signInDevMode();
-                      setIsSigningIn(false);
-                    }}
-                    className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-900/20 flex items-center justify-center gap-2 cursor-pointer transition-all"
-                  >
-                    <Sparkles size={14} />
-                    <span>Continuar como Administrador (Bypass Inmediato)</span>
-                  </button>
-
-                  <a
-                    href="https://console.firebase.google.com/project/crm-jogo-76af9/authentication/settings"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[11px] text-center text-amber-800 hover:text-amber-950 dark:text-amber-300 dark:hover:text-amber-100 underline decoration-amber-400 font-medium"
-                  >
-                    Abrir configuración en Firebase Console ↗
-                  </a>
-                </div>
-              </div>
-            )}
-
-            {/* Generic Auth Error */}
-            {authError && authError !== 'unauthorized-domain' && authError !== 'popup-closed' && (
-              <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
-                <AlertCircle size={14} className="flex-shrink-0" />
-                <span className="flex-1">{authError}</span>
                 <button
                   type="button"
                   onClick={clearAuthError}
-                  className="text-[10px] text-red-400 hover:text-red-600 underline cursor-pointer"
+                  className="text-[10px] text-red-500 hover:text-red-700 underline cursor-pointer"
                 >
                   Descartar
                 </button>
               </div>
             )}
-
-            {/* Divider */}
-            <div className="relative flex items-center justify-center my-4">
-              <div className="border-t border-slate-200 dark:border-slate-800 w-full" />
-              <span className="bg-white dark:bg-slate-900 px-3 text-[11px] font-semibold text-slate-400 uppercase tracking-wider relative">
-                o
-              </span>
-            </div>
-
-            {/* Activation Code Section */}
-            {!showCodeInput ? (
-              <button
-                type="button"
-                onClick={() => setShowCodeInput(true)}
-                className="w-full py-3 px-4 bg-emerald-50/80 dark:bg-emerald-950/30 hover:bg-emerald-100/70 dark:hover:bg-emerald-950/50 text-emerald-800 dark:text-emerald-300 font-semibold rounded-2xl border border-emerald-200 dark:border-emerald-900/60 text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer"
-              >
-                <KeyRound size={16} className="text-emerald-600 dark:text-emerald-400" />
-                <span>Tengo un código de activación</span>
-              </button>
-            ) : (
-              <form onSubmit={handleVerifyCode} className="space-y-3 pt-1">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                    <KeyRound size={13} className="text-emerald-600" />
-                    Código de Sede Nueva:
-                  </label>
-                  <button 
-                    type="button" 
-                    onClick={() => { setShowCodeInput(false); setCodeError(null); setVerifiedVenue(null); }}
-                    className="text-[10px] text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                  >
-                    Ocultar
-                  </button>
-                </div>
-
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    placeholder="Ej. JOGO-B"
-                    value={activationCode}
-                    onChange={(e) => setActivationCode(e.target.value.toUpperCase())}
-                    className="flex-1 px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono uppercase text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                  />
-                  <button
-                    type="submit"
-                    disabled={isVerifyingCode || !activationCode.trim()}
-                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-50 cursor-pointer"
-                  >
-                    {isVerifyingCode ? <Loader2 size={14} className="animate-spin" /> : 'Verificar'}
-                  </button>
-                </div>
-
-                {codeError && (
-                  <div className="p-2.5 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 text-xs flex items-center gap-2">
-                    <AlertCircle size={14} className="flex-shrink-0" />
-                    <span>{codeError}</span>
-                  </div>
-                )}
-
-                {verifiedVenue && (
-                  <div className="p-3.5 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 space-y-2">
-                    <div className="flex items-center gap-2 text-emerald-800 dark:text-emerald-300 font-bold text-xs">
-                      <CheckCircle2 size={16} className="text-emerald-600" />
-                      <span>Sede encontrada: {verifiedVenue.name}</span>
-                    </div>
-                    <p className="text-[11px] text-slate-600 dark:text-slate-400">
-                      Presiona el botón de Google para iniciar sesión y vincularte como operador de esta sede.
-                    </p>
-                    <button
-                      type="button"
-                      disabled={isSigningIn}
-                      onClick={handleProceedGoogle}
-                      className="w-full py-2.5 px-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center justify-center gap-2 shadow transition-all cursor-pointer"
-                    >
-                      <Building2 size={14} />
-                      <span>Canjear y entrar a {verifiedVenue.name}</span>
-                    </button>
-                  </div>
-                )}
-              </form>
-            )}
           </div>
 
           {/* Privacy Note */}
           <div className="mt-6 pt-5 border-t border-slate-100 dark:border-slate-800/80 text-center">
-            <p className="text-[11px] text-slate-400 dark:text-slate-500">
-              Cada complejo opera en aislamiento estricto sobre Firestore. Tus datos y canchas solo son visibles para operadores autorizados.
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 leading-relaxed">
+              Cada complejo opera en aislamiento estricto sobre Firestore. La vinculación y autorización se gestionan de forma segura mediante credenciales oficiales.
             </p>
           </div>
         </div>
@@ -341,7 +133,7 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
         {/* Feature Highlights beneath */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 w-full max-w-2xl mt-8">
           <div className="p-3.5 rounded-2xl bg-white/70 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex-shrink-0">
+            <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 shrink-0">
               <Calendar size={18} />
             </div>
             <div>
@@ -351,7 +143,7 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
           </div>
 
           <div className="p-3.5 rounded-2xl bg-white/70 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 flex-shrink-0">
+            <div className="p-2 rounded-xl bg-blue-500/10 text-blue-600 dark:text-blue-400 shrink-0">
               <Users size={18} />
             </div>
             <div>
@@ -361,7 +153,7 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
           </div>
 
           <div className="p-3.5 rounded-2xl bg-white/70 dark:bg-slate-900/60 border border-slate-200/60 dark:border-slate-800/60 flex items-center gap-3">
-            <div className="p-2 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 flex-shrink-0">
+            <div className="p-2 rounded-xl bg-purple-500/10 text-purple-600 dark:text-purple-400 shrink-0">
               <TrendingUp size={18} />
             </div>
             <div>

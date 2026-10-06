@@ -17,8 +17,10 @@ import type { User, Match, Transaction, DashboardStats, Court } from './types';
 import { logCrashReport } from './logger';
 import { ContactSupportModal } from './components/ContactSupportModal';
 import { useFirebase } from './components/FirebaseContext';
-import { ActivationView } from './components/ActivationView';
 import { LandingAuthView } from './components/LandingAuthView';
+import { AccessDeniedView } from './components/AccessDeniedView';
+import { InviteView } from './components/InviteView';
+import { createSaasInvitation } from './lib/invitations';
 import { calculateUserLifecycleMetrics, formatDDMMYY } from './lib/userMetrics';
 import { doc, getDoc, getDocs, collection, query, where, serverTimestamp, addDoc } from 'firebase/firestore';
 import { db, auth } from './lib/firebase';
@@ -6208,6 +6210,9 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
   const [editingHourIndex, setEditingHourIndex] = useState<number | null>(null);
   const [photos, setPhotos] = useState<Array<{ id: string; url: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [createdInviteUrl, setCreatedInviteUrl] = useState<string | null>(null);
+  const [isGeneratingInvite, setIsGeneratingInvite] = useState(false);
+  const [inviteCopied, setInviteCopied] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -6425,6 +6430,25 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
     if (onDataChange) onDataChange();
   };
 
+  const handleGenerateInvite = async () => {
+    if (!complexId) return;
+    setIsGeneratingInvite(true);
+    try {
+      const res = await createSaasInvitation({
+        complexId,
+        complexName: profile?.name || activeComplex?.name || 'Mi Complejo',
+        role: 'admin',
+        durationHours: 24
+      });
+      setCreatedInviteUrl(res.inviteUrl);
+    } catch (e: any) {
+      console.warn('Error generating invite link:', e);
+      alert('Error generando enlace de invitación: ' + (e?.message || 'Error desconocido'));
+    } finally {
+      setIsGeneratingInvite(false);
+    }
+  };
+
   const authUser = auth.currentUser || user;
   const displayName = authUser?.displayName || collaboratorData?.name || authUser?.email?.split('@')[0] || 'Administrador';
   const email = authUser?.email || collaboratorData?.email || 'admin@cololoco.com';
@@ -6502,6 +6526,59 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
               </button>
             )}
           </div>
+        </div>
+
+        {/* 1.1. Vincular Operadores / Invitación Oficial SaaS */}
+        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden p-4 space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600 shrink-0">
+                <Sparkles size={18} />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 text-sm">Vincular Operador o Socio</h3>
+                <p className="text-[11px] text-gray-500">Generá un enlace único de invitación para dar acceso oficial a tu sede</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={isGeneratingInvite}
+              onClick={handleGenerateInvite}
+              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-all shadow-xs cursor-pointer disabled:opacity-50 shrink-0"
+            >
+              {isGeneratingInvite ? 'Generando...' : 'Generar enlace de invitación'}
+            </button>
+          </div>
+
+          {createdInviteUrl && (
+            <div className="p-3.5 bg-emerald-50/80 rounded-xl border border-emerald-200 space-y-2">
+              <span className="text-[11px] font-bold text-emerald-950 block">
+                Enlace generado (1 solo uso · vigencia 24 horas):
+              </span>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  readOnly
+                  value={createdInviteUrl}
+                  className="flex-1 bg-white px-3 py-1.5 rounded-lg border border-emerald-300 font-mono text-xs text-gray-800 select-all outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(createdInviteUrl);
+                    setInviteCopied(true);
+                    setTimeout(() => setInviteCopied(false), 2500);
+                  }}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shrink-0"
+                >
+                  {inviteCopied ? '✓ Copiado' : 'Copiar'}
+                </button>
+              </div>
+              <p className="text-[10px] text-emerald-800 leading-tight">
+                Compartí este enlace con la persona a invitar. Al iniciar sesión con su cuenta de Google quedará autorizada con acceso a esta sede.
+              </p>
+            </div>
+          )}
         </div>
 
         {/* 2. Información General */}
@@ -7560,6 +7637,8 @@ export default function App() {
     user, 
     loading,
     isAdmin, 
+    hasAccess,
+    authorizedComplexes,
     signInWithGoogle, 
     logout, 
     activeComplexId, 
@@ -7569,7 +7648,7 @@ export default function App() {
     setActiveComplexId 
   } = useFirebase();
 
-  // Router & URL parameters evaluation for Activation and Redirection
+  // Router & URL parameters evaluation
   const [currentPath, setCurrentPath] = useState(() => {
     if (typeof window !== 'undefined') {
       return window.location.pathname;
@@ -7595,15 +7674,16 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
 
-  // Detección universal del código de activación:
-  // Evalúa el query param 'codigo' tanto en '/activar?codigo=...' como en la raíz '/?codigo=...'
-  const params = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : searchParams;
-  const activationCode = (params.get('codigo') || searchParams.get('codigo') || params.get('code') || searchParams.get('code') || '').trim();
-  const isActivationRoute = 
-    Boolean(activationCode) ||
-    currentPath === '/activar' || 
-    currentPath.startsWith('/activar') || 
-    (typeof window !== 'undefined' && window.location.hash.includes('/activar'));
+  // Detect invitation route /invite/{token}
+  let inviteToken = '';
+  if (currentPath.startsWith('/invite/')) {
+    inviteToken = currentPath.replace('/invite/', '').split('/')[0].split('?')[0].trim();
+  } else if (typeof window !== 'undefined' && window.location.hash.includes('/invite/')) {
+    const hashPart = window.location.hash.split('/invite/')[1];
+    if (hashPart) inviteToken = hashPart.split('?')[0].trim();
+  } else if (searchParams.get('token') || searchParams.get('invite')) {
+    inviteToken = (searchParams.get('token') || searchParams.get('invite') || '').trim();
+  }
 
   // Analytics States
   const [showExposureStats, setShowExposureStats] = useState(false);
@@ -7782,11 +7862,11 @@ export default function App() {
     );
   }
 
-  // 2. Interceptor de ruta /activar o ?codigo=... para canje de sedes
-  if (isActivationRoute) {
+  // 1. Ruta /invite/{token} para primera vinculación segura
+  if (inviteToken) {
     return (
-      <ActivationView
-        initialCode={activationCode}
+      <InviteView
+        token={inviteToken}
         isDarkMode={isDarkMode}
         onNavigateHome={() => {
           window.history.pushState({}, '', '/');
@@ -7795,59 +7875,34 @@ export default function App() {
         }}
         onSuccess={(newComplexId, complexName) => {
           setActiveComplexId(newComplexId);
-          try {
-            localStorage.setItem('activeComplexId', newComplexId);
-          } catch (e) {}
           window.history.pushState({}, '', '/');
           setCurrentPath('/');
           setSearchParams(new URLSearchParams());
           setActiveTab('schedule');
           setRefreshKey(prev => prev + 1);
-          setActivationSuccessBanner(`¡Complejo "${complexName}" activado exitosamente! Has tomado el control de la sede.`);
+          setActivationSuccessBanner(`¡Bienvenido! Has tomado el control del complejo "${complexName}".`);
         }}
       />
     );
   }
 
-  // 3. Regla de Aislamiento Inmutable (Auth Wall):
-  // Si auth.currentUser === null => Renderizar Landing / Login View
+  // 2. Si el usuario no está autenticado con Google => Renderizar Landing / Login View
   if (!user) {
     return (
       <LandingAuthView
         onSignInWithGoogle={signInWithGoogle}
-        onClaimWithCode={(code) => {
-          window.history.pushState({}, '', '/activar?codigo=' + encodeURIComponent(code));
-          setCurrentPath('/activar');
-          setSearchParams(new URLSearchParams({ codigo: code }));
-        }}
         isDarkMode={isDarkMode}
         onToggleDarkMode={toggleDarkMode}
       />
     );
   }
 
-  // 4. Si el usuario está autenticado pero no tiene complejo asignado (collaboratorDoc === null):
-  // Solicitar canje de código de activación de su sede para prevenir cruce de datos
-  if (!collaboratorData || !activeComplexId) {
+  // 3. Usuario autenticado pero SIN ACCESO autorizada (sin memberships válidas o complex con clientStatus inactive/paused)
+  // CASO 4: Pantalla genérica "No tenés acceso a Jogo actualmente." (sin ActivationView ni códigos)
+  if (!hasAccess || !activeComplexId) {
     return (
-      <ActivationView
-        initialCode=""
+      <AccessDeniedView
         isDarkMode={isDarkMode}
-        onNavigateHome={() => {
-          logout();
-        }}
-        onSuccess={(newComplexId, complexName) => {
-          setActiveComplexId(newComplexId);
-          try {
-            localStorage.setItem('activeComplexId', newComplexId);
-          } catch (e) {}
-          window.history.pushState({}, '', '/');
-          setCurrentPath('/');
-          setSearchParams(new URLSearchParams());
-          setActiveTab('schedule');
-          setRefreshKey(prev => prev + 1);
-          setActivationSuccessBanner(`¡Complejo "${complexName}" activado exitosamente!`);
-        }}
       />
     );
   }
@@ -7889,12 +7944,28 @@ export default function App() {
                  activeTab === 'profile' ? 'Perfil' : 
                  activeTab === 'analytics' ? 'Analíticas' : activeTab}
               </h2>
-              {activeComplex?.name && (
+              {authorizedComplexes.length > 1 ? (
+                <div className="relative inline-block mt-0.5">
+                  <select
+                    value={activeComplexId || ''}
+                    onChange={(e) => setActiveComplexId(e.target.value)}
+                    className="text-xs bg-black/25 hover:bg-black/35 text-white font-semibold rounded-lg px-2 py-0.5 pr-5 border border-white/20 outline-none cursor-pointer appearance-none"
+                    title="Cambiar entre tus complejos deportivos autorizados"
+                  >
+                    {authorizedComplexes.map((c) => (
+                      <option key={c.complexId} value={c.complexId} className="bg-slate-900 text-white">
+                        {c.complexName}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={11} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-white/80 pointer-events-none" />
+                </div>
+              ) : activeComplex?.name ? (
                 <div className="flex items-center gap-1.5 text-xs text-emerald-100 font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-200 animate-pulse" />
                   <span className="truncate max-w-[200px]">{activeComplex.name}</span>
                 </div>
-              )}
+              ) : null}
             </div>
           </div>
           <div className="flex items-center gap-2 sm:gap-4">

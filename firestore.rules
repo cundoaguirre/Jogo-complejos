@@ -1,124 +1,160 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Helper functions
+    // ------------------------------------------------------------------------
+    // Helper Functions for Multi-Tenant Authorization
+    // ------------------------------------------------------------------------
     function isSignedIn() {
       return request.auth != null;
     }
 
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    function isAdmin() {
+    function isSuperAdmin() {
       return isSignedIn() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        (request.auth.token.email in ['aguirrecundo@gmail.com', 'TheKillerPRO.FA@gmail.com'])
+        request.auth.token.email in ['aguirrecundo@gmail.com', 'cundooaguirre@gmail.com', 'thekillerpro.fa@gmail.com']
       );
     }
 
-    // Test connection doc used to verify connection
+    // Check if the authenticated user has verified membership in complexId
+    function hasComplexAccess(complexId) {
+      return isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          exists(/databases/$(database)/documents/collaborators/$(request.auth.uid)) &&
+          (
+            complexId in get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data.complexIds ||
+            get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data.activeComplexId == complexId
+          )
+        )
+      );
+    }
+
+    // Test connection doc
     match /test/connection {
       allow read: if true;
     }
 
     // Admins collection
     match /admins/{adminId} {
-      allow read: if isSignedIn() && (isOwner(adminId) || isAdmin());
-      allow write: if isAdmin();
+      allow read: if isSignedIn() && (request.auth.uid == adminId || isSuperAdmin());
+      allow write: if isSuperAdmin();
     }
 
-    // Complexes collection (activation and properties)
+    // ------------------------------------------------------------------------
+    // Collaborators Collection (User Profiles & Memberships)
+    // ------------------------------------------------------------------------
+    // A user can read only their own collaborator profile
+    match /collaborators/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
+      allow create, update: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
+      allow delete: if isSuperAdmin();
+    }
+
+    // ------------------------------------------------------------------------
+    // SaaS Invitations Collection (One-Time Invite Links)
+    // ------------------------------------------------------------------------
+    // Single invitation lookup by token is public so an invited user can open /invite/:token
+    // Collection listing is strictly restricted to superadmins to prevent enumeration
+    match /saasInvitations/{token} {
+      allow get: if true;
+      allow list: if isSuperAdmin();
+      allow create: if isSuperAdmin() || isSignedIn();
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          resource.data.status == 'pending' &&
+          request.resource.data.status == 'claimed' &&
+          request.resource.data.claimedByUid == request.auth.uid
+        )
+      );
+      allow delete: if isSuperAdmin();
+    }
+
+    // ------------------------------------------------------------------------
+    // Complejos Collection (Venues from ERP)
+    // ------------------------------------------------------------------------
+    match /complejos/{complexId} {
+      allow get: if true; // Public read of venue metadata for invitations and status checks
+      allow list: if isSignedIn();
+      allow update: if hasComplexAccess(complexId) || isSuperAdmin();
+      allow create, delete: if isSuperAdmin();
+    }
+
     match /complexes/{complexId} {
-      allow read, write: if true;
+      allow get: if true;
+      allow list: if isSignedIn();
+      allow update: if hasComplexAccess(complexId) || isSuperAdmin();
+      allow create, delete: if isSuperAdmin();
     }
 
-    // Collaborators collection
-    match /collaborators/{collaboratorId} {
-      allow read, write: if true;
-    }
-
-    // Bookings collection (reservas en tiempo real)
+    // ------------------------------------------------------------------------
+    // Bookings Collection (Real-Time Agenda Isolated per Complex)
+    // ------------------------------------------------------------------------
     match /bookings/{bookingId} {
-      allow read, write: if true;
+      allow read: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
+      allow create: if isSignedIn() && (hasComplexAccess(request.resource.data.complejoId) || isSuperAdmin());
+      allow update, delete: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
     }
 
-    // Matches / Turnos alias
+    // Matches / Turnos aliases
     match /matches/{matchId} {
-      allow read, write: if true;
+      allow read, write: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
     }
 
     match /turnos/{turnoId} {
-      allow read, write: if true;
+      allow read, write: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
     }
 
-    // Users / Clientes collection
+    // ------------------------------------------------------------------------
+    // Users / Clientes Collection (Clients Isolated per Origin Complex)
+    // ------------------------------------------------------------------------
     match /users/{userId} {
-      allow read, write: if true;
+      allow read: if isSignedIn() && (hasComplexAccess(resource.data.originComplejoId) || isSuperAdmin());
+      allow create: if isSignedIn() && (hasComplexAccess(request.resource.data.originComplejoId) || isSuperAdmin());
+      allow update, delete: if isSignedIn() && (hasComplexAccess(resource.data.originComplejoId) || isSuperAdmin());
     }
 
-    match /usuarios/{usuarioId} {
-      allow read, write: if true;
-    }
-
-    // Courts / Canchas collection
-    match /courts/{courtId} {
-      allow read, write: if true;
-    }
-
-    match /canchas/{canchaId} {
-      allow read, write: if true;
-    }
-
-    // Subcollection: canchas under complex
-    match /{path=**}/canchas/{canchaId} {
-      allow read, write: if true;
-    }
-
-    match /{path=**}/courts/{courtId} {
-      allow read, write: if true;
-    }
-
-    match /{path=**}/bookings/{bookingId} {
-      allow read, write: if true;
-    }
-
-    // Venue Profile / Complejo
-    match /venue_profile/{venueId} {
-      allow read, write: if true;
-    }
-
-    match /complejos/{complejoId} {
-      allow read, write: if true;
-    }
-
-    match /complejo/{complejoId} {
-      allow read, write: if true;
-    }
-
-    // Transactions collection
-    match /transactions/{transactionId} {
-      allow read, write: if true;
-    }
-
-    // Products collection (Catálogo e Inventario)
+    // ------------------------------------------------------------------------
+    // Products Collection (Catalog & Inventory Isolated per Complex)
+    // ------------------------------------------------------------------------
     match /products/{productId} {
-      allow read, write: if true;
+      allow read: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
+      allow create: if isSignedIn() && (hasComplexAccess(request.resource.data.complejoId) || isSuperAdmin());
+      allow update, delete: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
     }
 
-    // Categorías de Mostrador
+    // ------------------------------------------------------------------------
+    // Product Categories Collection (Isolated per Complex)
+    // ------------------------------------------------------------------------
     match /categories/{categoryId} {
-      allow read, write: if true;
+      allow read: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
+      allow create: if isSignedIn() && (hasComplexAccess(request.resource.data.complejoId) || isSuperAdmin());
+      allow update, delete: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
     }
 
-    // Historial inmutable de movimientos de inventario
+    // ------------------------------------------------------------------------
+    // Inventory Movements Collection (Immutable Audit History per Complex)
+    // ------------------------------------------------------------------------
     match /inventory_movements/{movementId} {
-      allow read, write: if true;
+      allow read: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
+      allow create: if isSignedIn() && (hasComplexAccess(request.resource.data.complejoId) || isSuperAdmin());
+      allow update, delete: if isSuperAdmin();
     }
 
-    // Support tickets
+    // ------------------------------------------------------------------------
+    // Transactions Collection (POS Sales & Expenses Isolated per Complex)
+    // ------------------------------------------------------------------------
+    match /transactions/{transactionId} {
+      allow read: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
+      allow create: if isSignedIn() && (hasComplexAccess(request.resource.data.complejoId) || isSuperAdmin());
+      allow update, delete: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
+    }
+
+    // ------------------------------------------------------------------------
+    // Support Tickets Collection
+    // ------------------------------------------------------------------------
     match /support_tickets/{ticketId} {
-      allow read, write: if true;
+      allow read, write: if isSignedIn();
     }
   }
 }

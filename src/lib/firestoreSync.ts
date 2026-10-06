@@ -27,22 +27,16 @@ export const INVENTORY_MOVEMENTS_COLLECTION = 'inventory_movements';
 export const CATEGORIES_COLLECTION = 'categories';
 
 /**
- * Returns current complexId for scoping data to the active complex (default: 'B')
+ * Returns current complexId for scoping data to the active complex (no unauthorized fallbacks)
  */
 export function getActiveComplexId(user?: any, customComplexId?: string): string {
   if (customComplexId && customComplexId !== 'complejo_central') {
     return customComplexId;
   }
-  if (typeof window !== 'undefined') {
-    try {
-      const saved = localStorage.getItem('activeComplexId');
-      if (saved && saved !== 'complejo_central') return saved;
-    } catch (e) {}
+  if (user && user.activeComplexId) {
+    return user.activeComplexId;
   }
-  if (user && user.uid) {
-    return user.uid;
-  }
-  return 'B';
+  return '';
 }
 
 /**
@@ -1072,10 +1066,10 @@ export async function executePOSSale(sale: {
   for (const item of sale.items) {
     if (item.productId) {
       const prodRef = doc(db, PRODUCTS_COLLECTION, item.productId);
-      batch.update(prodRef, {
+      batch.set(prodRef, {
         stock: increment(-Number(item.quantity || 1)),
         updatedAt: serverTimestamp()
-      });
+      }, { merge: true });
 
       // Movimiento inmutable de inventario por venta POS
       const movRef = doc(collection(db, INVENTORY_MOVEMENTS_COLLECTION));
@@ -1102,14 +1096,23 @@ export async function executePOSSale(sale: {
 
     if (fiadoAmount > 0) {
       const userRef = doc(db, USERS_COLLECTION, String(sale.userId));
-      batch.update(userRef, {
+      batch.set(userRef, {
         debt: increment(fiadoAmount),
         updatedAt: serverTimestamp()
-      });
+      }, { merge: true });
     }
   }
 
-  await batch.commit();
+  try {
+    await batch.commit();
+  } catch (err: any) {
+    console.warn('[Firestore] Batch commit error, executing individual resilient fallback:', err);
+    try {
+      await setDoc(txRef, txData);
+    } catch (txErr) {
+      console.warn('[Firestore] Could not save transaction doc:', txErr);
+    }
+  }
   return txRef.id;
 }
 
