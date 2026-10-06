@@ -2,6 +2,11 @@ import {
   doc, 
   getDoc, 
   setDoc, 
+  collection,
+  query,
+  where,
+  limit,
+  getDocs,
   serverTimestamp, 
   runTransaction,
   Timestamp 
@@ -14,8 +19,64 @@ export interface InvitationValidationResult {
   valid: boolean;
   reason?: 'not_found' | 'claimed' | 'expired' | 'revoked' | 'error';
   invitation?: SaaSInvitation;
+  documentId?: string;
   complexName?: string;
   errorMessage?: string;
+}
+
+/**
+ * Normalizes and extracts milliseconds timestamp from multiple date representations
+ * (Firestore Timestamp, Date, number, ISO string) with zero timezone ambiguity.
+ */
+export function parseTrialExpiration(val: any): number | null {
+  if (!val) return null;
+  if (typeof val.toMillis === 'function') {
+    const ms = val.toMillis();
+    return isNaN(ms) ? null : ms;
+  }
+  if (typeof val.toDate === 'function') {
+    const ms = val.toDate().getTime();
+    return isNaN(ms) ? null : ms;
+  }
+  if (typeof val.seconds === 'number') {
+    return val.seconds * 1000 + (val.nanoseconds ? Math.floor(val.nanoseconds / 1000000) : 0);
+  }
+  if (val instanceof Date) {
+    const ms = val.getTime();
+    return isNaN(ms) ? null : ms;
+  }
+  if (typeof val === 'number') {
+    return val < 10000000000 ? val * 1000 : val;
+  }
+  if (typeof val === 'string') {
+    const parsed = Date.parse(val);
+    return isNaN(parsed) ? null : parsed;
+  }
+  return null;
+}
+
+/**
+ * Evaluates whether a complex is commercially authorized:
+ * active -> true
+ * trial && now < trialEndsAt -> true
+ * trial && now >= trialEndsAt -> false (DENIED)
+ * paused -> false (DENIED)
+ * inactive -> false (DENIED)
+ */
+export function isComplexCommerciallyAuthorized(complexData: any, nowMs: number = Date.now()): boolean {
+  if (!complexData) return false;
+  const rawStatus = (complexData.clientStatus || '').toString().toLowerCase().trim();
+  if (rawStatus === 'active') {
+    return true;
+  }
+  if (rawStatus === 'trial') {
+    const trialEndsMs = parseTrialExpiration(complexData.trialEndsAt || complexData.trialEndDate);
+    if (trialEndsMs === null) {
+      return false;
+    }
+    return nowMs < trialEndsMs;
+  }
+  return false;
 }
 
 /**
@@ -28,21 +89,44 @@ export async function validateSaasInvitation(token: string): Promise<InvitationV
   }
 
   try {
-    const inviteRef = doc(db, 'saasInvitations', cleanToken);
-    const snap = await getDoc(inviteRef);
+    const q = query(
+      collection(db, 'saasInvitations'),
+      where('token', '==', cleanToken),
+      limit(1)
+    );
+    const snap = await getDocs(q);
 
-    if (!snap.exists()) {
+    let inviteDoc = !snap.empty ? snap.docs[0] : null;
+
+    if (!inviteDoc) {
+      try {
+        const directDoc = await getDoc(doc(db, 'saasInvitations', cleanToken));
+        if (directDoc.exists()) {
+          inviteDoc = directDoc;
+        }
+      } catch {
+        // Fallback silently if not found or unauthorized
+      }
+    }
+
+    if (!inviteDoc) {
       return { valid: false, reason: 'not_found' };
     }
 
-    const inv = { token: snap.id, ...snap.data() } as SaaSInvitation;
+    const documentId = inviteDoc.id;
+    const invData = inviteDoc.data() as SaaSInvitation;
+    const inv: SaaSInvitation = {
+      ...invData,
+      id: documentId,
+      token: invData.token || cleanToken
+    };
 
     if (inv.status === 'claimed') {
-      return { valid: false, reason: 'claimed', invitation: inv };
+      return { valid: false, reason: 'claimed', invitation: inv, documentId };
     }
 
     if (inv.status === 'revoked') {
-      return { valid: false, reason: 'revoked', invitation: inv };
+      return { valid: false, reason: 'revoked', invitation: inv, documentId };
     }
 
     // Check expiration
@@ -59,11 +143,11 @@ export async function validateSaasInvitation(token: string): Promise<InvitationV
     }
 
     if (expiresMs && expiresMs <= now) {
-      return { valid: false, reason: 'expired', invitation: inv };
+      return { valid: false, reason: 'expired', invitation: inv, documentId };
     }
 
     if (inv.status !== 'pending') {
-      return { valid: false, reason: 'revoked', invitation: inv };
+      return { valid: false, reason: 'revoked', invitation: inv, documentId };
     }
 
     // Fetch complex name
@@ -83,6 +167,7 @@ export async function validateSaasInvitation(token: string): Promise<InvitationV
     return {
       valid: true,
       invitation: inv,
+      documentId,
       complexName
     };
   } catch (err: any) {
@@ -101,7 +186,8 @@ export async function validateSaasInvitation(token: string): Promise<InvitationV
  */
 export async function claimSaasInvitation(
   token: string, 
-  user: FirebaseUser
+  user: FirebaseUser,
+  knownInviteDocId?: string
 ): Promise<{ success: boolean; complexId: string; complexName: string }> {
   const cleanToken = token.trim();
   if (!cleanToken) {
@@ -111,7 +197,32 @@ export async function claimSaasInvitation(
     throw new Error('Usuario no autenticado.');
   }
 
-  const inviteRef = doc(db, 'saasInvitations', cleanToken);
+  let inviteDocId = knownInviteDocId;
+  if (!inviteDocId) {
+    const q = query(
+      collection(db, 'saasInvitations'),
+      where('token', '==', cleanToken),
+      limit(1)
+    );
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      inviteDocId = snap.docs[0].id;
+    } else {
+      try {
+        const directDoc = await getDoc(doc(db, 'saasInvitations', cleanToken));
+        if (directDoc.exists()) {
+          inviteDocId = directDoc.id;
+        }
+      } catch {
+        // Ignored
+      }
+    }
+    if (!inviteDocId) {
+      throw new Error('La invitación no existe o es inválida.');
+    }
+  }
+
+  const inviteRef = doc(db, 'saasInvitations', inviteDocId);
   const colabRef = doc(db, 'collaborators', user.uid);
 
   return await runTransaction(db, async (transaction) => {
@@ -192,7 +303,7 @@ export async function claimSaasInvitation(
       const updatedMemberships = alreadyHas
         ? existingMemberships
         : [...existingMemberships, { complexId: invData.complexId, complexName: compName, role: invData.role || 'owner' }];
-      
+
       const updatedComplexIds = Array.from(new Set([...existingComplexIds, invData.complexId]));
 
       transaction.update(colabRef, {
@@ -203,18 +314,26 @@ export async function claimSaasInvitation(
       });
     }
 
-    // 5. Set complex clientStatus to 'trial' (NOT 'active') and record trial dates
+    // 5. Update complex document according to canonical business rules:
+    // Identity linking is decoupled from commercial status!
     if (compSnap.exists()) {
       const cData = compSnap.data();
+      const rawStatus = (cData.clientStatus || 'inactive').toString().toLowerCase().trim();
       const now = new Date();
-      const trialEnds = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // exactly +30 days
+      const nowMs = now.getTime();
+
+      // Check if trial was ever used/started previously
+      const hasExistingTrialHistory = Boolean(
+        cData.trialStartedAt || 
+        cData.trialEndsAt || 
+        cData.trialStartDate || 
+        cData.trialEndDate
+      );
 
       const complexUpdates: any = {
-        clientStatus: 'trial',
-        trialStartedAt: serverTimestamp(),
-        trialEndsAt: Timestamp.fromDate(trialEnds),
         updatedAt: serverTimestamp()
       };
+
       if (!cData.isActivated) {
         complexUpdates.isActivated = true;
       }
@@ -222,6 +341,47 @@ export async function claimSaasInvitation(
         complexUpdates.ownerUid = user.uid;
         complexUpdates.ownerEmail = user.email || '';
       }
+
+      // CASO A — inactive + primer trial:
+      // Si clientStatus === 'inactive' y el complejo nunca utilizó previamente un trial:
+      // clientStatus -> 'trial', trialStartedAt -> timestamp del claim, trialEndsAt -> claim + 30 días
+      if (rawStatus === 'inactive' && !hasExistingTrialHistory) {
+        const trialEnds = new Date(nowMs + 30 * 24 * 60 * 60 * 1000); // exactly claim timestamp + 30 days
+        complexUpdates.clientStatus = 'trial';
+        complexUpdates.trialStartedAt = Timestamp.fromDate(now);
+        complexUpdates.trialEndsAt = Timestamp.fromDate(trialEnds);
+        console.log(`[Invitations] Claim: First trial granted to complex ${invData.complexId} until ${trialEnds.toISOString()}`);
+      }
+      // CASO B — trial vigente + nueva invitación:
+      // Si clientStatus === 'trial' y now < trialEndsAt:
+      // NO modificar trialStartedAt, trialEndsAt. NO extender el trial. NO reiniciarlo.
+      else if (rawStatus === 'trial') {
+        const trialEndsMs = parseTrialExpiration(cData.trialEndsAt || cData.trialEndDate);
+        if (trialEndsMs !== null && nowMs < trialEndsMs) {
+          console.log(`[Invitations] Claim: Complex ${invData.complexId} has active trial. Preserving existing trial dates.`);
+        } else {
+          // CASO C — trial expirado + nueva invitación:
+          // Si clientStatus === 'trial' y now >= trialEndsAt:
+          // NO reiniciar el trial. NO sumar otros 30 días.
+          console.log(`[Invitations] Claim: Complex ${invData.complexId} trial is expired. Maintaining without extending.`);
+        }
+      }
+      // CASO D — active + nueva invitación:
+      // Si clientStatus === 'active': mantener clientStatus === 'active'. No modificar a 'trial'. No modificar trialStartedAt/trialEndsAt.
+      else if (rawStatus === 'active') {
+        console.log(`[Invitations] Claim: Complex ${invData.complexId} is active. Preserving active status.`);
+      }
+      // CASO E — paused + nueva invitación:
+      // Si clientStatus === 'paused': mantener clientStatus === 'paused'. La invitación NO reactiva comercialmente el complejo.
+      else if (rawStatus === 'paused') {
+        console.log(`[Invitations] Claim: Complex ${invData.complexId} is paused. Preserving paused status.`);
+      }
+      // Inactive pero con trial ya consumido:
+      // NO otorgar nuevo trial. Mantener inactive.
+      else if (rawStatus === 'inactive' && hasExistingTrialHistory) {
+        console.log(`[Invitations] Claim: Complex ${invData.complexId} is inactive and already consumed previous trial. Preserving inactive.`);
+      }
+
       transaction.update(complexRef, complexUpdates);
     }
 

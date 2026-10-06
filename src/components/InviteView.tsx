@@ -31,13 +31,21 @@ export const InviteView: React.FC<InviteViewProps> = ({
 }) => {
   const { user, reloadCollaboratorData, logout } = useFirebase();
 
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
   const [validation, setValidation] = useState<InvitationValidationResult | null>(null);
+  const [isSigningIn, setIsSigningIn] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
   const [claimSuccess, setClaimSuccess] = useState<boolean>(false);
 
+  // REQUIREMENT 3: Only execute validateSaasInvitation once the user is authenticated!
   useEffect(() => {
+    if (!user) {
+      setLoading(false);
+      setValidation(null);
+      return;
+    }
+
     let isMounted = true;
     const checkToken = async () => {
       setLoading(true);
@@ -52,30 +60,37 @@ export const InviteView: React.FC<InviteViewProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [token]);
+  }, [token, user]);
+
+  const handleGoogleSignIn = async () => {
+    setIsSigningIn(true);
+    setClaimError(null);
+    try {
+      googleProvider.setCustomParameters({
+        prompt: 'select_account'
+      });
+      await signInWithPopup(auth, googleProvider);
+    } catch (err: any) {
+      console.warn('[InviteView] Login popup error:', err);
+      setClaimError('No se pudo completar el inicio de sesión con Google.');
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
 
   const handleClaim = async () => {
+    const currentUser = auth.currentUser || user;
+    if (!currentUser) {
+      await handleGoogleSignIn();
+      return;
+    }
+
     setIsClaiming(true);
     setClaimError(null);
 
     try {
-      let currentUser = auth.currentUser;
-
-      // If user is not yet logged in with Google, prompt Google sign-in
-      if (!currentUser) {
-        googleProvider.setCustomParameters({
-          prompt: 'select_account'
-        });
-        const res = await signInWithPopup(auth, googleProvider);
-        currentUser = res.user;
-      }
-
-      if (!currentUser) {
-        throw new Error('No se pudo autenticar la cuenta con Google.');
-      }
-
-      // Execute atomic claim in Firestore
-      const claimResult = await claimSaasInvitation(token, currentUser);
+      // Execute atomic claim in Firestore passing the resolved documentId
+      const claimResult = await claimSaasInvitation(token, currentUser, validation?.documentId);
 
       setClaimSuccess(true);
       await reloadCollaboratorData();
@@ -121,8 +136,54 @@ export const InviteView: React.FC<InviteViewProps> = ({
       <main className="w-full max-w-lg mx-auto px-4 py-8 flex-1 flex flex-col items-center justify-center">
         <div className="w-full bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-xl shadow-slate-200/50 dark:shadow-black/40 p-6 sm:p-8 text-center space-y-6">
 
+          {/* STATE: Prompt Google Sign-In first */}
+          {!user && (
+            <div className="py-4 space-y-6">
+              <div className="w-16 h-16 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto shadow-inner">
+                <ShieldCheck size={32} />
+              </div>
+
+              <div className="space-y-2">
+                <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+                  Invitación a Jogo SaaS
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed">
+                  Para acceder a esta invitación y validar tus permisos, por favor continuá con tu cuenta de Google.
+                </p>
+              </div>
+
+              {claimError && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 rounded-xl text-red-600 dark:text-red-400 text-xs flex items-center gap-2 text-left">
+                  <AlertCircle size={15} className="shrink-0" />
+                  <span className="flex-1">{claimError}</span>
+                </div>
+              )}
+
+              <div className="pt-2">
+                <button
+                  type="button"
+                  disabled={isSigningIn}
+                  onClick={handleGoogleSignIn}
+                  className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-bold rounded-2xl text-xs sm:text-sm shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-50"
+                >
+                  {isSigningIn ? (
+                    <>
+                      <Loader2 size={16} className="animate-spin" />
+                      <span>Conectando con Google...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Continuar con Google</span>
+                      <ArrowRight size={16} />
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* STATE: Loading */}
-          {loading && (
+          {user && loading && (
             <div className="py-8 space-y-4">
               <Loader2 className="w-10 h-10 text-emerald-500 animate-spin mx-auto" />
               <p className="text-sm font-semibold text-slate-600 dark:text-slate-400">
@@ -132,7 +193,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
           )}
 
           {/* STATE: Invalid / Error / Expired / Claimed */}
-          {!loading && validation && !validation.valid && (
+          {user && !loading && validation && !validation.valid && (
             <div className="py-4 space-y-6">
               <div className="w-16 h-16 rounded-3xl bg-red-500/10 border border-red-500/20 text-red-500 flex items-center justify-center mx-auto shadow-inner">
                 <AlertCircle size={32} />
@@ -168,7 +229,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
           )}
 
           {/* STATE: Valid Invitation Ready to Claim */}
-          {!loading && validation && validation.valid && (
+          {user && !loading && validation && validation.valid && (
             <div className="space-y-6">
               {/* Badge */}
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">

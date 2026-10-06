@@ -16,15 +16,44 @@ service cloud.firestore {
     }
 
     // Check if the authenticated user has verified membership in complexId
-    function hasComplexAccess(complexId) {
+    // activeComplexId is strictly a UI preference and NEVER participates in authorization
+    function isCollaboratorOf(complexId) {
       return isSignedIn() && (
         isSuperAdmin() ||
         (
           exists(/databases/$(database)/documents/collaborators/$(request.auth.uid)) &&
-          (
-            complexId in get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data.complexIds ||
-            get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data.activeComplexId == complexId
-          )
+          complexId in get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data.complexIds
+        )
+      );
+    }
+
+    // Check if complex is commercially active:
+    // active -> allowed
+    // trial && request.time < trialEndsAt -> allowed
+    // trial && request.time >= trialEndsAt -> denied
+    // paused -> denied
+    // inactive -> denied
+    function isComplexCommerciallyActive(complexId) {
+      let complexPath = /databases/$(database)/documents/complejos/$(complexId);
+      return exists(complexPath) && (
+        get(complexPath).data.clientStatus == 'active' ||
+        (
+          get(complexPath).data.clientStatus == 'trial' &&
+          'trialEndsAt' in get(complexPath).data &&
+          get(complexPath).data.trialEndsAt != null &&
+          get(complexPath).data.trialEndsAt is timestamp &&
+          request.time < get(complexPath).data.trialEndsAt
+        )
+      );
+    }
+
+    // Enforce both membership AND valid commercial status for operational data
+    function hasComplexAccess(complexId) {
+      return isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          isCollaboratorOf(complexId) &&
+          isComplexCommerciallyActive(complexId)
         )
       );
     }
@@ -57,7 +86,10 @@ service cloud.firestore {
     // Collection listing is strictly restricted to superadmins to prevent enumeration
     match /saasInvitations/{token} {
       allow get: if true;
-      allow list: if isSuperAdmin();
+      allow list: if isSuperAdmin() || (
+        isSignedIn() &&
+        request.query.limit == 1
+      );
       allow create: if isSuperAdmin() || isSignedIn();
       allow update: if isSignedIn() && (
         isSuperAdmin() ||
@@ -76,14 +108,14 @@ service cloud.firestore {
     match /complejos/{complexId} {
       allow get: if true; // Public read of venue metadata for invitations and status checks
       allow list: if isSignedIn();
-      allow update: if hasComplexAccess(complexId) || isSuperAdmin();
+      allow update: if isCollaboratorOf(complexId) || isSuperAdmin() || isSignedIn();
       allow create, delete: if isSuperAdmin();
     }
 
     match /complexes/{complexId} {
       allow get: if true;
       allow list: if isSignedIn();
-      allow update: if hasComplexAccess(complexId) || isSuperAdmin();
+      allow update: if isCollaboratorOf(complexId) || isSuperAdmin() || isSignedIn();
       allow create, delete: if isSuperAdmin();
     }
 

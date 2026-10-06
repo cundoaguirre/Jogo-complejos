@@ -290,6 +290,7 @@ export interface CanonicalComplejo {
 export type InvitationStatus = 'pending' | 'claimed' | 'expired' | 'revoked';
 
 export interface SaaSInvitation {
+  id?: string;
   token: string;
   complexId: string;
   complexName?: string;

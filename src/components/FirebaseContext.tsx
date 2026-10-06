@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState, useCallback, useRef } from 'react';
 import { 
   User as FirebaseUser, 
   onAuthStateChanged, 
@@ -9,6 +9,7 @@ import {
 } from 'firebase/auth';
 import { doc, setDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { auth, googleProvider, testConnection, db } from '../lib/firebase';
+import { parseTrialExpiration, isComplexCommerciallyAuthorized } from '../lib/invitations';
 import type { ComplexMembership, CollaboratorProfile, ComplexClientStatus } from '../types';
 
 export interface AuthorizedComplexItem {
@@ -71,6 +72,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [collaboratorData, setCollaboratorData] = useState<CollaboratorProfile | null>(null);
   const [memberships, setMemberships] = useState<ComplexMembership[]>([]);
   const [authError, setAuthError] = useState<string | null>(null);
+  const expirationTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const clearAuthError = useCallback(() => {
     setAuthError(null);
@@ -98,6 +100,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (!currentUser) {
+        if (expirationTimerRef.current) {
+          clearTimeout(expirationTimerRef.current);
+          expirationTimerRef.current = null;
+        }
         setCollaboratorData(null);
         setMemberships([]);
         setAuthorizedComplexes([]);
@@ -170,10 +176,19 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // 3. Real-Time Complexes Status Listeners (Reactive Authorization):
   // Dynamically subscribes to onSnapshot on each complexId in memberships.
-  // Whenever the ERP updates clientStatus (active -> inactive, active -> paused, etc.),
-  // this listener fires IMMEDIATELY and updates authorization without requiring reload!
+  // Evaluates canonical commercial authorization:
+  // - active -> allowed
+  // - trial && now < trialEndsAt -> allowed
+  // - trial && now >= trialEndsAt -> DENIED
+  // - paused -> DENIED
+  // - inactive -> DENIED
+  // Employs a targeted timer to flip authorization the exact moment a trial expires.
   useEffect(() => {
     if (!user || memberships.length === 0) {
+      if (expirationTimerRef.current) {
+        clearTimeout(expirationTimerRef.current);
+        expirationTimerRef.current = null;
+      }
       setAuthorizedComplexes([]);
       setHasAccess(false);
       setActiveComplexIdState(null);
@@ -184,6 +199,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const complexIds = Array.from(new Set(memberships.map(m => m.complexId).filter(Boolean)));
     if (complexIds.length === 0) {
+      if (expirationTimerRef.current) {
+        clearTimeout(expirationTimerRef.current);
+        expirationTimerRef.current = null;
+      }
       setAuthorizedComplexes([]);
       setHasAccess(false);
       setActiveComplexIdState(null);
@@ -196,46 +215,45 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const liveComplexMap: Record<string, any> = {};
 
     const recomputeAuthorization = () => {
+      if (expirationTimerRef.current) {
+        clearTimeout(expirationTimerRef.current);
+        expirationTimerRef.current = null;
+      }
+
       const authorized: AuthorizedComplexItem[] = [];
+      const nowMs = Date.now();
+      const upcomingExpirations: number[] = [];
 
       for (const m of memberships) {
         const cData = liveComplexMap[m.complexId];
         if (!cData) continue;
 
-        // Source of truth: clientStatus must be 'trial' or 'active'
-        const rawStatus = (cData.clientStatus || '').toLowerCase();
-        let status: ComplexClientStatus;
+        const rawStatus = (cData.clientStatus || '').toString().toLowerCase().trim();
+        const isAuthorized = isComplexCommerciallyAuthorized(cData, nowMs);
 
-        if (rawStatus === 'active') {
-          status = 'active';
-        } else if (rawStatus === 'trial') {
-          status = 'trial';
-        } else if (rawStatus === 'inactive') {
-          status = 'inactive';
-        } else if (rawStatus === 'paused') {
-          status = 'paused';
-        } else {
-          // If clientStatus is not explicitly written by ERP, check isActivated legacy flag
-          status = cData.isActivated !== false ? 'active' : 'inactive';
-        }
-
-        // STRICT ACCESS RULE: Only 'active' and 'trial' permit access
-        if (status === 'active' || status === 'trial') {
+        if (isAuthorized) {
           authorized.push({
             complexId: m.complexId,
             complexName: cData.name || cData.company || m.complexName || 'Mi Complejo',
             role: m.role || 'operator',
-            clientStatus: status
+            clientStatus: rawStatus === 'active' ? 'active' : 'trial'
           });
+
+          if (rawStatus === 'trial') {
+            const expMs = parseTrialExpiration(cData.trialEndsAt || cData.trialEndDate);
+            if (expMs !== null && expMs > nowMs) {
+              upcomingExpirations.push(expMs);
+            }
+          }
         } else {
-          console.log(`[Auth] Real-time: Complex ${m.complexId} clientStatus is "${status}". Access disallowed.`);
+          console.log(`[Auth] Real-time: Complex ${m.complexId} clientStatus is "${rawStatus}" (authorized: false). Access disallowed.`);
         }
       }
 
       setAuthorizedComplexes(authorized);
 
       if (authorized.length === 0) {
-        // All user's complexes are inactive or paused: ACCESS REVOKED IMMEDIATELY
+        // All user's complexes are inactive, paused or expired trial: ACCESS REVOKED IMMEDIATELY
         console.log('[Auth] Real-time: No authorized complexes with active/trial status. Setting hasAccess=false.');
         setHasAccess(false);
         setActiveComplexIdState(null);
@@ -247,7 +265,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         // At least one complex has active/trial status: ACCESS GRANTED
         setHasAccess(true);
 
-        // Select or retain activeComplexId among authorized complexes
+        // Select or retain activeComplexId strictly among authorized complexes
         setActiveComplexIdState((prevId) => {
           let chosenId = authorized[0].complexId;
           let savedPref: string | null = null;
@@ -272,6 +290,17 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
           return chosenId;
         });
+
+        // Targeted expiration timer: flips state the exact moment the trial expires
+        if (upcomingExpirations.length > 0) {
+          const nextExpMs = Math.min(...upcomingExpirations);
+          const delayMs = Math.min(2147483647, Math.max(100, nextExpMs - Date.now() + 500));
+          console.log(`[Auth] Scheduled targeted trial expiration timer in ${Math.round(delayMs / 1000)}s.`);
+          expirationTimerRef.current = setTimeout(() => {
+            console.log('[Auth] Trial expiration timer fired! Recomputing authorization...');
+            recomputeAuthorization();
+          }, delayMs);
+        }
       }
 
       setLoading(false);
@@ -295,6 +324,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     });
 
     return () => {
+      if (expirationTimerRef.current) {
+        clearTimeout(expirationTimerRef.current);
+        expirationTimerRef.current = null;
+      }
       unsubs.forEach(u => u());
     };
   }, [user, memberships, collaboratorData?.activeComplexId]);
