@@ -11,10 +11,12 @@ import type { SupportTicket } from '../types';
 import { db, handleFirestoreError, OperationType } from '../lib/firebase';
 import { doc, setDoc } from 'firebase/firestore';
 import { useFirebase } from './FirebaseContext';
+import { createSupportTicketInFirestore, subscribeToSupportTickets } from '../lib/firestoreSync';
 
 interface ContactSupportModalProps {
   isOpen: boolean;
   onClose: () => void;
+  complexId?: string;
   venueName?: string;
   adminName?: string;
   adminPhone?: string;
@@ -25,6 +27,7 @@ interface ContactSupportModalProps {
 export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
   isOpen,
   onClose,
+  complexId,
   venueName = 'Complejo Jogo',
   adminName = 'Administrador',
   adminPhone = '',
@@ -61,30 +64,25 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
     if (adminEmail && !senderEmail && !user?.email) setSenderEmail(adminEmail);
   }, [adminName, adminPhone, adminEmail, user]);
 
-  // Load tickets from local storage without external API dependency
-  const fetchTickets = () => {
-    setIsLoadingTickets(true);
-    try {
-      const stored = localStorage.getItem('jogo_support_tickets');
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        setTicketsList(Array.isArray(parsed) ? parsed : []);
-      } else {
-        setTicketsList([]);
-      }
-    } catch (e) {
-      console.warn('Error reading support tickets from storage:', e);
-      setTicketsList([]);
-    } finally {
-      setIsLoadingTickets(false);
-    }
-  };
+  const { activeComplexId } = useFirebase();
+  const effectiveComplexId = complexId || activeComplexId || 'B';
 
+  // Real-time Firestore subscription to support_tickets scoped strictly to the complex
   useEffect(() => {
-    if (isOpen) {
-      fetchTickets();
-    }
-  }, [isOpen]);
+    if (!isOpen) return;
+    setIsLoadingTickets(true);
+    const unsub = subscribeToSupportTickets(effectiveComplexId, (firestoreTickets) => {
+      setTicketsList(firestoreTickets);
+      setIsLoadingTickets(false);
+    });
+    return () => unsub();
+  }, [isOpen, effectiveComplexId]);
+
+  const fetchTickets = () => {
+    // onSnapshot keeps the list synced automatically; provide a manual touch
+    setIsLoadingTickets(true);
+    setTimeout(() => setIsLoadingTickets(false), 300);
+  };
 
   const getSystemDiagnostics = () => {
     if (typeof window === 'undefined') return {};
@@ -96,7 +94,8 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
       platform: navigator.platform,
       timestamp: new Date().toISOString(),
       theme: isDarkMode ? 'dark' : 'light',
-      venue: venueName
+      venue: venueName,
+      complejoId: effectiveComplexId
     };
   };
 
@@ -112,7 +111,7 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
     let msg = `*${typeLabel}*\n`;
     msg += `━━━━━━━━━━━━━━━━━━━━━\n`;
     msg += `📌 *Código de Ticket:* ${ticketCode}\n`;
-    msg += `🏟️ *Complejo:* ${venueName}\n`;
+    msg += `🏟️ *Complejo:* ${venueName} (${effectiveComplexId})\n`;
     msg += `👤 *Administrador:* ${senderName || 'Administrador'}\n`;
     if (senderPhone) msg += `📱 *Teléfono:* ${senderPhone}\n`;
     msg += `📂 *Módulo Afectado:* ${appModule}\n`;
@@ -146,11 +145,11 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
     setIsSubmitting(true);
     try {
       const diagnostics = includeDiagnostics ? getSystemDiagnostics() : {};
-      const ticketCode = `TK-${Math.floor(100000 + Math.random() * 900000)}`;
 
-      const newTicket: SupportTicket = {
-        id: Date.now(),
-        ticket_code: ticketCode,
+      // Create ticket directly in Firestore canonical collection /support_tickets
+      const createdTicket = await createSupportTicketInFirestore({
+        complejoId: effectiveComplexId,
+        complexName: venueName,
         type: ticketType,
         priority,
         module: appModule,
@@ -159,27 +158,25 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
         admin_name: senderName || 'Administrador',
         admin_phone: senderPhone || '',
         admin_email: senderEmail || user?.email || '',
-        status: 'pending',
-        channel,
         system_info: JSON.stringify(diagnostics),
-        created_at: new Date().toISOString()
-      };
+        channel
+      });
 
+      // Keep local storage as backup cache
       try {
         const stored = localStorage.getItem('jogo_support_tickets');
         const list = stored ? JSON.parse(stored) : [];
-        const updated = [newTicket, ...(Array.isArray(list) ? list : [])];
+        const updated = [createdTicket, ...(Array.isArray(list) ? list : [])];
         localStorage.setItem('jogo_support_tickets', JSON.stringify(updated));
       } catch (stErr) {
-        console.warn('Error saving ticket in local storage:', stErr);
+        console.warn('Error caching ticket in local storage:', stErr);
       }
 
-      setSubmittedTicket(newTicket);
-      fetchTickets();
+      setSubmittedTicket(createdTicket);
 
       // Launch messaging service based on channel
       if (channel === 'whatsapp') {
-        const text = formatWhatsAppMessage(newTicket.ticket_code);
+        const text = formatWhatsAppMessage(createdTicket.ticket_code);
         const encoded = encodeURIComponent(text);
         const whatsappUrl = supportPhone 
           ? `https://api.whatsapp.com/send?phone=${supportPhone}&text=${encoded}`
@@ -191,8 +188,8 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
         const typeLabel = ticketType === 'bug' ? 'Reporte de Error' :
                           ticketType === 'feature' ? 'Sugerencia de Mejora' :
                           ticketType === 'urgent' ? 'Urgencia' : 'Consulta';
-        const mailSubject = encodeURIComponent(`[${newTicket.ticket_code}] ${typeLabel} - ${title}`);
-        const mailBody = encodeURIComponent(formatWhatsAppMessage(newTicket.ticket_code));
+        const mailSubject = encodeURIComponent(`[${createdTicket.ticket_code}] ${typeLabel} - ${title}`);
+        const mailBody = encodeURIComponent(formatWhatsAppMessage(createdTicket.ticket_code));
         const mailtoUrl = `mailto:soporte@jogo.app?subject=${mailSubject}&body=${mailBody}`;
         window.location.href = mailtoUrl;
       }

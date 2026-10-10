@@ -322,3 +322,141 @@ export interface CollaboratorProfile {
   updatedAt?: any;
 }
 
+// ==========================================
+// MODELO FINANCIERO UNIFICADO (FASE 2 / ETAPA 1)
+// ==========================================
+
+export type OperationType = 'pos_sale' | 'court_booking' | 'expense' | 'historical_debt_settlement';
+
+export type OperationPaymentStatus = 
+  | 'unpaid'              // $0 cobrado/pagado (Activa)
+  | 'partial'             // Cobrado/pagado > $0 y < contractualAmount (Activa)
+  | 'paid'                // Cobrado/pagado >= contractualAmount (Activa)
+  | 'cancelled_unpaid'    // Cancelada sin cobros ($0 recaudado, saldo pendiente nulo)
+  | 'cancelled_retained'  // Cancelada con retención total (ej. seña no devuelta como penalidad)
+  | 'partial_refunded'    // Cancelada o ajustada con devolución parcial de lo cobrado
+  | 'fully_refunded';     // Cancelada con devolución del 100% de lo cobrado
+
+export type FinancialMovementFlow = 'income' | 'expense';
+
+export type FinancialPaymentMethod = 'cash' | 'transfer' | 'debit' | 'credit' | 'mercado_pago' | 'other';
+
+export type FinancialMovementCategory = 
+  | 'sale_collection'
+  | 'booking_deposit'
+  | 'booking_settlement'
+  | 'expense_payment'
+  | 'refund'
+  | 'historical_debt_payment';
+
+export interface OperationDocument {
+  id: string;                         // UUID v4 único
+  complexId: string;                  // Aislamiento multi-tenant
+  ticketCode: string;                 // Código secuencial legible (ej. T-26-000042)
+  operationType: OperationType;
+
+  // Enlaces a entidades del dominio
+  bookingId?: string;                 // ID en /bookings si aplica
+  legacySaleId?: string;              // ID en /sales o /transactions si aplica
+
+  // Responsable
+  responsibleType: 'user' | 'anonymous' | 'supplier';
+  userId?: string | null;             // UID en /users
+  userName: string;
+  userPhone?: string;
+
+  // Cuentas contractuales y flujos monetarios
+  contractualAmount: number;          // Monto total nominal pactado
+  totalCollected: number;             // Total acumulado cobrado (ingresos)
+  totalRefunded: number;              // Total acumulado devuelto al cliente
+  netCollected: number;               // totalCollected - totalRefunded
+  retainedAmount: number;             // Monto retenido al cancelar (penalidades / señas no devueltas)
+  amountPending: number;              // Saldo pendiente contractual (0 si cancelada)
+
+  paymentStatus: OperationPaymentStatus;
+
+  // Cuenta Corriente ("Fiado")
+  currentAccountAssigned: boolean;    // true ÚNICAMENTE si se asignó explícitamente a CC con userId
+  currentAccountDebtAmount: number;   // Deuda atribuida vigente cargada a la cuenta corriente del usuario
+
+  // Desglose de ítems
+  items?: Array<{
+    id: string;
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    subtotal: number;
+  }>;
+
+  notes?: string;
+  metadata?: Record<string, any>;
+
+  createdAt: any;
+  updatedAt: any;
+  createdBy: string;
+}
+
+export interface FinancialMovementDocument {
+  id: string;                         // UUID v4 único
+  complexId: string;                  // Aislamiento multi-tenant
+  operationId: string;                // FK a /operations
+  ticketCode: string;                 // Desnormalizado para búsquedas e impresión
+  idempotencyKey: string;             // FK a la clave de idempotencia procesada
+
+  flow: FinancialMovementFlow;        // 'income' | 'expense'
+  category: FinancialMovementCategory;
+  amount: number;                     // Monto positivo estricto (> 0)
+  paymentMethod: FinancialPaymentMethod;
+  effectiveDate: any;                 // Fecha real en que se produjo el movimiento en caja
+
+  userId?: string | null;
+  responsibleName: string;
+  clearedCurrentAccountDebt: number;  // Monto que este cobro descuenta de cuenta corriente
+
+  notes?: string;
+  operatorId: string;
+  createdAt: any;
+}
+
+export interface IdempotencyRecord {
+  idempotencyKey: string;
+  complexId: string;
+  operationId: string;
+  amount: number;
+  paymentMethod: FinancialPaymentMethod;
+  flow: FinancialMovementFlow;
+  status: 'processing' | 'completed' | 'failed';
+  movementId?: string;
+  errorMessage?: string;
+  createdAt: any;
+  expiresAt: any;
+}
+
+export interface ComplexCountersDocument {
+  complexId: string;
+  pos_sale_sequence: number;
+  court_booking_sequence: number;
+  expense_sequence: number;
+  historical_debt_sequence: number;
+  updatedAt: any;
+}
+
+export interface FinancialCalculationInput {
+  contractualAmount: number;
+  totalCollected: number;
+  totalRefunded: number;
+  isCancelled?: boolean;
+  retainDepositOnCancel?: boolean;
+}
+
+export interface FinancialCalculationResult {
+  contractualAmount: number;
+  totalCollected: number;
+  totalRefunded: number;
+  netCollected: number;
+  retainedAmount: number;
+  amountPending: number;
+  paymentStatus: OperationPaymentStatus;
+}
+
+

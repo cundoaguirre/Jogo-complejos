@@ -183,10 +183,35 @@ service cloud.firestore {
     }
 
     // ------------------------------------------------------------------------
-    // Support Tickets Collection
+    // Booking Locks Collection (Atomic Mutual Exclusion per Court & Date)
+    // ------------------------------------------------------------------------
+    match /booking_locks/{lockId} {
+      allow read: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
+      allow create: if isSignedIn() && (hasComplexAccess(request.resource.data.complejoId) || isSuperAdmin());
+      allow update, delete: if isSignedIn() && (hasComplexAccess(resource.data.complejoId) || isSuperAdmin());
+    }
+
+    // ------------------------------------------------------------------------
+    // Support Tickets Collection (Isolated per Complex)
     // ------------------------------------------------------------------------
     match /support_tickets/{ticketId} {
-      allow read, write: if isSignedIn();
+      allow read: if isSignedIn() && (
+        isSuperAdmin() ||
+        (resource.data.complejoId != null && hasComplexAccess(resource.data.complejoId)) ||
+        (resource.data.createdByUid == request.auth.uid) ||
+        (resource.data.admin_email == request.auth.token.email)
+      );
+      allow create: if isSignedIn() && (
+        request.resource.data.complejoId == null ||
+        hasComplexAccess(request.resource.data.complejoId) ||
+        isSuperAdmin()
+      );
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (resource.data.complejoId != null && hasComplexAccess(resource.data.complejoId)) ||
+        (resource.data.createdByUid == request.auth.uid)
+      );
+      allow delete: if isSuperAdmin();
     }
   }
 }
