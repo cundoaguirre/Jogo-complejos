@@ -22,22 +22,31 @@ import {
   GripVertical,
   SlidersHorizontal,
   Flame,
-  Wallet
+  Wallet,
+  Tag,
+  FileText
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
-import type { Product, User } from '../types';
+import type { Product, User, ProductCategory, FinancialPaymentMethod } from '../types';
 import { 
   subscribeToProducts, 
   subscribeToInventoryCategories, 
   subscribeToClients,
-  executePOSSale 
+  createOperationWithInitialPayment,
+  isGenericClientPlaceholder,
+  subscribeToExpenseCategories,
+  subscribeToExpenseItems,
+  executeExpenseOperation,
+  saveSupplierConceptInFirestore,
+  saveExpenseItemInFirestore
 } from '../lib/firestoreSync';
 import { usePOSCart } from './POSCartContext';
 import { playAddToCartSound, playCashRegisterSound } from '../lib/posAudio';
 import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
+import { db, auth } from '../lib/firebase';
 
 const DEFAULT_PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Tarjeta', 'Fiado'];
+const EXPENSE_PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Crédito', 'Pendiente'];
 const STORAGE_PAYMENT_ORDER_KEY = 'jogo_pos_payment_methods_order';
 
 interface PaymentBlock {
@@ -51,13 +60,15 @@ interface POSModalProps {
   onClose: () => void;
   complexId?: string;
   onNavigateToUserProfile?: (userId: string) => void;
+  initialSection?: 'mostrador' | 'gastos';
 }
 
 export const POSModal: React.FC<POSModalProps> = ({
   isOpen,
   onClose,
   complexId = 'B',
-  onNavigateToUserProfile
+  onNavigateToUserProfile,
+  initialSection = 'mostrador'
 }) => {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
 
@@ -73,7 +84,17 @@ export const POSModal: React.FC<POSModalProps> = ({
   } = usePOSCart();
 
   // Top Section: 'mostrador' | 'gastos'
-  const [activeSection, setActiveSection] = useState<'mostrador' | 'gastos'>('mostrador');
+  const [activeSection, setActiveSection] = useState<'mostrador' | 'gastos'>(initialSection);
+
+  useEffect(() => {
+    if (isOpen) {
+      if (initialSection) {
+        setActiveSection(initialSection);
+      }
+      setStep(1);
+      setExpenseStep(1);
+    }
+  }, [isOpen, initialSection]);
 
   // Step in Mostrador: 1 (Armado del Carrito) | 2 (Checkout y Calculadora)
   const [step, setStep] = useState<1 | 2>(1);
@@ -113,6 +134,8 @@ export const POSModal: React.FC<POSModalProps> = ({
 
   // Submission & Confirmation state
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [saleIdempotencyKey, setSaleIdempotencyKey] = useState<string | null>(null);
+  const [saleError, setSaleError] = useState<string | null>(null);
   const [saleCompletedData, setSaleCompletedData] = useState<{
     txId: string;
     total: number;
@@ -121,13 +144,38 @@ export const POSModal: React.FC<POSModalProps> = ({
     itemsCount: number;
   } | null>(null);
 
-  // Gastos (Quick Expense) state
-  const [expenseAmount, setExpenseAmount] = useState('');
-  const [expenseCategory, setExpenseCategory] = useState('Mantenimiento');
-  const [expenseMethod, setExpenseMethod] = useState('Efectivo');
+  // Gastos (Expense Management) state - Sincronizado con Editar Mostrador
+  const [expenseCategories, setExpenseCategories] = useState<ProductCategory[]>([]);
+  const [expenseItems, setExpenseItems] = useState<Product[]>([]);
+  const [expenseStep, setExpenseStep] = useState<1 | 2>(1);
+  const [expenseCategoryFilter, setExpenseCategoryFilter] = useState<string>('all');
+  const [expenseSearchQuery, setExpenseSearchQuery] = useState('');
+  const [selectedExpenseConcept, setSelectedExpenseConcept] = useState<Product | null>(null);
+  const [expenseAmount, setExpenseAmount] = useState<number | string>('');
   const [expenseDescription, setExpenseDescription] = useState('');
+  const [isCustomConceptModalOpen, setIsCustomConceptModalOpen] = useState(false);
+  const [customConceptForm, setCustomConceptForm] = useState<{
+    name: string;
+    category: string;
+    price: number | '';
+    isSupplier: boolean;
+    saveToCatalog: boolean;
+  }>({
+    name: '',
+    category: '',
+    price: '',
+    isSupplier: false,
+    saveToCatalog: true
+  });
+  const [expensePayments, setExpensePayments] = useState<PaymentBlock[]>([
+    { id: 'exp_p_1', method: 'Efectivo', amount: '' }
+  ]);
+  const [expenseSelectedSupplier, setExpenseSelectedSupplier] = useState<User | Product | null>(null);
+  const [isExpenseSupplierSearchOpen, setIsExpenseSupplierSearchOpen] = useState(false);
+  const [expenseSupplierSearchText, setExpenseSupplierSearchText] = useState('');
   const [isSubmittingExpense, setIsSubmittingExpense] = useState(false);
   const [expenseSuccessMsg, setExpenseSuccessMsg] = useState(false);
+  const [expenseErrorMsg, setExpenseErrorMsg] = useState<string | null>(null);
 
   // Subscriptions to Firestore data
   useEffect(() => {
@@ -145,10 +193,20 @@ export const POSModal: React.FC<POSModalProps> = ({
       setClients(cls);
     });
 
+    const unsubExpCats = subscribeToExpenseCategories(targetId, (expCats) => {
+      setExpenseCategories(expCats);
+    });
+
+    const unsubExpItems = subscribeToExpenseItems(targetId, (expIts) => {
+      setExpenseItems(expIts);
+    });
+
     return () => {
       unsubProds();
       unsubCats();
       unsubClients();
+      unsubExpCats();
+      unsubExpItems();
     };
   }, [targetId, isOpen]);
 
@@ -336,13 +394,21 @@ export const POSModal: React.FC<POSModalProps> = ({
     setPayments((prev) => prev.filter((p) => p.id !== id));
   };
 
-  // Finalize Sale
+  // Finalize Sale using Unified Financial Engine (createOperationWithInitialPayment)
   const handleFinalizeSale = async () => {
     if (!canFinalizeSale) return;
 
+    setSaleError(null);
     setIsSubmitting(true);
+
+    // Conservar la misma clave de idempotencia entre reintentos para no duplicar ventas
+    const currentIdempotencyKey = saleIdempotencyKey || `pos_sale_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    if (!saleIdempotencyKey) {
+      setSaleIdempotencyKey(currentIdempotencyKey);
+    }
+
     try {
-      const paymentsPayload = payments.map((p) => ({
+      const normalizedPayments = payments.map((p) => ({
         method: p.method.toLowerCase().includes('fiado') 
           ? 'fiado' 
           : p.method.toLowerCase().includes('transferencia')
@@ -353,7 +419,13 @@ export const POSModal: React.FC<POSModalProps> = ({
         amount: Number(p.amount) || 0
       }));
 
-      const transactionItems = cartItems.map((it) => ({
+      // Separar cobros efectivos de asignación a cuenta corriente (fiado)
+      const cashPayments = normalizedPayments.filter(p => p.method !== 'fiado' && p.amount > 0);
+      const fiadoPayment = normalizedPayments.find(p => p.method === 'fiado' && p.amount > 0);
+      const fiadoAmount = fiadoPayment ? Number(fiadoPayment.amount || 0) : 0;
+
+      const itemsPayload = cartItems.map((it) => ({
+        id: it.product.id,
         productId: it.product.id,
         name: it.product.name,
         quantity: it.quantity,
@@ -361,13 +433,37 @@ export const POSModal: React.FC<POSModalProps> = ({
         subtotal: Number(it.product.salePrice || 0) * it.quantity
       }));
 
-      const txId = await executePOSSale({
-        complejoId: targetId,
-        items: transactionItems,
-        payments: paymentsPayload as any,
-        total: cartTotal,
-        userId: selectedClient?.id ? String(selectedClient.id) : undefined,
-        userName: selectedClient?.name || (selectedClient?.id ? 'Cliente Registrado' : 'Cliente Mostrador')
+      const hasClient = Boolean(selectedClient && selectedClient.id);
+      const resolvedClientName = (hasClient && selectedClient?.name && !isGenericClientPlaceholder(selectedClient.name))
+        ? selectedClient.name.trim()
+        : (hasClient ? (selectedClient?.name || 'NN') : 'NN');
+      const resolvedClientId = hasClient ? String(selectedClient!.id) : null;
+      const resolvedClientPhone = selectedClient?.phone ? String(selectedClient.phone).trim() : '';
+
+      // Invocar función transaccional unificada con regla de oro de Firestore
+      const result = await createOperationWithInitialPayment({
+        complexId: targetId,
+        operationType: 'pos_sale',
+        contractualAmount: cartTotal,
+        operatorId: auth.currentUser?.uid || 'pos_operator',
+        responsibleType: hasClient ? 'user' : 'anonymous',
+        userId: resolvedClientId,
+        clientId: resolvedClientId,
+        userName: resolvedClientName,
+        clientName: resolvedClientName,
+        userPhone: resolvedClientPhone,
+        clientPhone: resolvedClientPhone,
+        items: itemsPayload,
+        idempotencyKey: currentIdempotencyKey,
+        initialPayments: cashPayments.map((p, idx) => ({
+          amount: p.amount,
+          paymentMethod: p.method as any,
+          idempotencyKey: `${currentIdempotencyKey}_pay_${idx}`,
+          notes: `Cobro mostrador (${p.method})`
+        })),
+        assignToCurrentAccount: fiadoAmount > 0,
+        customDebtAmount: fiadoAmount > 0 ? fiadoAmount : undefined,
+        notes: ''
       });
 
       // Play cash register ka-ching chime!
@@ -375,57 +471,245 @@ export const POSModal: React.FC<POSModalProps> = ({
 
       // Show completed sale animation modal
       setSaleCompletedData({
-        txId,
+        txId: result.ticketCode || result.operationId,
         total: cartTotal,
-        payments: paymentsPayload,
-        clientName: selectedClient?.name,
+        payments: normalizedPayments,
+        clientName: resolvedClientName !== 'NN' ? resolvedClientName : undefined,
         itemsCount: totalUnits
       });
 
-      // Empty cart from global memory
+      // Vaciar carrito y reiniciar estado únicamente tras confirmación exitosa
       clearCart();
       setPayments([]);
       setSelectedClient(null);
+      setSaleIdempotencyKey(null);
+      setSaleError(null);
       setStep(1);
     } catch (err: any) {
       console.warn('Error finalizando venta:', err);
-      alert(`Error al registrar venta: ${err?.message || 'Reintentá nuevamente'}`);
+      const friendlyMsg = err?.message || 'Error al procesar la venta. Verificá la conexión y reintentá.';
+      setSaleError(friendlyMsg);
+      // Mantener saleIdempotencyKey intacto para que el próximo reintento sea idempotente
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // Submit quick expense in Gastos tab
-  const handleSaveExpense = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const numAmt = Number(expenseAmount);
-    if (!numAmt || numAmt <= 0) return;
+  // Gastos: Métodos de pago y calculadora dividida coherente con Ventas
+  const mapToFinancialPaymentMethod = (method: string): FinancialPaymentMethod => {
+    const m = method.toLowerCase();
+    if (m.includes('efectivo') || m === 'cash') return 'cash';
+    if (m.includes('transf') || m === 'transfer') return 'transfer';
+    if (m.includes('tarjeta') || m.includes('credit') || m.includes('crédito') || m.includes('débito') || m.includes('debito')) return 'credit';
+    return 'cash';
+  };
+
+  const totalExpenseNum = Math.max(0, Number(expenseAmount) || 0);
+
+  // Sincronizar primera fila con el total del gasto cuando se introduce o selecciona el importe
+  useEffect(() => {
+    if (activeSection === 'gastos') {
+      if (expensePayments.length <= 1) {
+        setExpensePayments([
+          {
+            id: expensePayments[0]?.id || `exp_pay_${Date.now()}`,
+            method: expensePayments[0]?.method || 'Efectivo',
+            amount: totalExpenseNum > 0 ? totalExpenseNum : ''
+          }
+        ]);
+      }
+    }
+  }, [totalExpenseNum, activeSection]);
+
+  const totalAssignedExpensePayments = useMemo(() => {
+    return expensePayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  }, [expensePayments]);
+
+  const expenseDiff = totalAssignedExpensePayments - totalExpenseNum;
+  const isExpenseSobra = totalExpenseNum > 0 && expenseDiff > 0.01;
+  const isExpenseFalta = totalExpenseNum > 0 && expenseDiff < -0.01;
+  const expenseSobrante = Math.max(0, expenseDiff);
+  const expenseFaltante = Math.max(0, -expenseDiff);
+  const isExpenseMathExact = totalExpenseNum > 0 && Math.abs(expenseDiff) < 0.01;
+
+  const handleAddNewExpensePaymentMethod = (methodToUse?: string) => {
+    const available = ['Efectivo', 'Transferencia', 'Crédito', 'Pendiente'];
+    let selMethod = methodToUse;
+    if (!selMethod) {
+      selMethod = available.find(m => !expensePayments.some(p => p.method === m)) || 'Transferencia';
+    }
+    const newAmt = expenseFaltante > 0 ? expenseFaltante : 0;
+    setExpensePayments(prev => [
+      ...prev,
+      { id: `exp_pay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`, method: selMethod!, amount: newAmt }
+    ]);
+  };
+
+  const handleChangeExpenseBlockMethod = (index: number, newMethod: string) => {
+    setExpensePayments(prev => {
+      const copy = [...prev];
+      if (copy[index]) {
+        copy[index] = { ...copy[index], method: newMethod };
+      }
+      return copy;
+    });
+  };
+
+  const handleRemoveExpensePaymentBlock = (id: string) => {
+    if (expensePayments.length <= 1) return;
+    setExpensePayments(prev => prev.filter(p => p.id !== id));
+  };
+
+  const handleAutocorrectExpenseSobrante = () => {
+    if (expensePayments.length === 1) {
+      setExpensePayments([{ ...expensePayments[0], amount: totalExpenseNum }]);
+    } else {
+      setExpensePayments(prev => {
+        const copy = [...prev];
+        const last = copy[copy.length - 1];
+        const curAmt = Number(last.amount) || 0;
+        copy[copy.length - 1] = { ...last, amount: Math.max(0, curAmt - expenseSobrante) };
+        return copy;
+      });
+    }
+  };
+
+  // Conceptos de gastos filtrados por Rubro y por texto de búsqueda
+  const displayedExpenseConcepts = useMemo(() => {
+    let list = expenseItems.filter((i) => i.status !== 'inactivo');
+    if (expenseCategoryFilter !== 'all') {
+      list = list.filter((i) => i.categoryId === expenseCategoryFilter || i.categoryName === expenseCategoryFilter);
+    }
+    if (expenseSearchQuery.trim()) {
+      const q = expenseSearchQuery.toLowerCase().trim();
+      list = list.filter((i) => 
+        i.name.toLowerCase().includes(q) || 
+        (i.categoryName && i.categoryName.toLowerCase().includes(q)) ||
+        (i.categoryId && i.categoryId.toLowerCase().includes(q))
+      );
+    }
+    return list;
+  }, [expenseItems, expenseCategoryFilter, expenseSearchQuery]);
+
+  // Paso 1 -> Paso 2: Validar concepto e importe y avanzar al pago
+  const handleProceedExpenseToPayment = () => {
+    setExpenseErrorMsg(null);
+    if (!totalExpenseNum || totalExpenseNum <= 0) {
+      setExpenseErrorMsg('Ingresá un importe válido mayor a $0.');
+      return;
+    }
+
+    if (!selectedExpenseConcept && !customConceptForm.name.trim()) {
+      setExpenseErrorMsg('Seleccioná un concepto de gasto o ingresá uno personalizado.');
+      return;
+    }
+
+    // Si aún no se distribuyó el pago o solo hay una fila vacía, asignar el total a Efectivo por defecto
+    if (expensePayments.length <= 1 && (!expensePayments[0]?.amount || Number(expensePayments[0]?.amount) === 0)) {
+      setExpensePayments([
+        { id: `exp_p_${Date.now()}`, method: 'Efectivo', amount: totalExpenseNum }
+      ]);
+    } else if (expensePayments.length === 1) {
+      setExpensePayments([
+        { ...expensePayments[0], amount: totalExpenseNum }
+      ]);
+    }
+
+    setExpenseStep(2);
+  };
+
+  // Submit expense in Gastos tab
+  const handleSaveExpense = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!totalExpenseNum || totalExpenseNum <= 0) {
+      setExpenseErrorMsg('Ingresá un importe válido mayor a $0.');
+      return;
+    }
+
+    if (!selectedExpenseConcept && !customConceptForm.name.trim()) {
+      setExpenseErrorMsg('Seleccioná un concepto de gasto o ingresá uno personalizado.');
+      return;
+    }
+
+    if (!isExpenseMathExact) {
+      if (isExpenseFalta) {
+        setExpenseErrorMsg(`Faltan $${expenseFaltante.toLocaleString()} por asignar para completar el total del gasto ($${totalExpenseNum.toLocaleString()}).`);
+      } else if (isExpenseSobra) {
+        setExpenseErrorMsg(`Los importes asignados ($${totalAssignedExpensePayments.toLocaleString()}) superan el total del gasto ($${totalExpenseNum.toLocaleString()}).`);
+      }
+      return;
+    }
 
     setIsSubmittingExpense(true);
+    setExpenseErrorMsg(null);
     try {
-      const todayStr = new Date().toISOString().split('T')[0];
-      await addDoc(collection(db, 'transactions'), {
-        complejoId: targetId,
-        type: 'egreso',
-        source: 'manual',
-        category: expenseCategory,
-        amount: numAmt,
-        total: numAmt,
-        description: expenseDescription.trim() || `${expenseCategory} - ${expenseMethod}`,
-        paymentMethod: expenseMethod,
-        date: todayStr,
-        createdAt: serverTimestamp()
+      const conceptName = selectedExpenseConcept 
+        ? selectedExpenseConcept.name 
+        : customConceptForm.name.trim();
+      const rubroName = selectedExpenseConcept 
+        ? (selectedExpenseConcept.categoryName || selectedExpenseConcept.categoryId || 'Gastos Generales')
+        : (customConceptForm.category || 'Gastos Generales');
+
+      let finalConceptId = selectedExpenseConcept?.id;
+      if (!selectedExpenseConcept && customConceptForm.saveToCatalog && customConceptForm.name.trim()) {
+        try {
+          finalConceptId = await saveExpenseItemInFirestore(targetId, {
+            name: customConceptForm.name.trim(),
+            categoryId: rubroName,
+            categoryName: rubroName,
+            price: totalExpenseNum,
+            status: 'activo'
+          });
+        } catch (catErr) {
+          console.warn('Error guardando concepto en catálogo:', catErr);
+        }
+      }
+
+      // Separar importes efectivamente desembolsados (Efectivo, Transferencia, Crédito/Tarjeta)
+      // del saldo Pendiente (que queda registrado como saldo por pagar sin generar movimiento de salida)
+      const paidPayments = expensePayments
+        .filter(p => p.method !== 'Pendiente' && (Number(p.amount) || 0) > 0)
+        .map((p) => ({
+          amount: Number(p.amount),
+          paymentMethod: mapToFinancialPaymentMethod(p.method),
+          notes: expenseDescription.trim() ? `${expenseDescription.trim()} (${p.method})` : `Pago egreso (${p.method})`
+        }));
+
+      await executeExpenseOperation({
+        complexId: targetId,
+        category: rubroName,
+        categoryId: selectedExpenseConcept?.categoryId,
+        concept: conceptName,
+        conceptId: finalConceptId,
+        supplierName: conceptName,
+        amount: totalExpenseNum,
+        payments: paidPayments,
+        operatorId: auth.currentUser?.uid || 'administrador',
+        notes: expenseDescription.trim() || `Egreso registrado: ${conceptName}`
       });
 
+      playCashRegisterSound();
       setExpenseSuccessMsg(true);
       setExpenseAmount('');
       setExpenseDescription('');
+      setSelectedExpenseConcept(null);
+      setIsCustomConceptModalOpen(false);
+      setExpenseStep(1);
+      setCustomConceptForm({
+        name: '',
+        category: '',
+        price: '',
+        isSupplier: false,
+        saveToCatalog: true
+      });
+      setExpensePayments([{ id: `exp_p_${Date.now()}`, method: 'Efectivo', amount: '' }]);
       setTimeout(() => {
         setExpenseSuccessMsg(false);
         onClose();
-      }, 1200);
+      }, 1300);
     } catch (err: any) {
-      alert(`Error registrando gasto: ${err?.message || 'Error desconocido'}`);
+      console.error('Error registrando egreso:', err);
+      setExpenseErrorMsg(err?.message || 'Error al registrar el gasto en el sistema.');
     } finally {
       setIsSubmittingExpense(false);
     }
@@ -451,12 +735,13 @@ export const POSModal: React.FC<POSModalProps> = ({
         {/* =================================================================== */}
         <div className="shrink-0 px-4 py-3 sm:px-5 sm:py-3.5 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 z-20">
           
-          {step === 1 ? (
+          {/* Si estamos en Paso 1 (en Mostrador o en Gastos), mostrar selector de Secciones */}
+          {((activeSection === 'mostrador' && step === 1) || (activeSection === 'gastos' && expenseStep === 1)) ? (
             /* Dos Secciones: Mostrador y Gastos */
             <div className="flex bg-gray-100 dark:bg-slate-800 p-1 rounded-2xl gap-1">
               <button
                 type="button"
-                onClick={() => setActiveSection('mostrador')}
+                onClick={() => { setActiveSection('mostrador'); setStep(1); }}
                 className={`px-4 py-1.5 rounded-xl text-xs sm:text-sm font-black transition-all cursor-pointer ${
                   activeSection === 'mostrador'
                     ? 'bg-white dark:bg-slate-700 text-[#0BA70B] shadow-xs'
@@ -467,7 +752,7 @@ export const POSModal: React.FC<POSModalProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setActiveSection('gastos')}
+                onClick={() => { setActiveSection('gastos'); setExpenseStep(1); }}
                 className={`px-4 py-1.5 rounded-xl text-xs sm:text-sm font-black transition-all cursor-pointer ${
                   activeSection === 'gastos'
                     ? 'bg-white dark:bg-slate-700 text-red-500 shadow-xs'
@@ -477,8 +762,27 @@ export const POSModal: React.FC<POSModalProps> = ({
                 Gastos
               </button>
             </div>
+          ) : activeSection === 'gastos' && expenseStep === 2 ? (
+            /* Paso 2 en Gastos: Cabecera con flecha < para volver a Paso 1 de Gastos */
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setExpenseStep(1)}
+                className="p-1.5 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 text-gray-700 dark:text-slate-300 transition-colors cursor-pointer flex items-center gap-1 text-xs font-bold"
+                title="Volver al Paso 1 (selección de concepto de gasto)"
+              >
+                <ChevronLeft size={20} className="text-gray-800 dark:text-white" />
+                <span className="hidden sm:inline">Volver a Selección</span>
+              </button>
+              <h3 className="text-sm sm:text-base font-black text-gray-900 dark:text-white ml-1 flex items-center gap-2">
+                <span>Registrar Pago</span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-950/60 dark:text-red-300">
+                  Paso 2 de 2
+                </span>
+              </h3>
+            </div>
           ) : (
-            /* Paso 2: Cabecera con flecha < para volver a Paso 1 */
+            /* Paso 2 en Mostrador: Cabecera con flecha < para volver a Paso 1 */
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -489,8 +793,11 @@ export const POSModal: React.FC<POSModalProps> = ({
                 <ChevronLeft size={20} className="text-gray-800 dark:text-white" />
                 <span className="hidden sm:inline">Volver al Mostrador</span>
               </button>
-              <h3 className="text-sm sm:text-base font-black text-gray-900 dark:text-white ml-1">
-                Cobro
+              <h3 className="text-sm sm:text-base font-black text-gray-900 dark:text-white ml-1 flex items-center gap-2">
+                <span>Cobro</span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                  Paso 2 de 2
+                </span>
               </h3>
             </div>
           )}
@@ -506,7 +813,7 @@ export const POSModal: React.FC<POSModalProps> = ({
               type="button"
               onClick={onClose}
               className="p-1.5 text-gray-400 hover:text-gray-700 dark:hover:text-white rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-              title="Cerrar modal (el carrito se mantiene guardado)"
+              title="Cerrar modal"
             >
               <X size={20} />
             </button>
@@ -514,101 +821,594 @@ export const POSModal: React.FC<POSModalProps> = ({
         </div>
 
         {/* =================================================================== */}
-        {/* SECCIÓN 1: GASTOS (REGISTRO RÁPIDO DE EGRESOS)                      */}
+        {/* SECCIÓN 1: GASTOS (CATÁLOGO EN TIEMPO REAL: RUBROS Y CONCEPTOS)    */}
         {/* =================================================================== */}
         {activeSection === 'gastos' ? (
-          <div className="flex-1 overflow-y-auto p-5 space-y-4">
-            <div>
-              <h3 className="font-black text-base text-gray-900 dark:text-white flex items-center gap-2">
-                <Wallet size={18} className="text-red-500" />
-                <span>Registrar Gasto del Complejo</span>
-              </h3>
-              <p className="text-xs text-gray-400">
-                Impacta directamente en el flujo de caja como un egreso administrativo.
-              </p>
-            </div>
-
+          <div className="flex-1 flex flex-col overflow-hidden relative">
             {expenseSuccessMsg ? (
-              <div className="p-8 text-center bg-emerald-50 rounded-2xl border border-emerald-200 text-[#0BA70B] font-bold text-sm">
-                ¡Gasto registrado con éxito!
+              <div className="p-10 m-auto text-center space-y-3 bg-red-50 dark:bg-red-950/40 rounded-3xl border border-red-200 dark:border-red-900 max-w-md mx-6">
+                <CheckCircle2 size={44} className="mx-auto text-red-600 dark:text-red-400" />
+                <h4 className="font-black text-lg text-red-700 dark:text-red-300">
+                  ¡Gasto registrado con éxito!
+                </h4>
+                <p className="text-xs text-gray-600 dark:text-slate-300">
+                  El egreso impactó directamente en el libro de caja y movimientos financieros.
+                </p>
               </div>
-            ) : (
-              <form onSubmit={handleSaveExpense} className="space-y-4">
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-1">
-                    Monto del Gasto ($) *
-                  </label>
+            ) : expenseStep === 1 ? (
+              <>
+                {/* Cabecera con Buscador de Conceptos y Filtros por Rubro */}
+                <div className="p-3 sm:p-4 pb-2 space-y-2.5 shrink-0 bg-white dark:bg-slate-900 border-b border-gray-100 dark:border-slate-800">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-black text-gray-900 dark:text-white flex items-center gap-2">
+                        <Wallet size={16} className="text-red-500" />
+                        <span>Catálogo de Gastos y Egresos</span>
+                      </h3>
+                      <p className="text-[11px] text-gray-400">
+                        Seleccioná un concepto para registrar la salida de dinero
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedExpenseConcept(null);
+                        setCustomConceptForm({
+                          name: '',
+                          category: expenseCategories[0]?.name || 'Servicios',
+                          price: '',
+                          isSupplier: false,
+                          saveToCatalog: true
+                        });
+                        setIsCustomConceptModalOpen(true);
+                      }}
+                      className="px-2.5 py-1 text-[11px] font-bold text-red-600 bg-red-50 dark:bg-red-950/40 rounded-xl hover:bg-red-100 border border-red-200 dark:border-red-900/60 flex items-center gap-1 cursor-pointer transition-colors"
+                      title="Registrar un concepto no listado"
+                    >
+                      <Plus size={13} />
+                      <span>Concepto puntual</span>
+                    </button>
+                  </div>
+
+                  {/* Buscador de Conceptos de Gasto */}
                   <div className="relative">
-                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-xl font-black text-gray-400">$</span>
+                    <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" />
                     <input
-                      type="number"
-                      required
-                      min={1}
-                      placeholder="0"
-                      value={expenseAmount}
-                      onChange={(e) => setExpenseAmount(e.target.value)}
-                      className="w-full h-12 pl-9 pr-3 rounded-2xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 font-mono text-2xl font-black text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-red-500"
-                      autoFocus
+                      type="text"
+                      placeholder="Buscar concepto o rubro de gasto..."
+                      value={expenseSearchQuery}
+                      onChange={(e) => setExpenseSearchQuery(e.target.value)}
+                      className="w-full h-9.5 pl-10 pr-8 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-red-500"
                     />
+                    {expenseSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setExpenseSearchQuery('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                      >
+                        <X size={14} />
+                      </button>
+                    )}
                   </div>
-                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-1">
-                      Categoría
-                    </label>
-                    <select
-                      value={expenseCategory}
-                      onChange={(e) => setExpenseCategory(e.target.value)}
-                      className="w-full h-10 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-900 dark:text-white outline-none"
+                  {/* Filtro horizontal de Rubros */}
+                  <div className="flex gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+                    <button
+                      type="button"
+                      onClick={() => setExpenseCategoryFilter('all')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap cursor-pointer ${
+                        expenseCategoryFilter === 'all'
+                          ? 'bg-red-600 text-white shadow-xs'
+                          : 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300 hover:bg-gray-200'
+                      }`}
                     >
-                      <option>Mantenimiento</option>
-                      <option>Servicios (Luz, Agua, Gas)</option>
-                      <option>Mercadería / Insumos</option>
-                      <option>Personal / Sueldos</option>
-                      <option>Limpieza</option>
-                      <option>Otro</option>
-                    </select>
-                  </div>
+                      Todos ({expenseItems.filter(i => i.status !== 'inactivo').length})
+                    </button>
 
-                  <div>
-                    <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-1">
-                      Método de Pago
-                    </label>
-                    <select
-                      value={expenseMethod}
-                      onChange={(e) => setExpenseMethod(e.target.value)}
-                      className="w-full h-10 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-900 dark:text-white outline-none"
+                    {expenseCategories
+                      .filter((c) => c.status !== 'inactivo')
+                      .map((rubro) => {
+                        const isSelected = expenseCategoryFilter === rubro.name;
+                        const count = expenseItems.filter(
+                          (i) => i.status !== 'inactivo' && (i.categoryId === rubro.name || i.categoryName === rubro.name)
+                        ).length;
+
+                        return (
+                          <button
+                            type="button"
+                            key={`exp-rubro-pill-${rubro.id}`}
+                            onClick={() => setExpenseCategoryFilter(isSelected ? 'all' : rubro.name)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all whitespace-nowrap flex items-center gap-1.5 cursor-pointer ${
+                              isSelected
+                                ? 'bg-red-600 text-white shadow-xs'
+                                : 'bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300 hover:bg-gray-200'
+                            }`}
+                          >
+                            <span>{rubro.name}</span>
+                            <span className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                              isSelected ? 'bg-black/20 text-white' : 'bg-gray-200 dark:bg-slate-700 text-gray-600 dark:text-slate-300'
+                            }`}>
+                              {count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+
+                {/* Grilla de Tarjetas de Conceptos */}
+                <div className="flex-1 overflow-y-auto p-3 sm:p-4 pb-48">
+                  {displayedExpenseConcepts.length === 0 ? (
+                    <div className="py-12 text-center text-gray-400 space-y-2">
+                      <Wallet size={36} className="mx-auto opacity-40 text-red-500" />
+                      <p className="text-xs font-bold text-gray-600 dark:text-slate-300">
+                        No se encontraron conceptos de gasto
+                      </p>
+                      <p className="text-[11px] text-gray-400 max-w-xs mx-auto">
+                        {expenseItems.length === 0
+                          ? 'Configurá tus conceptos en Perfil → Editar mostrador → Gastos, o registrá uno puntual con el botón superior.'
+                          : 'Probá seleccionando otro rubro o limpiá la búsqueda.'}
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                      {displayedExpenseConcepts.map((concept) => {
+                        const isSelected = selectedExpenseConcept?.id === concept.id;
+                        const refPrice = Number(concept.purchasePrice || concept.price || 0);
+
+                        return (
+                          <motion.div
+                            key={`exp-concept-card-${concept.id}`}
+                            whileTap={{ scale: 0.97 }}
+                            onClick={() => {
+                              setSelectedExpenseConcept(concept);
+                              if (refPrice > 0) {
+                                setExpenseAmount(String(refPrice));
+                              } else if (!expenseAmount) {
+                                setExpenseAmount('');
+                              }
+                              setExpenseDescription(concept.name);
+                              setExpenseErrorMsg(null);
+                            }}
+                            className={`p-3 rounded-2xl border transition-all select-none flex flex-col justify-between relative cursor-pointer ${
+                              isSelected
+                                ? 'border-red-500 bg-red-50/30 dark:bg-red-950/30 ring-2 ring-red-500/20 shadow-xs'
+                                : 'border-gray-200 dark:border-slate-800 bg-white dark:bg-slate-800/90 hover:border-red-400 hover:shadow-xs'
+                            }`}
+                          >
+                            {isSelected && (
+                              <div className="absolute -top-1.5 -right-1.5 bg-red-600 text-white font-bold text-[10px] w-5 h-5 rounded-full flex items-center justify-center shadow-xs border-2 border-white dark:border-slate-900 z-10">
+                                <Check size={11} />
+                              </div>
+                            )}
+
+                            <div className="space-y-1">
+                              <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider truncate">
+                                {concept.categoryName || concept.categoryId || 'Gasto'}
+                              </div>
+                              <p className="font-bold text-xs sm:text-sm text-gray-900 dark:text-white line-clamp-2 min-h-[2.5rem]">
+                                {concept.name}
+                              </p>
+                            </div>
+
+                            <div className="mt-2 pt-2 border-t border-gray-100 dark:border-slate-700/60 flex items-center justify-between">
+                              <span className="text-[11px] font-mono text-gray-500 dark:text-slate-400">
+                                {refPrice > 0 ? `$${refPrice.toLocaleString()}` : 'Monto libre'}
+                              </span>
+                              <div className={`w-6 h-6 rounded-lg flex items-center justify-center text-xs font-bold transition-colors ${
+                                isSelected
+                                  ? 'bg-red-600 text-white'
+                                  : 'bg-red-50 dark:bg-red-950/50 text-red-600'
+                              }`}>
+                                <Plus size={14} />
+                              </div>
+                            </div>
+                          </motion.div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Panel Inferior Fijo de Confirmación de Gasto */}
+                {(selectedExpenseConcept || isCustomConceptModalOpen) && (
+                  <div className="absolute bottom-0 left-0 right-0 p-3 sm:p-4 bg-white dark:bg-slate-900 border-t border-gray-200 dark:border-slate-800 shadow-2xl z-30 space-y-3">
+                    {/* Si es concepto puntual/libre, permitir escribir el nombre y seleccionar el rubro */}
+                    {!selectedExpenseConcept && isCustomConceptModalOpen ? (
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-bold text-red-600 uppercase tracking-wider">
+                            Nuevo Concepto Puntual
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsCustomConceptModalOpen(false);
+                              setCustomConceptForm({
+                                name: '',
+                                category: '',
+                                price: '',
+                                isSupplier: false,
+                                saveToCatalog: true
+                              });
+                            }}
+                            className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer"
+                          >
+                            <X size={16} />
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                              Nombre del Concepto *
+                            </label>
+                            <input
+                              type="text"
+                              placeholder="Ej. Reparación de reflector..."
+                              value={customConceptForm.name}
+                              onChange={(e) => setCustomConceptForm(prev => ({ ...prev, name: e.target.value }))}
+                              className="w-full h-10 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-red-500"
+                              autoFocus
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                              Rubro *
+                            </label>
+                            <select
+                              value={customConceptForm.category || expenseCategories[0]?.name || 'Servicios'}
+                              onChange={(e) => setCustomConceptForm(prev => ({ ...prev, category: e.target.value }))}
+                              className="w-full h-10 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-900 dark:text-white outline-none"
+                            >
+                              {expenseCategories.filter(c => c.status !== 'inactivo').map(c => (
+                                <option key={`custom-rubro-opt-${c.id}`} value={c.name}>
+                                  {c.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between">
+                        <div className="min-w-0 pr-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-red-600 dark:text-red-400 block">
+                            Concepto Seleccionado
+                          </span>
+                          <h4 className="font-black text-sm text-gray-900 dark:text-white truncate">
+                            {selectedExpenseConcept?.name}
+                          </h4>
+                          <span className="text-[11px] text-gray-400">
+                            Rubro: {selectedExpenseConcept?.categoryName || selectedExpenseConcept?.categoryId}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedExpenseConcept(null);
+                            setIsCustomConceptModalOpen(false);
+                            setExpenseAmount('');
+                            setExpenseDescription('');
+                          }}
+                          className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer"
+                          title="Cambiar concepto"
+                        >
+                          <X size={18} />
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Inputs de Importe y Detalle */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                          Importe Total del Gasto ($) *
+                        </label>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-lg font-black text-gray-400">$</span>
+                          <input
+                            type="number"
+                            min={1}
+                            placeholder="0"
+                            value={expenseAmount}
+                            onChange={(e) => setExpenseAmount(e.target.value)}
+                            className="w-full h-11 pl-8 pr-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 font-mono text-xl font-black text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-red-500"
+                            autoFocus
+                          />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                          Nota / Detalle adicional (opcional)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Ej: Factura A #001, service heladera..."
+                          value={expenseDescription}
+                          onChange={(e) => setExpenseDescription(e.target.value)}
+                          className="w-full h-11 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-red-500"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Botón para avanzar al Paso 2: Registrar Pago */}
+                    {expenseErrorMsg && (
+                      <p className="text-xs text-red-600 font-bold bg-red-50 dark:bg-red-950/50 p-2 rounded-xl">
+                        {expenseErrorMsg}
+                      </p>
+                    )}
+
+                    <div className="pt-2 flex items-center justify-between gap-3 border-t border-gray-100 dark:border-slate-800">
+                      <div>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 block">
+                          Total a Pagar
+                        </span>
+                        <span className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white font-mono">
+                          ${totalExpenseNum > 0 ? totalExpenseNum.toLocaleString() : '0'}
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={!totalExpenseNum || totalExpenseNum <= 0}
+                        onClick={handleProceedExpenseToPayment}
+                        className="py-3 px-5 bg-red-600 hover:bg-red-700 active:scale-[0.99] text-white font-black text-sm rounded-2xl shadow-lg shadow-red-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                      >
+                        <span>Continuar al Pago</span>
+                        <ChevronRight size={18} />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
+            ) : (
+              /* =================================================================== */
+              /* PASO 2: REGISTRAR EL PAGO DEL GASTO (IDÉNTICO A VENTAS DE MOSTRADOR) */
+              /* =================================================================== */
+              <div className="flex-1 flex flex-col overflow-y-auto p-4 sm:p-5 space-y-4">
+                {/* Tarjeta Resumen del Gasto */}
+                <div className="p-4 bg-red-50/70 dark:bg-red-950/30 rounded-2xl border border-red-100 dark:border-red-900/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <span className="text-[10px] font-bold text-red-700 dark:text-red-300 uppercase tracking-wider block">
+                        Total del Gasto
+                      </span>
+                      <span className="text-2xl sm:text-3xl font-black text-gray-900 dark:text-white font-mono">
+                        ${totalExpenseNum.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-sm font-black text-gray-900 dark:text-white block">
+                        {selectedExpenseConcept?.name || customConceptForm.name}
+                      </span>
+                      <span className="text-xs text-gray-500 dark:text-slate-400">
+                        Rubro: {selectedExpenseConcept?.categoryName || selectedExpenseConcept?.categoryId || customConceptForm.category || 'Gastos'}
+                      </span>
+                    </div>
+                  </div>
+                  {expenseDescription.trim() && (
+                    <div className="pt-2 border-t border-red-200/50 dark:border-red-900/40 text-xs text-gray-600 dark:text-slate-300">
+                      <span className="font-bold">Detalle:</span> {expenseDescription.trim()}
+                    </div>
+                  )}
+                  <div className="pt-2 border-t border-red-200/50 dark:border-red-900/40 flex items-center justify-between text-xs font-mono text-gray-500">
+                    <span>Asignado: ${totalAssignedExpensePayments.toLocaleString()}</span>
+                    <span>Total: ${totalExpenseNum.toLocaleString()}</span>
+                  </div>
+                </div>
+
+                {/* Atajos Rápidos */}
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExpensePayments([{ id: `exp_p_${Date.now()}`, method: 'Efectivo', amount: totalExpenseNum }]);
+                    }}
+                    className="py-2 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-gray-700 dark:text-slate-300 text-center cursor-pointer transition-colors"
+                  >
+                    100% Efectivo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExpensePayments([{ id: `exp_p_${Date.now()}`, method: 'Transferencia', amount: totalExpenseNum }]);
+                    }}
+                    className="py-2 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-gray-700 dark:text-slate-300 text-center cursor-pointer transition-colors"
+                  >
+                    100% Transf.
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExpensePayments([{ id: `exp_p_${Date.now()}`, method: 'Pendiente', amount: totalExpenseNum }]);
+                    }}
+                    className="py-2 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-amber-600 dark:text-amber-400 text-center cursor-pointer transition-colors"
+                  >
+                    100% Pendiente
+                  </button>
+                </div>
+
+                {/* Filas de Medios de Pago */}
+                <div className="space-y-2.5">
+                  {expensePayments.map((p, idx) => (
+                    <div
+                      key={`exp-pay-block-${p.id}`}
+                      className="p-3 bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-2xs space-y-2"
                     >
-                      <option>Efectivo</option>
-                      <option>Transferencia</option>
-                      <option>Tarjeta</option>
-                    </select>
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-1 flex-wrap">
+                          {['Efectivo', 'Transferencia', 'Crédito', 'Pendiente'].map((m) => {
+                            const isSelected = p.method.toLowerCase() === m.toLowerCase();
+                            const isPend = m === 'Pendiente';
+                            return (
+                              <button
+                                key={`exp-row-${p.id}-m-${m}`}
+                                type="button"
+                                onClick={() => handleChangeExpenseBlockMethod(idx, m)}
+                                className={`px-2.5 py-1 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                                  isSelected
+                                    ? isPend
+                                      ? 'bg-amber-600 text-white shadow-2xs'
+                                      : 'bg-red-600 text-white shadow-2xs'
+                                    : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-slate-600'
+                                }`}
+                              >
+                                {m}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {expensePayments.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveExpensePaymentBlock(p.id)}
+                            className="p-1 text-gray-400 hover:text-red-500 rounded cursor-pointer shrink-0"
+                            title="Eliminar este método"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3 pt-1">
+                        <div className="flex items-center gap-2 text-xs font-bold text-gray-500">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpensePayments((prev) => {
+                                const copy = [...prev];
+                                copy[idx] = { ...copy[idx], amount: totalExpenseNum };
+                                return copy;
+                              });
+                            }}
+                            className="text-[11px] font-bold text-gray-400 hover:text-gray-900 dark:hover:text-white underline cursor-pointer"
+                            title="Completar con el Total"
+                          >
+                            Total
+                          </button>
+
+                          {expenseFaltante > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setExpensePayments((prev) => {
+                                  const copy = [...prev];
+                                  const cur = Number(copy[idx].amount) || 0;
+                                  copy[idx] = { ...copy[idx], amount: cur + expenseFaltante };
+                                  return copy;
+                                });
+                              }}
+                              className="text-[11px] font-black text-amber-600 dark:text-amber-400 hover:underline cursor-pointer flex items-center gap-0.5"
+                              title="Tocar para completar con el faltante"
+                            >
+                              <span>Restante: ${expenseFaltante.toLocaleString()}</span>
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="relative w-36 sm:w-40">
+                          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">$</span>
+                          <input
+                            type="number"
+                            min={0}
+                            placeholder={String(totalExpenseNum)}
+                            value={p.amount}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setExpensePayments((prev) => {
+                                const copy = [...prev];
+                                copy[idx] = { ...copy[idx], amount: val === '' ? '' : Number(val) };
+                                return copy;
+                              });
+                            }}
+                            className="w-full h-9 pl-6 pr-2.5 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-black text-gray-900 dark:text-white font-mono outline-none focus:ring-2 focus:ring-red-500 text-right"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Botón para añadir otro medio */}
+                {expensePayments.length < 4 && (
+                  <button
+                    type="button"
+                    onClick={() => handleAddNewExpensePaymentMethod()}
+                    className="w-full py-2.5 border border-dashed border-gray-300 dark:border-slate-700 hover:border-red-500 text-gray-500 dark:text-slate-400 hover:text-red-600 rounded-2xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <Plus size={15} />
+                    <span>Añadir otro medio de pago</span>
+                  </button>
+                )}
+
+                {/* Alertas Matemáticas */}
+                {!isExpenseMathExact && totalExpenseNum > 0 && (
+                  <div className={`p-3 rounded-2xl border text-xs font-semibold flex items-center justify-between gap-2 ${
+                    isExpenseFalta
+                      ? "bg-amber-50 dark:bg-amber-950/40 border-amber-200 text-amber-800 dark:text-amber-300"
+                      : "bg-red-50 dark:bg-red-950/40 border-red-200 text-red-800 dark:text-red-300"
+                  }`}>
+                    <span>
+                      {isExpenseFalta
+                        ? `Faltan $${expenseFaltante.toLocaleString()} por asignar.`
+                        : `Sobran $${expenseSobrante.toLocaleString()}.`}
+                    </span>
+                    {isExpenseSobra && (
+                      <button
+                        type="button"
+                        onClick={handleAutocorrectExpenseSobrante}
+                        className="px-2.5 py-1 rounded-lg bg-red-600 text-white text-xs font-bold cursor-pointer hover:bg-red-700"
+                      >
+                        Ajustar
+                      </button>
+                    )}
+                    {isExpenseFalta && (
+                      <button
+                        type="button"
+                        onClick={() => handleAddNewExpensePaymentMethod('Pendiente')}
+                        className="px-2.5 py-1 rounded-lg bg-amber-600 text-white text-xs font-bold cursor-pointer hover:bg-amber-700"
+                      >
+                        + Dejar restante como pendiente
+                      </button>
+                    )}
                   </div>
-                </div>
+                )}
 
-                <div>
-                  <label className="block text-[11px] font-bold uppercase tracking-wider text-gray-500 mb-1">
-                    Descripción / Motivo (Opcional)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Ej: Pago de factura de luz, repuesto de red..."
-                    value={expenseDescription}
-                    onChange={(e) => setExpenseDescription(e.target.value)}
-                    className="w-full h-10 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none"
-                  />
-                </div>
+                {expenseErrorMsg && (
+                  <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 rounded-xl text-red-700 dark:text-red-300 text-xs font-bold flex items-center gap-2">
+                    <AlertCircle size={16} className="shrink-0" />
+                    <span>{expenseErrorMsg}</span>
+                  </div>
+                )}
 
-                <button
-                  type="submit"
-                  disabled={isSubmittingExpense || !expenseAmount}
-                  className="w-full py-3.5 bg-red-600 hover:bg-red-700 text-white font-black text-sm rounded-2xl shadow-lg transition-all disabled:opacity-50 cursor-pointer"
-                >
-                  {isSubmittingExpense ? 'Registrando Gasto...' : 'Confirmar Gasto'}
-                </button>
-              </form>
+                {/* Botones de acción al pie */}
+                <div className="flex items-center gap-3 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setExpenseStep(1)}
+                    className="py-3.5 px-4 rounded-2xl border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-slate-300 font-bold text-xs sm:text-sm hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                  >
+                    Volver
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isSubmittingExpense || !isExpenseMathExact}
+                    onClick={() => handleSaveExpense()}
+                    className="flex-1 py-3.5 bg-red-600 hover:bg-red-700 active:scale-[0.99] text-white font-black text-sm rounded-2xl shadow-lg shadow-red-600/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
+                  >
+                    <Wallet size={18} />
+                    <span>
+                      {isSubmittingExpense 
+                        ? 'Registrando Gasto...' 
+                        : `Confirmar Gasto · $${totalExpenseNum.toLocaleString()}`}
+                    </span>
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         ) : step === 1 ? (
@@ -1191,7 +1991,13 @@ export const POSModal: React.FC<POSModalProps> = ({
             {/* D. Reglas de Validación y Bloqueo (Botón Finalizar Venta):
                 - Deshabilitado si la suma de pagos !== Total
                 - Deshabilitado si hay Fiado y no hay cliente seleccionado */}
-            <div className="pt-3">
+            <div className="pt-3 space-y-2">
+              {saleError && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-xl text-red-700 dark:text-red-300 text-xs font-semibold flex items-center gap-2">
+                  <AlertCircle size={16} className="shrink-0 text-red-500" />
+                  <span>{saleError}</span>
+                </div>
+              )}
               <button
                 type="button"
                 onClick={handleFinalizeSale}

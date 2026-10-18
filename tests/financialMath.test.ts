@@ -206,21 +206,28 @@ assertEqual(clearCC2.remainingOperationDebt, 0, 'Deuda remanente debe ser 0');
 console.log('\n--- GRUPO 5: ABONOS DE DEUDA HISTÓRICA ---');
 
 const hist1 = calculateHistoricalDebtSettlement(50000, 20000);
+assertEqual(hist1.valid, true, 'Abono histórico parcial válido');
 assertEqual(hist1.clearedAmount, 20000, 'Abono histórico parcial debe descontar $20.000');
 assertEqual(hist1.remainingDebt, 30000, 'Deuda histórica remanente debe ser $30.000');
-assertEqual(hist1.overpayment, 0, 'Sobrepago debe ser 0');
 
 const hist2 = calculateHistoricalDebtSettlement(30000, 30000);
+assertEqual(hist2.valid, true, 'Abono histórico total válido');
 assertEqual(hist2.clearedAmount, 30000, 'Abono total debe descontar los $30.000');
 assertEqual(hist2.remainingDebt, 0, 'Deuda remanente debe quedar en 0');
 
+// 5.3 Rechazo estricto de sobrepago
 const hist3 = calculateHistoricalDebtSettlement(10000, 15000);
-assertEqual(hist3.clearedAmount, 10000, 'Abono superior a la deuda debe descontar solo $10.000');
-assertEqual(hist3.remainingDebt, 0, 'Deuda remanente debe ser 0');
-assertEqual(hist3.overpayment, 5000, 'Sobrepago detectado debe ser $5.000');
+assertEqual(hist3.valid, false, 'Abono superior a la deuda debe ser rechazado');
+assertEqual(hist3.clearedAmount, 0, 'No debe descontar nada si fue rechazado');
+assertEqual(hist3.remainingDebt, 10000, 'Deuda remanente debe conservarse intacta');
+assert(Boolean(hist3.error && hist3.error.includes('supera la deuda')), 'Debe devolver mensaje claro de sobrepago no permitido');
+
+// 5.4 Rechazo de importe cero o negativo
+const hist4 = calculateHistoricalDebtSettlement(10000, 0);
+assertEqual(hist4.valid, false, 'Abono de $0 debe ser rechazado');
 
 // ----------------------------------------------------
-// GRUPO 6: IDEMPOTENCIA Y PREVENCIÓN DE DUPLICADOS
+// GRUPO 6: IDEMPOTENCIA Y PROTECCIÓN DE REINTENTOS
 // ----------------------------------------------------
 console.log('\n--- GRUPO 6: IDEMPOTENCIA Y PROTECCIÓN DE REINTENTOS ---');
 
@@ -247,7 +254,7 @@ const completedRecord: IdempotencyRecord = {
   status: 'completed',
   movementId: 'mov_999',
   createdAt: null,
-  expiresAt: null
+  completedAt: null
 };
 const idempMatch = validateIdempotencyRequest(completedRecord, baseParams);
 assertEqual(idempMatch.type, 'MATCH_COMPLETED', 'Reintento con mismos parámetros debe ser MATCH_COMPLETED');
@@ -276,6 +283,29 @@ const mismatchOp = validateIdempotencyRequest(completedRecord, {
   operationId: 'op_200'
 });
 assertEqual(mismatchOp.type, 'MISMATCH_ERROR', 'Reutilizar clave con distinta operación debe generar MISMATCH_ERROR');
+
+// 6.6 Abono de deuda histórica sin operación (operationId: null)
+const histIdempRecord: IdempotencyRecord = {
+  idempotencyKey: 'key_hist_01',
+  complexId: 'cx_palermo',
+  operationId: null,
+  amount: 25000,
+  paymentMethod: 'cash',
+  flow: 'income',
+  status: 'completed',
+  movementId: 'mov_hist_88',
+  createdAt: null,
+  completedAt: null
+};
+const histIdempMatch = validateIdempotencyRequest(histIdempRecord, {
+  complexId: 'cx_palermo',
+  operationId: null,
+  amount: 25000,
+  paymentMethod: 'cash',
+  flow: 'income'
+});
+assertEqual(histIdempMatch.type, 'MATCH_COMPLETED', 'Idempotencia de deuda histórica sin operationId debe resolver MATCH_COMPLETED');
+
 
 // ----------------------------------------------------
 // GRUPO 7: GENERACIÓN Y PARSEO DE TICKETS CON CONTADORES

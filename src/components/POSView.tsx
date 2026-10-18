@@ -26,9 +26,11 @@ import {
   subscribeToProducts, 
   subscribeToInventoryCategories, 
   subscribeToClients,
-  executePOSSale 
+  createOperationWithInitialPayment,
+  isGenericClientPlaceholder
 } from '../lib/firestoreSync';
 import { usePOSCart } from './POSCartContext';
+import { auth } from '../lib/firebase';
 
 interface POSViewProps {
   complexId?: string;
@@ -85,6 +87,7 @@ export const POSView: React.FC<POSViewProps> = ({
 
   const [notes, setNotes] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [saleIdempotencyKey, setSaleIdempotencyKey] = useState<string | null>(null);
   const [saleSuccessData, setSaleSuccessData] = useState<{
     txId: string;
     total: number;
@@ -199,9 +202,19 @@ export const POSView: React.FC<POSViewProps> = ({
     }
 
     setIsSubmitting(true);
+    const currentIdempotencyKey = saleIdempotencyKey || `pos_sale_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    if (!saleIdempotencyKey) {
+      setSaleIdempotencyKey(currentIdempotencyKey);
+    }
+
     try {
       const payments = getPaymentsPayload();
+      const cashPayments = payments.filter(p => p.method !== 'fiado' && p.amount > 0);
+      const fiadoPayment = payments.find(p => p.method === 'fiado' && p.amount > 0);
+      const fiadoAmount = fiadoPayment ? Number(fiadoPayment.amount || 0) : 0;
+
       const transactionItems = cartItems.map(it => ({
+        id: it.product.id,
         productId: it.product.id,
         name: it.product.name,
         quantity: it.quantity,
@@ -209,31 +222,54 @@ export const POSView: React.FC<POSViewProps> = ({
         subtotal: Number(it.product.salePrice || 0) * it.quantity
       }));
 
-      const txId = await executePOSSale({
-        complejoId: targetId,
+      const hasClient = Boolean(selectedClient && selectedClient.id);
+      const resolvedClientName = (hasClient && selectedClient?.name && !isGenericClientPlaceholder(selectedClient.name))
+        ? selectedClient.name.trim()
+        : (hasClient ? (selectedClient?.name || 'NN') : 'NN');
+      const resolvedClientId = hasClient ? String(selectedClient!.id) : null;
+      const resolvedClientPhone = selectedClient?.phone ? String(selectedClient.phone).trim() : '';
+
+      const result = await createOperationWithInitialPayment({
+        complexId: targetId,
+        operationType: 'pos_sale',
+        contractualAmount: cartTotal,
+        operatorId: auth.currentUser?.uid || 'pos_operator',
+        responsibleType: hasClient ? 'user' : 'anonymous',
+        userId: resolvedClientId,
+        clientId: resolvedClientId,
+        userName: resolvedClientName,
+        clientName: resolvedClientName,
+        userPhone: resolvedClientPhone,
+        clientPhone: resolvedClientPhone,
         items: transactionItems,
-        payments,
-        total: cartTotal,
-        userId: selectedClient?.id ? String(selectedClient.id) : undefined,
-        userName: selectedClient?.name || (clientSearch.trim() || undefined),
+        idempotencyKey: currentIdempotencyKey,
+        initialPayments: cashPayments.map((p, idx) => ({
+          amount: Number(p.amount),
+          paymentMethod: p.method as any,
+          idempotencyKey: `${currentIdempotencyKey}_pay_${idx}`,
+          notes: `Cobro mostrador (${p.method})`
+        })),
+        assignToCurrentAccount: fiadoAmount > 0,
+        customDebtAmount: fiadoAmount > 0 ? fiadoAmount : undefined,
         notes: notes.trim() || undefined
       });
 
       // Show success modal
       setSaleSuccessData({
-        txId,
+        txId: result.ticketCode || result.operationId,
         total: cartTotal,
         payments,
-        clientName: selectedClient?.name,
+        clientName: resolvedClientName !== 'NN' ? resolvedClientName : undefined,
         itemsCount: totalUnits
       });
 
-      // Clear local state
+      // Clear local state only after confirmation
       clearCart();
       setSelectedClient(null);
       setClientSearch('');
       setNotes('');
       setSplitAmounts({ efectivo: 0, transferencia: 0, tarjeta: 0, fiado: 0 });
+      setSaleIdempotencyKey(null);
       setIsMobileCartOpen(false);
     } catch (err: any) {
       console.error('Error al registrar venta POS:', err);

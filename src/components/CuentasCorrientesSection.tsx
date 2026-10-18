@@ -18,7 +18,8 @@ import type { User as UserType } from '../types';
 import { 
   subscribeToTransactions, 
   subscribeToClients,
-  settleFiadoTransaction 
+  settleFiadoTransaction,
+  resolveClientName 
 } from '../lib/firestoreSync';
 
 interface CuentasCorrientesSectionProps {
@@ -73,13 +74,15 @@ export const CuentasCorrientesSection: React.FC<CuentasCorrientesSectionProps> =
 
       if (!searchQuery.trim()) return true;
       const q = searchQuery.toLowerCase();
+      const resolvedName = resolveClientName(t, clients);
       return (
-        (t.userName && t.userName.toLowerCase().includes(q)) ||
-        (t.description && t.description.toLowerCase().includes(q)) ||
-        (t.id && t.id.toLowerCase().includes(q))
+        (resolvedName !== 'NN' && resolvedName.toLowerCase().includes(q)) ||
+        (t.userName && String(t.userName).toLowerCase().includes(q)) ||
+        (t.description && String(t.description).toLowerCase().includes(q)) ||
+        (t.id && String(t.id).toLowerCase().includes(q))
       );
     });
-  }, [transactions, searchQuery]);
+  }, [transactions, searchQuery, clients]);
 
   // Clients with active debt > 0
   const debtors = useMemo(() => {
@@ -199,6 +202,8 @@ export const CuentasCorrientesSection: React.FC<CuentasCorrientesSectionProps> =
                 : null;
               const fiadoAmount = Number(fiadoPayment?.amount || tx.total || 0);
 
+              const resolvedClient = resolveClientName(tx, clients);
+
               return (
                 <div 
                   key={`fiado-tx-${tx.id}`}
@@ -207,7 +212,7 @@ export const CuentasCorrientesSection: React.FC<CuentasCorrientesSectionProps> =
                   <div className="space-y-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-bold text-xs sm:text-sm text-gray-900 dark:text-white truncate">
-                        {tx.userName || 'Cliente no identificado'}
+                        {resolvedClient !== 'NN' ? resolvedClient : (tx.userName || 'NN')}
                       </span>
                       <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
                         Fiado
@@ -237,7 +242,7 @@ export const CuentasCorrientesSection: React.FC<CuentasCorrientesSectionProps> =
                       onClick={() => setSettlingTx({
                         id: tx.id,
                         fiadoAmount,
-                        userName: tx.userName,
+                        userName: resolvedClient !== 'NN' ? resolvedClient : (tx.userName || 'NN'),
                         userId: tx.userId,
                         description: tx.description
                       })}

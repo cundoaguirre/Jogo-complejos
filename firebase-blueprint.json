@@ -355,6 +355,18 @@
     "/collaborators/{uid}": {
       "schema": "Collaborator",
       "description": "Perfiles de operadores del complejo"
+    },
+    "/operations/{operationId}": {
+      "description": "Operaciones financieras unificadas (ventas POS, señas de reservas)"
+    },
+    "/financial_movements/{movementId}": {
+      "description": "Movimientos de caja y cobros vinculados a operaciones"
+    },
+    "/complex_counters/{complexId}": {
+      "description": "Contadores atómicos de numeración secuencial de comprobantes por complejo"
+    },
+    "/idempotency_keys/{key}": {
+      "description": "Claves de idempotencia para prevención de duplicaciones"
     }
   }
 }

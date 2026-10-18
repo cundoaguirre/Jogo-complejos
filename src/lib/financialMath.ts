@@ -191,26 +191,44 @@ export function calculateCurrentAccountClearing(
 
 /**
  * Calcula el abono de deuda histórica acumulada en users.debt (sin ticket previo).
+ * Rechaza estrictamente montos superiores a la deuda pendiente para evitar saldos negativos o excedentes no contabilizados.
  */
+export interface HistoricalDebtSettlementResult {
+  valid: boolean;
+  clearedAmount: number;
+  remainingDebt: number;
+  error?: string;
+}
+
 export function calculateHistoricalDebtSettlement(
   currentDebt: number,
   paymentAmount: number
-): { clearedAmount: number; remainingDebt: number; overpayment: number } {
+): HistoricalDebtSettlementResult {
   const existingDebt = Math.max(0, Number(currentDebt) || 0);
-  const payment = Math.max(0, Number(paymentAmount) || 0);
+  const payment = Number(paymentAmount) || 0;
+
+  if (payment <= 0) {
+    return {
+      valid: false,
+      clearedAmount: 0,
+      remainingDebt: existingDebt,
+      error: 'El importe a abonar debe ser mayor a 0.'
+    };
+  }
 
   if (payment > existingDebt) {
     return {
-      clearedAmount: existingDebt,
-      remainingDebt: 0,
-      overpayment: payment - existingDebt
+      valid: false,
+      clearedAmount: 0,
+      remainingDebt: existingDebt,
+      error: `El importe a abonar ($${payment}) supera la deuda pendiente ($${existingDebt}). No se permiten sobrepagos ni saldos negativos.`
     };
   }
 
   return {
+    valid: true,
     clearedAmount: payment,
-    remainingDebt: existingDebt - payment,
-    overpayment: 0
+    remainingDebt: existingDebt - payment
   };
 }
 
@@ -228,7 +246,7 @@ export function validateIdempotencyRequest(
   record: IdempotencyRecord | null | undefined,
   requestedParams: {
     complexId: string;
-    operationId: string;
+    operationId?: string | null;
     amount: number;
     paymentMethod: FinancialPaymentMethod;
     flow: FinancialMovementFlow;
@@ -238,17 +256,20 @@ export function validateIdempotencyRequest(
     return { type: 'NEW' };
   }
 
+  const recordOpId = record.operationId ?? null;
+  const requestedOpId = requestedParams.operationId ?? null;
+
   // Comprobar si los parámetros coinciden exactamente con la intención original
   if (
     record.complexId !== requestedParams.complexId ||
-    record.operationId !== requestedParams.operationId ||
+    recordOpId !== requestedOpId ||
     record.amount !== requestedParams.amount ||
     record.paymentMethod !== requestedParams.paymentMethod ||
     record.flow !== requestedParams.flow
   ) {
     return {
       type: 'MISMATCH_ERROR',
-      reason: `La clave de idempotencia '${record.idempotencyKey}' ya fue utilizada con parámetros distintos (monto original: $${record.amount}, operación: ${record.operationId}).`
+      reason: `La clave de idempotencia '${record.idempotencyKey}' ya fue utilizada con parámetros distintos (monto original: $${record.amount}, operación: ${record.operationId ?? 'sin operación'}).`
     };
   }
 
@@ -274,7 +295,7 @@ export function validateIdempotencyRequest(
  * Ejemplo: formatTicketCode('T', '26', 42) => "T-26-000042"
  */
 export function formatTicketCode(
-  prefix: 'T' | 'B' | 'G' | 'D',
+  prefix: 'T' | 'B' | 'G' | 'D' | 'E',
   yearTwoDigits: string,
   sequence: number
 ): string {

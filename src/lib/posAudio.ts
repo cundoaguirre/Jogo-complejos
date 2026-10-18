@@ -113,3 +113,33 @@ export function playCashRegisterSound() {
     // Ignore audio playback errors if audio context blocked
   }
 }
+
+/**
+ * Short, pleasant purchase confirmation tone using Web Audio API.
+ */
+export function playPurchaseSound() {
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(523.25, now); // C5
+    osc.frequency.exponentialRampToValueAtTime(783.99, now + 0.1); // G5
+    osc.frequency.exponentialRampToValueAtTime(1046.50, now + 0.22); // C6
+
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.36);
+  } catch (e) {
+    // Graceful fallback if audio is blocked
+  }
+}

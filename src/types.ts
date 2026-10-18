@@ -73,9 +73,12 @@ export interface Match {
   courtName?: string;
   host_name: string;
   userName?: string;
+  clientName?: string;
   host_phone: string;
   userPhone?: string;
+  clientPhone?: string;
   userEmail?: string;
+  clientEmail?: string;
   notes?: string;
   ownerId?: string;
   adminId?: string;
@@ -154,11 +157,27 @@ export interface User {
   updatedAt?: string;
 }
 
+export interface ProductBatch {
+  id: string;
+  quantity: number;
+  initialQuantity: number;
+  unitCost: number;
+  purchasePlace?: string;
+  operationId?: string;
+  expenseCategoryId?: string | null;
+  expenseCategoryName?: string | null;
+  expenseConceptId?: string | null;
+  expenseConceptName?: string | null;
+  createdAt: any;
+}
+
 export interface ProductCategory {
   id: string;
   complejoId: string;
   name: string;
   description?: string;
+  catalogType?: 'sale' | 'expense';
+  status?: 'activo' | 'inactivo';
   createdAt?: any;
   updatedAt?: any;
 }
@@ -176,6 +195,7 @@ export interface InventoryMovement {
   formattedDate?: string;
   actorName?: string;
   notes?: string;
+  operationId?: string;
   createdAt?: any;
 }
 
@@ -187,8 +207,11 @@ export interface Product {
   categoryName?: string;
   purchasePrice: number;
   salePrice: number;
+  price?: number; // Importe predefinido para conceptos de gasto o alias monetario
   stock: number;
   status: 'activo' | 'inactivo';
+  catalogType?: 'sale' | 'expense';
+  batches?: ProductBatch[];
   createdAt?: any;
   updatedAt?: any;
 }
@@ -326,7 +349,14 @@ export interface CollaboratorProfile {
 // MODELO FINANCIERO UNIFICADO (FASE 2 / ETAPA 1)
 // ==========================================
 
-export type OperationType = 'pos_sale' | 'court_booking' | 'expense' | 'historical_debt_settlement';
+export type OperationType = 
+  | 'pos_sale' 
+  | 'court_booking' 
+  | 'expense' 
+  | 'purchase' 
+  | 'sale' 
+  | 'booking' 
+  | 'historical_debt_settlement';
 
 export type OperationPaymentStatus = 
   | 'unpaid'              // $0 cobrado/pagado (Activa)
@@ -352,6 +382,7 @@ export type FinancialMovementCategory =
 export interface OperationDocument {
   id: string;                         // UUID v4 único
   complexId: string;                  // Aislamiento multi-tenant
+  complejoId?: string;                // Compatibilidad con reglas y queries en español
   ticketCode: string;                 // Código secuencial legible (ej. T-26-000042)
   operationType: OperationType;
 
@@ -362,16 +393,21 @@ export interface OperationDocument {
   // Responsable
   responsibleType: 'user' | 'anonymous' | 'supplier';
   userId?: string | null;             // UID en /users
+  clientId?: string | null;           // Alias unificado para cliente
   userName: string;
+  clientName?: string;                // Alias unificado para nombre de cliente
   userPhone?: string;
+  clientPhone?: string;               // Alias unificado para teléfono de cliente
+  supplierId?: string | null;         // ID estable del proveedor/concepto si aplica
+  supplierName?: string | null;       // Nombre del proveedor si aplica
 
   // Cuentas contractuales y flujos monetarios
   contractualAmount: number;          // Monto total nominal pactado
-  totalCollected: number;             // Total acumulado cobrado (ingresos)
-  totalRefunded: number;              // Total acumulado devuelto al cliente
+  totalCollected: number;             // Total acumulado cobrado/pagado efectivamente
+  totalRefunded: number;              // Total acumulado devuelto
   netCollected: number;               // totalCollected - totalRefunded
-  retainedAmount: number;             // Monto retenido al cancelar (penalidades / señas no devueltas)
-  amountPending: number;              // Saldo pendiente contractual (0 si cancelada)
+  retainedAmount: number;             // Monto retenido al cancelar
+  amountPending: number;              // Saldo pendiente contractual / por pagar (0 si cancelada o saldada)
 
   paymentStatus: OperationPaymentStatus;
 
@@ -399,7 +435,9 @@ export interface OperationDocument {
 export interface FinancialMovementDocument {
   id: string;                         // UUID v4 único
   complexId: string;                  // Aislamiento multi-tenant
-  operationId: string;                // FK a /operations
+  complejoId?: string;                // Compatibilidad con reglas y queries en español
+  operationId?: string | null;        // FK opcional a /operations (null en abonos de deuda histórica directa)
+  bookingId?: string | null;          // FK opcional a /bookings
   ticketCode: string;                 // Desnormalizado para búsquedas e impresión
   idempotencyKey: string;             // FK a la clave de idempotencia procesada
 
@@ -410,10 +448,19 @@ export interface FinancialMovementDocument {
   effectiveDate: any;                 // Fecha real en que se produjo el movimiento en caja
 
   userId?: string | null;
+  clientId?: string | null;
   responsibleName: string;
+  userName?: string;
+  clientName?: string;
+  userPhone?: string;
+  clientPhone?: string;
   clearedCurrentAccountDebt: number;  // Monto que este cobro descuenta de cuenta corriente
 
   notes?: string;
+  expenseCategoryId?: string | null;
+  expenseCategoryName?: string | null;
+  expenseConceptId?: string | null;
+  expenseConceptName?: string | null;
   operatorId: string;
   createdAt: any;
 }
@@ -421,7 +468,9 @@ export interface FinancialMovementDocument {
 export interface IdempotencyRecord {
   idempotencyKey: string;
   complexId: string;
-  operationId: string;
+  complejoId?: string;
+  operationId?: string | null;        // Opcional para abonos directos de deuda histórica
+  ticketCode?: string;
   amount: number;
   paymentMethod: FinancialPaymentMethod;
   flow: FinancialMovementFlow;
@@ -429,7 +478,7 @@ export interface IdempotencyRecord {
   movementId?: string;
   errorMessage?: string;
   createdAt: any;
-  expiresAt: any;
+  completedAt?: any;
 }
 
 export interface ComplexCountersDocument {
@@ -459,4 +508,127 @@ export interface FinancialCalculationResult {
   paymentStatus: OperationPaymentStatus;
 }
 
+export interface CreateOperationParams {
+  complexId: string;
+  operationType: OperationType;
+  contractualAmount: number;
+  operatorId: string;
+  responsibleType?: 'user' | 'anonymous' | 'supplier';
+  userId?: string | null;
+  clientId?: string | null;
+  userName?: string;
+  clientName?: string;
+  userPhone?: string;
+  clientPhone?: string;
+  items?: Array<{
+    id?: string;
+    productId?: string;
+    name: string;
+    quantity: number;
+    unitPrice: number;
+    subtotal: number;
+  }>;
+  bookingId?: string;
+  legacySaleId?: string;
+  notes?: string;
+  idempotencyKey?: string;
+  initialPayment?: {
+    amount: number;
+    paymentMethod: FinancialPaymentMethod;
+    idempotencyKey: string;
+    notes?: string;
+  };
+  initialPayments?: Array<{
+    amount: number;
+    paymentMethod: FinancialPaymentMethod;
+    idempotencyKey: string;
+    notes?: string;
+  }>;
+  assignToCurrentAccount?: boolean;
+  customDebtAmount?: number;
+}
 
+export interface RegisterOperationPaymentParams {
+  complexId: string;
+  operationId: string;
+  amount: number;
+  paymentMethod: FinancialPaymentMethod;
+  idempotencyKey: string;
+  operatorId: string;
+  notes?: string;
+  category?: FinancialMovementCategory;
+}
+
+export interface RegisterHistoricalDebtPaymentParams {
+  complexId: string;
+  userId: string;
+  amount: number;
+  paymentMethod: FinancialPaymentMethod;
+  idempotencyKey: string;
+  operatorId: string;
+  notes?: string;
+}
+
+export interface CancelOperationParams {
+  complexId: string;
+  operationId: string;
+  operatorId: string;
+  policy: 'retain_deposit' | 'refund_deposit' | 'partial_refund';
+  refundAmount?: number;
+  refundPaymentMethod?: FinancialPaymentMethod;
+  idempotencyKey?: string;
+  notes?: string;
+}
+
+export interface OperationResult {
+  success: boolean;
+  operationId: string;
+  ticketCode: string;
+  paymentStatus: OperationPaymentStatus;
+  amountPending: number;
+  currentAccountDebtAmount: number;
+  movementId?: string | null;
+  movementIds?: string[];
+  alreadyProcessed?: boolean;
+}
+
+export interface PaymentRegistrationResult {
+  success: boolean;
+  operationId: string;
+  movementId: string | null;
+  ticketCode: string;
+  paymentStatus: OperationPaymentStatus;
+  amountPending: number;
+  currentAccountDebtAmount: number;
+  clearedCurrentAccountDebt: number;
+  alreadyProcessed?: boolean;
+}
+
+export interface HistoricalDebtPaymentResult {
+  success: boolean;
+  movementId: string;
+  ticketCode: string;
+  userId: string;
+  clearedDebt: number;
+  remainingDebt: number;
+  alreadyProcessed?: boolean;
+}
+
+export interface RegisterExpenseOperationParams {
+  complexId: string;
+  category: string;
+  categoryId?: string;
+  concept: string;
+  conceptId?: string;
+  supplierId?: string;
+  supplierName?: string;
+  amount: number;
+  payments: Array<{
+    amount: number;
+    paymentMethod: FinancialPaymentMethod;
+    notes?: string;
+  }>;
+  operatorId: string;
+  notes?: string;
+  idempotencyKey?: string;
+}

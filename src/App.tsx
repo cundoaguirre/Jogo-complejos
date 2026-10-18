@@ -3,9 +3,10 @@ import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from
 import { 
   LayoutDashboard, Users, Calendar, TrendingUp, TrendingDown, DollarSign, CalendarCheck, Percent, Clock, 
   Search, Bell, Menu, X, Phone, MapPin, Star, ChevronLeft, ChevronRight, ChevronDown, List, Plus, Sparkles,
-  Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
+  ArrowLeft, ArrowRight, Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
   Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, BarChart2, MoreVertical, FileText, Download,
-  MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle
+  MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle, AlertTriangle,
+  Coins, Receipt, CheckCircle2
 } from 'lucide-react';
 import { format, differenceInDays, isSameDay, isSameWeek, isSameMonth, parseISO, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -40,14 +41,28 @@ import {
   subscribeToVenueProfile,
   saveVenueProfileInFirestore,
   subscribeToTransactions,
-  settleFiadoTransaction
+  settleFiadoTransaction,
+  subscribeToOperations,
+  subscribeToFinancialMovements,
+  registerBookingPaymentInFirestore,
+  timeStringToMinutes,
+  intervalsOverlap,
+  resolveClientName,
+  resolveClientPhone,
+  subscribeToExpenseCategories,
+  subscribeToExpenseItems
 } from './lib/firestoreSync';
+import type { OperationDocument, FinancialMovementDocument, ProductCategory, Product, FinancialPaymentMethod } from './types';
 import { POSView } from './components/POSView';
 import { POSModal } from './components/POSModal';
 import { CatalogInventorySection } from './components/CatalogInventorySection';
 import { CuentasCorrientesSection } from './components/CuentasCorrientesSection';
 import { MostradorBottomSheet } from './components/MostradorBottomSheet';
 import { POSCartProvider } from './components/POSCartContext';
+import { TicketModal } from './components/TicketModal';
+import { PendingSettleModal } from './components/PendingSettleModal';
+import { CancelBookingModal } from './components/CancelBookingModal';
+import { DeleteBookingModal } from './components/DeleteBookingModal';
 
 // --- Components ---
 
@@ -593,7 +608,25 @@ const NotificationsModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () 
   );
 };
 
-const MatchDetailModal = ({ match, onClose, onUpdateStatus, onUserClick, onEdit, onPaymentUpdate }: { match: Match | null, onClose: () => void, onUpdateStatus?: (id: number | string, status: string) => void, onUserClick?: (id: number | string) => void, onEdit?: () => void, onPaymentUpdate?: () => void }) => {
+const MatchDetailModal = ({ 
+  match, 
+  onClose, 
+  onUpdateStatus, 
+  onUserClick, 
+  onEdit, 
+  onPaymentUpdate,
+  onCancelBooking,
+  onDeleteBooking
+}: { 
+  match: Match | null, 
+  onClose: () => void, 
+  onUpdateStatus?: (id: number | string, status: string) => void, 
+  onUserClick?: (id: number | string) => void, 
+  onEdit?: () => void, 
+  onPaymentUpdate?: () => void,
+  onCancelBooking?: (booking: Match) => void,
+  onDeleteBooking?: (booking: Match) => void
+}) => {
   const [showManualPayment, setShowManualPayment] = useState(false);
   const [manualAmount, setManualAmount] = useState('');
   const [isPaying, setIsPaying] = useState(false);
@@ -622,17 +655,33 @@ const MatchDetailModal = ({ match, onClose, onUpdateStatus, onUserClick, onEdit,
         className="bg-white w-full max-w-lg rounded-3xl overflow-hidden shadow-2xl max-h-[90vh] overflow-y-auto"
       >
         <div className="bg-white p-6 text-gray-900 relative border-b border-gray-100">
-          <button 
-            type="button" 
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onClose();
-            }} 
-            className="absolute top-4 right-4 bg-gray-100 text-gray-500 p-2 rounded-full hover:bg-gray-200 transition-colors"
-          >
-            <X size={20} />
-          </button>
+          <div className="absolute top-4 right-4 flex items-center gap-1">
+            {onDeleteBooking && (
+              <button 
+                type="button" 
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onDeleteBooking(match);
+                }} 
+                className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors cursor-pointer"
+                title="Eliminar reserva definitivamente"
+              >
+                <Trash2 size={18} />
+              </button>
+            )}
+            <button 
+              type="button" 
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onClose();
+              }} 
+              className="bg-gray-100 text-gray-500 p-2 rounded-full hover:bg-gray-200 transition-colors cursor-pointer"
+            >
+              <X size={20} />
+            </button>
+          </div>
           <div className="flex items-center gap-2 text-emerald-600 font-bold text-sm tracking-wider mb-2">
             <Calendar size={14} /> Reserva Confirmada
           </div>
@@ -702,13 +751,24 @@ const MatchDetailModal = ({ match, onClose, onUpdateStatus, onUserClick, onEdit,
                     }
                     setIsPaying(true);
                     const totalPrice = Number(match.price ?? match.price_total ?? 0);
+                    const currentPaid = Number(match.amount_paid ?? match.deposit ?? 0);
+                    const remaining = Math.max(0, totalPrice - currentPaid);
                     try {
-                      await updateBookingInFirestore(match.id, {
-                        deposit: totalPrice,
-                        amount_paid: totalPrice,
-                        paymentStatus: 'pagado',
-                        payment_status: 'paid'
-                      });
+                      if (remaining > 0) {
+                        await registerBookingPaymentInFirestore({
+                          bookingId: match.id,
+                          complexId: (match as any).complexId || (match as any).complejoId || 'B',
+                          amount: remaining,
+                          paymentMethod: 'cash',
+                          operatorId: auth.currentUser?.uid || 'pos_operator',
+                          notes: `Liquidación total reserva ${match.court_name || ''}`
+                        });
+                      } else {
+                        await updateBookingInFirestore(match.id, {
+                          paymentStatus: 'pagado',
+                          payment_status: 'paid'
+                        });
+                      }
                       if (onPaymentUpdate) onPaymentUpdate();
                     } catch (err) {
                       console.error('Error updating payment in Firestore:', err);
@@ -750,20 +810,17 @@ const MatchDetailModal = ({ match, onClose, onUpdateStatus, onUserClick, onEdit,
                       }
                       setIsPaying(true);
                       try {
-                        const currentPaid = Number(match.amount_paid ?? match.deposit ?? 0);
                         const addAmount = Number(manualAmount);
-                        const newPaid = currentPaid + addAmount;
-                        const totalPrice = Number(match.price ?? match.price_total ?? 0);
-                        const isFull = newPaid >= totalPrice && totalPrice > 0;
-                        const pStatus = isFull ? 'pagado' : (newPaid > 0 ? 'seña' : 'pendiente');
-                        const pStatusEn = isFull ? 'paid' : (newPaid > 0 ? 'partial' : 'pending');
-
-                        await updateBookingInFirestore(match.id, {
-                          deposit: newPaid,
-                          amount_paid: newPaid,
-                          paymentStatus: pStatus,
-                          payment_status: pStatusEn
-                        });
+                        if (addAmount > 0) {
+                          await registerBookingPaymentInFirestore({
+                            bookingId: match.id,
+                            complexId: (match as any).complexId || (match as any).complejoId || 'B',
+                            amount: addAmount,
+                            paymentMethod: 'cash',
+                            operatorId: auth.currentUser?.uid || 'pos_operator',
+                            notes: `Seña / cobro adicional reserva ${match.court_name || ''}`
+                          });
+                        }
                         setManualAmount('');
                         setShowManualPayment(false);
                         if (onPaymentUpdate) onPaymentUpdate();
@@ -840,21 +897,15 @@ const MatchDetailModal = ({ match, onClose, onUpdateStatus, onUserClick, onEdit,
           </div>
 
           <div className="flex gap-3 pt-4 border-t border-gray-100">
-            <button 
-              type="button"
-              onClick={async () => {
-                try {
-                  await deleteBookingInFirestore(match.id);
-                } catch (e) {
-                  console.warn('Error deleting booking in Firestore:', e);
-                }
-                if (onUpdateStatus) onUpdateStatus(match.id, 'cancelled');
-                onClose();
-              }}
-              className="flex-1 py-3 rounded-xl font-bold text-red-600 bg-red-50 hover:bg-red-100 transition-colors"
-            >
-              Cancelar
-            </button>
+            {onCancelBooking && (
+              <button 
+                type="button"
+                onClick={() => onCancelBooking(match)}
+                className="flex-1 py-3 rounded-xl font-bold text-white bg-red-600 hover:bg-red-700 transition-colors cursor-pointer shadow-sm shadow-red-600/20"
+              >
+                Cancelar reserva
+              </button>
+            )}
             <button type="button" 
               onClick={() => {
                 if (onEdit) onEdit();
@@ -1079,7 +1130,9 @@ const CreateMatchModal = ({
   onQuickAddUser, 
   initialData,
   complexId = 'complejo_central',
-  onNavigate
+  onNavigate,
+  onCancelBooking,
+  onDeleteBooking
 }: { 
   isOpen: boolean, 
   onClose: () => void, 
@@ -1089,9 +1142,20 @@ const CreateMatchModal = ({
   onQuickAddUser?: (user: any) => void, 
   initialData?: any,
   complexId?: string,
-  onNavigate?: (tab: NavTabId | string) => void
+  onNavigate?: (tab: NavTabId | string) => void,
+  onCancelBooking?: (booking: any) => void,
+  onDeleteBooking?: (booking: any) => void
 }) => {
-  // REGLA TAXATIVA: Formulario continuo en 1 solo paso compacto (sin Step 1 / Step 2)
+  // Proceso de Reserva en 2 Pasos (Paso 1: Datos de reserva / Paso 2: Registrar pago)
+  const [step, setStep] = useState<1 | 2>(1);
+  const [bookingPayments, setBookingPayments] = useState<Array<{
+    id: string;
+    method: 'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente';
+    amount: number | '';
+  }>>([
+    { id: 'bpay_1', method: 'Efectivo', amount: '' }
+  ]);
+
   const [data, setData] = useState<any>({ 
     court_id: '', 
     host_id: '', 
@@ -1116,6 +1180,8 @@ const CreateMatchModal = ({
   // Modal anidado para + Nuevo Cliente
   const [isAddingNewUser, setIsAddingNewUser] = useState(false);
   const [newUserForm, setNewUserForm] = useState({ name: '', phone: '', email: '', category: 'jugador' });
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Suscripciones en tiempo real a Firestore para horarios del complejo y turnos existentes
   useEffect(() => {
@@ -1216,6 +1282,21 @@ const CreateMatchModal = ({
     });
     setIsSelectUserOpen(false);
     setUserSearch('');
+    setStep(1);
+    if (initialAmountPaid > 0 && initialAmountPaid < courtPrice) {
+      setBookingPayments([
+        { id: `bpay_${Date.now()}_1`, method: 'Efectivo', amount: initialAmountPaid },
+        { id: `bpay_${Date.now()}_2`, method: 'Pendiente', amount: courtPrice - initialAmountPaid }
+      ]);
+    } else if (initialPaymentStatus === 'pending') {
+      setBookingPayments([
+        { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: courtPrice > 0 ? courtPrice : '' }
+      ]);
+    } else {
+      setBookingPayments([
+        { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: courtPrice > 0 ? courtPrice : '' }
+      ]);
+    }
   }, [isOpen, initialData, courts]);
 
   if (!isOpen) return null;
@@ -1224,7 +1305,7 @@ const CreateMatchModal = ({
   const priceTotal = Number(selectedCourt?.price_per_hour ?? selectedCourt?.price ?? 0);
 
   // 3. Hora: Desplegable con filtro reactivo de turnos ocupados
-  const getAvailableHours = () => {
+  const getAvailableHours = useCallback(() => {
     const defaultHours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
     let hoursRange: number[] = defaultHours;
 
@@ -1262,49 +1343,176 @@ const CreateMatchModal = ({
       }
     }
 
-    // Excluir automáticamente horarios confirmados o jugados para la cancha y fecha elegidas (los cancelados vuelven a estar disponibles)
-    const occupiedHours = new Set<string>();
-    if (data.court_id && data.date && existingBookings.length > 0) {
-      for (const b of existingBookings) {
-        if (!b) continue;
-        if (data.id && String(b.id) === String(data.id)) continue;
+    // Duración de la reserva que se está creando/editando (60 min)
+    const newDurationMin = 60;
 
-        const bStatus = String(b.status || '').toLowerCase();
-        if (bStatus === 'cancelado' || bStatus === 'cancelled') continue;
+    // Filtrar turnos activos que ocupan la cancha y fecha elegidas (los cancelados vuelven a estar disponibles)
+    const activeBookingsForCourt = (existingBookings || []).filter(b => {
+      if (!b) return false;
+      if (data.id && String(b.id) === String(data.id)) return false;
 
-        const sameCourt = String(b.court_id) === String(data.court_id) || 
-                          String(b.courtId) === String(data.court_id) ||
-                          (selectedCourt && (b.court_name === selectedCourt.name || b.courtName === selectedCourt.name));
-        if (!sameCourt) continue;
+      const bStatus = String(b.status || '').toLowerCase();
+      if (bStatus === 'cancelado' || bStatus === 'cancelled') return false;
 
-        const bDate = b.date || (b.start_time ? String(b.start_time).split('T')[0] : '');
-        if (bDate !== data.date) continue;
+      const sameCourt = String(b.court_id) === String(data.court_id) || 
+                        String(b.courtId) === String(data.court_id) ||
+                        (selectedCourt && (b.court_name === selectedCourt.name || b.courtName === selectedCourt.name));
+      if (!sameCourt) return false;
 
-        const bTime = b.startTime || (b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : '');
-        if (bTime) {
-          occupiedHours.add(bTime.substring(0, 5));
-        }
-      }
-    }
+      const bDate = b.date || (b.start_time ? String(b.start_time).split('T')[0] : '');
+      if (bDate !== data.date) return false;
+
+      return true;
+    });
 
     const result: string[] = [];
     for (const h of hoursRange) {
       const timeStr = h === 24 ? "00:00" : `${String(h % 24).padStart(2, '0')}:00`;
-      if (!occupiedHours.has(timeStr) || (data.time && data.time.substring(0, 5) === timeStr)) {
+      const slotStartMin = (h % 24) * 60;
+      const slotEndMin = slotStartMin + newDurationMin;
+
+      // Evaluar colisión real por solapamiento de intervalos [inicio, fin)
+      const hasCollision = activeBookingsForCourt.some(b => {
+        const bStartStr = b.startTime || (b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : '');
+        const bEndStr = b.endTime || (b.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : '');
+        if (!bStartStr) return false;
+
+        const bStartMin = timeStringToMinutes(bStartStr);
+        let bEndMin = bEndStr ? timeStringToMinutes(bEndStr) : bStartMin + 60;
+        return intervalsOverlap(slotStartMin, slotEndMin, bStartMin, bEndMin);
+      });
+
+      if (!hasCollision) {
         if (!result.includes(timeStr)) result.push(timeStr);
       }
     }
 
     return result;
-  };
+  }, [venue, data.date, data.court_id, data.id, existingBookings, selectedCourt]);
 
   const availableHours = getAvailableHours();
-  const displayHours = (data.time && !availableHours.includes(data.time)) 
-    ? [data.time, ...availableHours].sort() 
-    : availableHours;
+  const displayHours = availableHours;
 
-  // Guardado de la reserva
-  const handleSubmit = () => {
+  // Si cambia la cancha o la fecha y el horario previo quedó ocupado, actualizar al primer disponible
+  useEffect(() => {
+    if (data.date && data.court_id) {
+      const avail = getAvailableHours();
+      if (avail.length > 0 && data.time && !avail.includes(data.time)) {
+        if (!(data.id && initialData?.time === data.time)) {
+          setData((prev: any) => ({ ...prev, time: avail[0] }));
+        }
+      }
+    }
+  }, [data.date, data.court_id, getAvailableHours]);
+
+  // Cálculos reactivos de pagos mixtos para la reserva (Paso 2)
+  const totalAssignedBookingPayments = useMemo(() => {
+    return bookingPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  }, [bookingPayments]);
+
+  const bookingDiff = totalAssignedBookingPayments - priceTotal;
+  const isBookingSobra = priceTotal > 0 && bookingDiff > 0.01;
+  const isBookingFalta = priceTotal > 0 && bookingDiff < -0.01;
+  const bookingSobrante = Math.max(0, bookingDiff);
+  const bookingFaltante = Math.max(0, -bookingDiff);
+  const isBookingMathExact = priceTotal > 0 && Math.abs(bookingDiff) < 0.01;
+
+  const handleAddNewBookingPaymentMethod = (methodToUse?: 'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente') => {
+    const available: Array<'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente'> = ['Efectivo', 'Transferencia', 'Crédito', 'Pendiente'];
+    let selMethod = methodToUse;
+    if (!selMethod) {
+      selMethod = available.find(m => !bookingPayments.some(p => p.method === m)) || 'Transferencia';
+    }
+    const newAmt = bookingFaltante > 0 ? bookingFaltante : 0;
+    setBookingPayments(prev => [
+      ...prev,
+      { id: `bpay_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`, method: selMethod!, amount: newAmt }
+    ]);
+  };
+
+  const handleChangeBookingBlockMethod = (index: number, newMethod: 'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente') => {
+    setBookingPayments(prev => {
+      const copy = [...prev];
+      if (copy[index]) {
+        copy[index] = { ...copy[index], method: newMethod };
+      }
+      return copy;
+    });
+  };
+
+  const handleRemoveBookingPaymentBlock = (id: string) => {
+    if (bookingPayments.length <= 1) return;
+    setBookingPayments(prev => prev.filter(p => p.id !== id));
+  };
+
+  const handleAutocorrectBookingSobrante = () => {
+    if (bookingPayments.length === 1) {
+      setBookingPayments([{ ...bookingPayments[0], amount: priceTotal }]);
+    } else {
+      setBookingPayments(prev => {
+        const copy = [...prev];
+        const last = copy[copy.length - 1];
+        const curAmt = Number(last.amount) || 0;
+        copy[copy.length - 1] = { ...last, amount: Math.max(0, curAmt - bookingSobrante) };
+        return copy;
+      });
+    }
+  };
+
+  const handleProceedToPayment = () => {
+    setErrorMessage(null);
+    if (!data.host_id && !data.clientName) {
+      setErrorMessage('Por favor elegí o creá un cliente.');
+      return;
+    }
+    if (!data.date) {
+      setErrorMessage('Por favor seleccioná una fecha.');
+      return;
+    }
+    if (!data.time) {
+      setErrorMessage('Por favor seleccioná un horario.');
+      return;
+    }
+    if (!data.court_id) {
+      setErrorMessage('Por favor seleccioná una cancha.');
+      return;
+    }
+    const avail = getAvailableHours();
+    if (!avail.includes(data.time) && !(data.id && initialData?.time === data.time)) {
+      setErrorMessage('Este horario ya no está disponible. Elegí otro.');
+      return;
+    }
+
+    if (bookingPayments.length <= 1 && (bookingPayments[0]?.amount === '' || bookingPayments[0]?.amount === 0)) {
+      setBookingPayments([
+        { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: priceTotal }
+      ]);
+    }
+    setStep(2);
+  };
+
+  // Guardado de la reserva con validación robusta y mensaje claro ante colisiones
+  const handleSubmit = async () => {
+    setErrorMessage(null);
+    if (!data.time) {
+      setErrorMessage('Por favor elegí un horario.');
+      return;
+    }
+
+    const avail = getAvailableHours();
+    if (!avail.includes(data.time) && !(data.id && initialData?.time === data.time)) {
+      setErrorMessage('Este horario ya no está disponible. Elegí otro.');
+      return;
+    }
+
+    if (priceTotal > 0 && !isBookingMathExact) {
+      setErrorMessage(isBookingFalta
+        ? `Faltan $${bookingFaltante.toLocaleString()} por asignar para completar el total de la reserva ($${priceTotal.toLocaleString()}).`
+        : `Los importes asignados ($${totalAssignedBookingPayments.toLocaleString()}) superan el total de la reserva ($${priceTotal.toLocaleString()}).`
+      );
+      return;
+    }
+
     const selectedHost = users.find(u => String(u.id) === String(data.host_id));
     const clientName = selectedHost?.name || data.clientName || 'Cliente';
     const clientPhone = selectedHost?.phone || data.clientPhone || '';
@@ -1318,34 +1526,71 @@ const CreateMatchModal = ({
     const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000);
     const endTimeStr = `${String(endDateTime.getHours()).padStart(2, '0')}:${String(endDateTime.getMinutes()).padStart(2, '0')}`;
     const courtName = selectedCourt?.name || 'Cancha';
-    const deposit = data.payment_status === 'paid' ? priceTotal : (data.payment_status === 'partial' ? Number(data.amount_paid || 0) : 0);
 
-    onCreate({
-      ...data,
-      courtId: data.court_id,
-      courtName,
-      clientName,
-      userName: clientName,
-      clientPhone,
-      userPhone: clientPhone,
-      clientEmail,
-      userEmail: clientEmail,
-      userId: selectedHost?.id ? String(selectedHost.id) : '0',
-      date: data.date,
-      startTime: data.time,
-      endTime: endTimeStr,
-      start_time: startDateTime.toISOString(),
-      end_time: endDateTime.toISOString(),
-      durationMinutes: 60,
-      price: priceTotal,
-      price_total: priceTotal,
-      deposit,
-      amount_paid: deposit,
-      status: data.status || 'confirmado',
-      paymentStatus: data.payment_status === 'paid' ? 'pagado' : data.payment_status === 'partial' ? 'seña' : 'pendiente',
-      notes: data.notes || ''
-    });
-    onClose();
+    const paidAmount = bookingPayments
+      .filter(p => p.method !== 'Pendiente')
+      .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    const pendingAmount = bookingPayments
+      .filter(p => p.method === 'Pendiente')
+      .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+
+    const mapMethod = (m: string): FinancialPaymentMethod => {
+      const lower = m.toLowerCase();
+      if (lower.includes('transf') || lower === 'transfer') return 'transfer';
+      if (lower.includes('crédito') || lower.includes('tarjeta') || lower === 'credit') return 'credit';
+      return 'cash';
+    };
+
+    const paidPayments = bookingPayments
+      .filter(p => p.method !== 'Pendiente' && (Number(p.amount) || 0) > 0)
+      .map(p => ({
+        amount: Number(p.amount),
+        paymentMethod: mapMethod(p.method),
+        notes: `Cobro reserva (${p.method}) · ${clientName}`
+      }));
+
+    const paymentStatus = paidAmount >= priceTotal && priceTotal > 0 ? 'pagado' : (paidAmount > 0 ? 'seña' : 'pendiente');
+
+    setIsSubmitting(true);
+    try {
+      await onCreate({
+        ...data,
+        courtId: data.court_id,
+        courtName,
+        clientName,
+        userName: clientName,
+        clientPhone,
+        userPhone: clientPhone,
+        clientEmail,
+        userEmail: clientEmail,
+        userId: selectedHost?.id ? String(selectedHost.id) : '0',
+        date: data.date,
+        startTime: data.time,
+        endTime: endTimeStr,
+        start_time: startDateTime.toISOString(),
+        end_time: endDateTime.toISOString(),
+        durationMinutes: 60,
+        price: priceTotal,
+        price_total: priceTotal,
+        deposit: paidAmount,
+        amount_paid: paidAmount,
+        amountPending: pendingAmount,
+        payments: paidPayments,
+        status: (() => {
+          if (data.status === 'cancelado') return 'cancelado';
+          const now = new Date();
+          return endDateTime < now ? 'jugado' : 'confirmado';
+        })(),
+        paymentStatus,
+        notes: data.notes || ''
+      });
+      onClose();
+    } catch (err: any) {
+      console.error('Error al guardar la reserva:', err);
+      setErrorMessage(err?.message || 'Este horario ya no está disponible. Elegí otro.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   // Alta anidada de usuario sin desmontar el modal de reserva
@@ -1397,330 +1642,505 @@ const CreateMatchModal = ({
           onClick={(e) => e.stopPropagation()}
           className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl shadow-2xl p-4 sm:p-5 flex flex-col max-h-[92vh] border border-gray-100 dark:border-slate-800"
         >
-          {/* Cabecera Compacta */}
-          <div className="flex justify-between items-center pb-3 border-b border-gray-100 dark:border-slate-800 shrink-0">
-            <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white">
-              {data.id ? 'Editar Reserva' : 'Nueva Reserva'}
-            </h2>
-            <button 
-              type="button" 
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onClose();
-              }}
-              className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 p-1 cursor-pointer"
-            >
-              <X size={18} />
-            </button>
-          </div>
-
-          {/* Formulario Continuo en 1 Solo Paso Compacto */}
-          <div className="space-y-3 pt-3 overflow-y-auto pr-1 flex-1 text-xs sm:text-sm">
-            {/* 1. Cliente: Buscador con desplegable + Botón '+ Nuevo Cliente' */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider">
-                  Cliente *
-                </label>
-                <button 
-                  type="button"
-                  onClick={() => setIsAddingNewUser(true)}
-                  className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-md cursor-pointer border border-emerald-200/60 dark:border-emerald-800/40"
-                >
-                  <Plus size={11} strokeWidth={2.5} />
-                  <span>Nuevo Cliente</span>
-                </button>
+          {/* Cabecera con indicador de 2 Pasos */}
+          <div className="pb-3 border-b border-gray-100 dark:border-slate-800 shrink-0 space-y-2">
+            <div className="flex justify-between items-center">
+              <div>
+                <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                  <span>{data.id ? 'Editar Reserva' : 'Nueva Reserva'}</span>
+                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/40">
+                    Paso {step} de 2
+                  </span>
+                </h2>
+                <p className="text-[11px] text-gray-400">
+                  {step === 1 ? '1. Datos de cliente, fecha, horario y cancha' : '2. Registro de pagos y seña (idéntico a ventas)'}
+                </p>
               </div>
 
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setIsSelectUserOpen(!isSelectUserOpen)}
-                  className="w-full h-9.5 px-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-left flex justify-between items-center focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer"
-                >
-                  <span className={selectedUserName ? "text-gray-900 dark:text-white font-medium truncate" : "text-gray-400 truncate"}>
-                    {selectedUserName || "Buscar o seleccionar cliente..."}
-                  </span>
-                  <ChevronDown size={15} className="text-gray-400 shrink-0 ml-1" />
-                </button>
-
-                {isSelectUserOpen && (
-                  <div className="absolute z-20 w-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
-                    <div className="p-2 border-b border-gray-100 dark:border-slate-700 flex items-center bg-gray-50 dark:bg-slate-900/50">
-                      <Search size={14} className="text-gray-400 ml-1 shrink-0" />
-                      <input 
-                        type="text"
-                        placeholder="Buscar por nombre o teléfono..."
-                        className="w-full px-2 py-1 bg-transparent outline-none text-xs text-gray-900 dark:text-white"
-                        value={userSearch}
-                        onChange={e => setUserSearch(e.target.value)}
-                        autoFocus
-                      />
-                    </div>
-                    <div className="max-h-40 overflow-y-auto divide-y divide-gray-50 dark:divide-slate-700/50">
-                      {filteredUsers.map((u, uIdx) => (
-                        <div 
-                          key={`select-user-${u.id || uIdx}-${uIdx}`}
-                          onClick={() => {
-                            setData((prev: any) => ({
-                              ...prev,
-                              host_id: u.id,
-                              clientName: u.name,
-                              clientPhone: u.phone || '',
-                              clientEmail: u.email || ''
-                            }));
-                            setIsSelectUserOpen(false);
-                            setUserSearch('');
-                          }}
-                          className="p-2.5 hover:bg-gray-50 dark:hover:bg-slate-700/50 cursor-pointer flex items-center justify-between transition-colors"
-                        >
-                          <div className="min-w-0 pr-2">
-                            <span className="font-semibold text-gray-900 dark:text-white truncate block">{u.name}</span>
-                            {u.phone && <span className="text-[11px] text-gray-400 dark:text-slate-400 block">{u.phone}</span>}
-                          </div>
-                          {String(data.host_id) === String(u.id) && <Check size={14} className="text-emerald-500 shrink-0" />}
-                        </div>
-                      ))}
-                      {filteredUsers.length === 0 && (
-                        <div className="p-3 text-center text-xs text-gray-400 dark:text-slate-500">
-                          No se encontraron usuarios. Usa "+ Nuevo Cliente".
-                        </div>
-                      )}
-                    </div>
-                  </div>
+              <div className="flex items-center gap-1">
+                {data.id && onDeleteBooking && (
+                  <button 
+                    type="button" 
+                    onClick={() => onDeleteBooking(initialData || data)}
+                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                    title="Eliminar reserva definitivamente"
+                  >
+                    <Trash2 size={18} />
+                  </button>
                 )}
+                <button 
+                  type="button" 
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onClose();
+                  }}
+                  className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 p-1 cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
               </div>
             </div>
 
-            {/* 2 & 3. Fecha y Hora */}
-            <div className="grid grid-cols-2 gap-2.5">
+            {/* Selector de pasos visual */}
+            <div className="grid grid-cols-2 gap-1.5 p-1 bg-gray-100 dark:bg-slate-800 rounded-xl">
+              <button
+                type="button"
+                onClick={() => setStep(1)}
+                className={cn(
+                  "py-1 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer",
+                  step === 1
+                    ? "bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-xs"
+                    : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                )}
+              >
+                <span>1. Datos del Turno</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleProceedToPayment}
+                className={cn(
+                  "py-1 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer",
+                  step === 2
+                    ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-xs"
+                    : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
+                )}
+              >
+                <span>2. Registrar Pago</span>
+              </button>
+            </div>
+          </div>
+
+          {/* CUERPO DEL PASO 1: DATOS DEL TURNO */}
+          {step === 1 ? (
+            <div className="space-y-3 pt-3 overflow-y-auto pr-1 flex-1 text-xs sm:text-sm">
+              {/* 1. Cliente: Buscador con desplegable + Botón '+ Nuevo Cliente' */}
               <div>
-                <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                  Fecha *
-                </label>
-                <input 
-                  type="date" 
-                  value={data.date || ''}
-                  onChange={e => setData({ ...data, date: e.target.value })}
-                  className="w-full h-9.5 px-2.5 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500" 
-                />
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider">
+                    Cliente *
+                  </label>
+                  <button 
+                    type="button"
+                    onClick={() => setIsAddingNewUser(true)}
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-md cursor-pointer border border-emerald-200/60 dark:border-emerald-800/40"
+                  >
+                    <Plus size={11} strokeWidth={2.5} />
+                    <span>Nuevo Cliente</span>
+                  </button>
+                </div>
+
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setIsSelectUserOpen(!isSelectUserOpen)}
+                    className="w-full h-9.5 px-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-left flex justify-between items-center focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer"
+                  >
+                    <span className={selectedUserName ? "text-gray-900 dark:text-white font-medium truncate" : "text-gray-400 truncate"}>
+                      {selectedUserName || "Buscar o seleccionar cliente..."}
+                    </span>
+                    <ChevronDown size={15} className="text-gray-400 shrink-0 ml-1" />
+                  </button>
+
+                  {isSelectUserOpen && (
+                    <div className="absolute z-20 w-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
+                      <div className="p-2 border-b border-gray-100 dark:border-slate-700 flex items-center bg-gray-50 dark:bg-slate-900/50">
+                        <Search size={14} className="text-gray-400 ml-1 shrink-0" />
+                        <input 
+                          type="text"
+                          placeholder="Buscar por nombre o teléfono..."
+                          className="w-full px-2 py-1 bg-transparent outline-none text-xs text-gray-900 dark:text-white"
+                          value={userSearch}
+                          onChange={e => setUserSearch(e.target.value)}
+                          autoFocus
+                        />
+                      </div>
+                      <div className="max-h-40 overflow-y-auto divide-y divide-gray-50 dark:divide-slate-700/50">
+                        {filteredUsers.map((u, uIdx) => (
+                          <div 
+                            key={`select-user-${u.id || uIdx}-${uIdx}`}
+                            onClick={() => {
+                              setData((prev: any) => ({
+                                ...prev,
+                                host_id: u.id,
+                                clientName: u.name,
+                                clientPhone: u.phone || '',
+                                clientEmail: u.email || ''
+                              }));
+                              setIsSelectUserOpen(false);
+                              setUserSearch('');
+                            }}
+                            className="p-2.5 hover:bg-gray-50 dark:hover:bg-slate-700/50 cursor-pointer flex items-center justify-between transition-colors"
+                          >
+                            <div className="min-w-0 pr-2">
+                              <span className="font-semibold text-gray-900 dark:text-white truncate block">{u.name}</span>
+                              {u.phone && <span className="text-[11px] text-gray-400 dark:text-slate-400 block">{u.phone}</span>}
+                            </div>
+                            {String(data.host_id) === String(u.id) && <Check size={14} className="text-emerald-500 shrink-0" />}
+                          </div>
+                        ))}
+                        {filteredUsers.length === 0 && (
+                          <div className="p-3 text-center text-xs text-gray-400 dark:text-slate-500">
+                            No se encontraron usuarios. Usa "+ Nuevo Cliente".
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
 
+              {/* 2 & 3. Fecha y Hora */}
+              <div className="grid grid-cols-2 gap-2.5">
+                <div>
+                  <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                    Fecha *
+                  </label>
+                  <input 
+                    type="date" 
+                    value={data.date || ''}
+                    onChange={e => setData({ ...data, date: e.target.value })}
+                    className="w-full h-9.5 px-2.5 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500" 
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                    Hora *
+                  </label>
+                  <select 
+                    value={data.time || ''}
+                    onChange={e => setData({ ...data, time: e.target.value })}
+                    disabled={!data.date || displayHours.length === 0}
+                    className="w-full h-9.5 px-2 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50"
+                  >
+                    <option value="" disabled>
+                      {!data.date ? 'Elige fecha' : displayHours.length === 0 ? 'Sin horarios' : 'Seleccionar'}
+                    </option>
+                    {displayHours.map((time, tIdx) => (
+                      <option key={`opt-time-${time}-${tIdx}`} value={time}>
+                        {time} hs
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {/* 4. Cancha: Desplegable con formato [Nombre de Cancha] - $[Precio] */}
               <div>
                 <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                  Hora *
+                  Cancha *
                 </label>
-                <select 
-                  value={data.time || ''}
-                  onChange={e => setData({ ...data, time: e.target.value })}
-                  disabled={!data.date || displayHours.length === 0}
-                  className="w-full h-9.5 px-2 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50"
+                <select
+                  value={data.court_id ? String(data.court_id) : ''}
+                  onChange={e => {
+                    const newCourtId = e.target.value;
+                    const court = courts.find(c => String(c.id) === String(newCourtId));
+                    const newPrice = Number(court?.price_per_hour ?? court?.price ?? 0);
+                    setData((prev: any) => ({
+                      ...prev,
+                      court_id: newCourtId
+                    }));
+                    if (bookingPayments.length <= 1) {
+                      setBookingPayments([
+                        { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: newPrice }
+                      ]);
+                    }
+                  }}
+                  className="w-full h-9.5 px-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
                 >
-                  <option value="" disabled>
-                    {!data.date ? 'Elige fecha' : displayHours.length === 0 ? 'Sin horarios' : 'Seleccionar'}
-                  </option>
-                  {displayHours.map((time, tIdx) => (
-                    <option key={`opt-time-${time}-${tIdx}`} value={time}>
-                      {time} hs
+                  {courts.map((court, cIdx) => (
+                    <option key={`court-opt-${court.id || cIdx}`} value={String(court.id)}>
+                      {court.name} - ${Number(court.price_per_hour ?? court.price ?? 0).toLocaleString()}
                     </option>
                   ))}
                 </select>
               </div>
-            </div>
 
-            {/* 4. Cancha: Desplegable con formato [Nombre de Cancha] - $[Precio] */}
-            <div>
-              <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                Cancha *
-              </label>
-              <select
-                value={data.court_id ? String(data.court_id) : ''}
-                onChange={e => {
-                  const newCourtId = e.target.value;
-                  const court = courts.find(c => String(c.id) === String(newCourtId));
-                  const newPrice = Number(court?.price_per_hour ?? court?.price ?? 0);
-                  setData((prev: any) => {
-                    let newAmount = prev.amount_paid;
-                    if (prev.payment_status === 'partial') {
-                      newAmount = Math.round(newPrice * 0.1);
-                    } else if (prev.payment_status === 'paid') {
-                      newAmount = newPrice;
-                    }
-                    return {
-                      ...prev,
-                      court_id: newCourtId,
-                      amount_paid: newAmount
-                    };
-                  });
-                }}
-                className="w-full h-9.5 px-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
-              >
-                {courts.map((court, cIdx) => (
-                  <option key={`court-opt-${court.id || cIdx}`} value={String(court.id)}>
-                    {court.name} - ${Number(court.price_per_hour ?? court.price ?? 0).toLocaleString()}
-                  </option>
+              {/* 5. Notas u Observaciones */}
+              <div>
+                <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                  Notas u Observaciones (opcional)
+                </label>
+                <input 
+                  type="text"
+                  placeholder="Observaciones de la reserva..."
+                  value={data.notes || ''}
+                  onChange={e => setData({ ...data, notes: e.target.value })}
+                  className="w-full h-8.5 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              {/* Mensaje de error si falta algún dato */}
+              {errorMessage && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-xl text-red-700 dark:text-red-300 text-xs font-semibold flex items-center gap-2">
+                  <AlertTriangle size={16} className="shrink-0 text-red-600 dark:text-red-400" />
+                  <span>{errorMessage}</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* CUERPO DEL PASO 2: REGISTRAR EL PAGO (IDÉNTICO A VENTAS DE MOSTRADOR) */
+            <div className="space-y-3 pt-3 overflow-y-auto pr-1 flex-1 text-xs sm:text-sm">
+              {/* Tarjeta Resumen del Turno */}
+              <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 rounded-2xl border border-emerald-100 dark:border-emerald-800/50 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider block">
+                      Total a Pagar / Seña
+                    </span>
+                    <span className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white font-mono">
+                      ${priceTotal.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="text-right">
+                    <span className="text-xs font-bold text-gray-800 dark:text-slate-200 block">
+                      {selectedCourt?.name || 'Cancha'}
+                    </span>
+                    <span className="text-[11px] text-gray-500 dark:text-slate-400 font-mono">
+                      {data.date} · {data.time} hs
+                    </span>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-emerald-200/50 dark:border-emerald-800/40 flex items-center justify-between text-[11px] text-gray-600 dark:text-slate-300">
+                  <span>Cliente: <strong className="text-gray-900 dark:text-white">{selectedUserName || 'Cliente'}</strong></span>
+                  <span className="font-mono text-gray-500">
+                    Asignado: ${totalAssignedBookingPayments.toLocaleString()} / ${priceTotal.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+
+              {/* Botones de Atajos Rápidos */}
+              <div className="grid grid-cols-4 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBookingPayments([{ id: `bpay_${Date.now()}`, method: 'Efectivo', amount: priceTotal }]);
+                  }}
+                  className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-[11px] font-bold text-gray-700 dark:text-slate-300 transition-colors text-center cursor-pointer"
+                >
+                  100% Efectivo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBookingPayments([{ id: `bpay_${Date.now()}`, method: 'Transferencia', amount: priceTotal }]);
+                  }}
+                  className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-[11px] font-bold text-gray-700 dark:text-slate-300 transition-colors text-center cursor-pointer"
+                >
+                  100% Transf.
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const señaSugerida = Math.round(priceTotal * 0.1);
+                    setBookingPayments([
+                      { id: `bpay_${Date.now()}_1`, method: 'Transferencia', amount: señaSugerida },
+                      { id: `bpay_${Date.now()}_2`, method: 'Pendiente', amount: priceTotal - señaSugerida }
+                    ]);
+                  }}
+                  className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-[11px] font-bold text-emerald-600 dark:text-emerald-400 transition-colors text-center cursor-pointer"
+                >
+                  Seña 10%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBookingPayments([{ id: `bpay_${Date.now()}`, method: 'Pendiente', amount: priceTotal }]);
+                  }}
+                  className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-[11px] font-bold text-amber-600 dark:text-amber-400 transition-colors text-center cursor-pointer"
+                >
+                  100% Pendiente
+                </button>
+              </div>
+
+              {/* Filas de Medios de Pago */}
+              <div className="space-y-2">
+                {bookingPayments.map((p, idx) => (
+                  <div
+                    key={`booking-pay-row-${p.id}`}
+                    className="p-3 bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 shadow-2xs space-y-2"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1 flex-wrap">
+                        {(['Efectivo', 'Transferencia', 'Crédito', 'Pendiente'] as const).map((m) => {
+                          const isSelected = p.method === m;
+                          return (
+                            <button
+                              type="button"
+                              key={`b-pay-opt-${p.id}-${m}`}
+                              onClick={() => handleChangeBookingBlockMethod(idx, m)}
+                              className={cn(
+                                "px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer",
+                                isSelected
+                                  ? m === 'Pendiente'
+                                    ? "bg-amber-600 text-white"
+                                    : "bg-emerald-600 text-white"
+                                  : "bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 hover:bg-gray-200"
+                              )}
+                            >
+                              {m}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {bookingPayments.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveBookingPaymentBlock(p.id)}
+                          className="p-1 text-gray-400 hover:text-red-500 rounded-md cursor-pointer"
+                          title="Eliminar este medio de pago"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-bold">$</span>
+                      <input
+                        type="number"
+                        min={0}
+                        placeholder="0"
+                        value={p.amount}
+                        onChange={(e) => {
+                          const val = e.target.value === '' ? '' : Math.max(0, Number(e.target.value));
+                          setBookingPayments(prev => {
+                            const copy = [...prev];
+                            copy[idx] = { ...copy[idx], amount: val };
+                            return copy;
+                          });
+                        }}
+                        className="w-full h-9 pl-7 pr-3 rounded-lg bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 font-mono text-sm font-bold text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-emerald-500"
+                      />
+                    </div>
+                  </div>
                 ))}
-              </select>
-            </div>
-
-            {/* 5. Estado del Turno: Selector segmentado [Próximo] | [Jugado] | [Cancelado] */}
-            <div>
-              <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                Estado del Turno
-              </label>
-              <div className="grid grid-cols-3 gap-1.5 p-1 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200/70 dark:border-slate-700">
-                {[
-                  { id: 'confirmado', label: 'Próximo' },
-                  { id: 'jugado', label: 'Jugado' },
-                  { id: 'cancelado', label: 'Cancelado' }
-                ].map(st => {
-                  const isActive = (data.status || 'confirmado') === st.id;
-                  return (
-                    <button
-                      type="button"
-                      key={`status-tab-${st.id}`}
-                      onClick={() => setData({ ...data, status: st.id })}
-                      className={cn(
-                        "py-1.5 rounded-lg text-xs font-bold transition-all text-center cursor-pointer",
-                        isActive
-                          ? st.id === 'cancelado' 
-                            ? "bg-red-600 text-white shadow-xs" 
-                            : st.id === 'jugado' 
-                            ? "bg-emerald-600 text-white shadow-xs" 
-                            : "bg-blue-600 text-white shadow-xs"
-                          : "text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white"
-                      )}
-                    >
-                      {st.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* 6. Estado de Pago y Descuento Reactivo: [Seña] | [Pendiente] | [Pagado] */}
-            <div>
-              <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                Estado de Pago
-              </label>
-              <div className="grid grid-cols-3 gap-1.5 p-1 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200/70 dark:border-slate-700">
-                {[
-                  { id: 'partial', label: 'Seña' },
-                  { id: 'pending', label: 'Pendiente' },
-                  { id: 'paid', label: 'Pagado' }
-                ].map(pay => {
-                  const isActive = data.payment_status === pay.id;
-                  return (
-                    <button
-                      type="button"
-                      key={`pay-tab-${pay.id}`}
-                      onClick={() => {
-                        let newAmount = 0;
-                        if (pay.id === 'partial') {
-                          newAmount = Math.round(priceTotal * 0.1);
-                        } else if (pay.id === 'paid') {
-                          newAmount = priceTotal;
-                        }
-                        setData({
-                          ...data,
-                          payment_status: pay.id,
-                          amount_paid: newAmount
-                        });
-                      }}
-                      className={cn(
-                        "py-1.5 rounded-lg text-xs font-bold transition-all text-center cursor-pointer",
-                        isActive
-                          ? "bg-emerald-600 text-white shadow-xs"
-                          : "text-gray-600 dark:text-slate-400 hover:text-gray-900 dark:hover:text-white"
-                      )}
-                    >
-                      {pay.label}
-                    </button>
-                  );
-                })}
               </div>
 
-              {/* Campo Condicional de Seña con Cálculo Reactivo */}
-              {data.payment_status === 'partial' && (
-                <div className="mt-2 p-2.5 bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-800/40 rounded-xl space-y-1.5">
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-bold text-gray-700 dark:text-slate-300">Monto de Seña ($)</span>
-                    <span className="text-[10px] text-gray-400 font-mono">(Sugerido 10%: ${Math.round(priceTotal * 0.1).toLocaleString()})</span>
-                  </div>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 font-bold text-xs">$</span>
-                    <input 
-                      type="number"
-                      min={0}
-                      max={priceTotal}
-                      value={data.amount_paid ?? ''}
-                      onChange={e => {
-                        const val = Math.max(0, Number(e.target.value));
-                        setData({ ...data, amount_paid: val });
-                      }}
-                      className="w-full h-8.5 pl-7 pr-3 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg text-xs font-bold outline-none focus:ring-2 focus:ring-emerald-500"
-                      placeholder={`Ej: ${Math.round(priceTotal * 0.1)}`}
-                    />
-                  </div>
-                  <div className="flex justify-between items-center text-[11px] pt-0.5 text-gray-600 dark:text-slate-400">
-                    <span>Total: <strong className="font-mono text-gray-900 dark:text-white">${priceTotal.toLocaleString()}</strong></span>
-                    <span>Resta por pagar: <strong className="font-mono text-amber-600 dark:text-amber-400 font-bold">${Math.max(0, priceTotal - Number(data.amount_paid || 0)).toLocaleString()}</strong></span>
-                  </div>
+              {/* Botón para añadir otro medio si aún no se asignaron todos */}
+              {bookingPayments.length < 4 && (
+                <button
+                  type="button"
+                  onClick={() => handleAddNewBookingPaymentMethod()}
+                  className="w-full py-2 border border-dashed border-gray-300 dark:border-slate-700 hover:border-emerald-500 text-gray-500 dark:text-slate-400 hover:text-emerald-600 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Plus size={14} />
+                  <span>Añadir otro medio de pago</span>
+                </button>
+              )}
+
+              {/* Alerta de Descuadre (Falta / Sobra) */}
+              {!isBookingMathExact && priceTotal > 0 && (
+                <div className={cn(
+                  "p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between gap-2",
+                  isBookingFalta 
+                    ? "bg-amber-50 dark:bg-amber-950/40 border-amber-200 text-amber-800 dark:text-amber-300"
+                    : "bg-red-50 dark:bg-red-950/40 border-red-200 text-red-800 dark:text-red-300"
+                )}>
+                  <span>
+                    {isBookingFalta 
+                      ? `Faltan $${bookingFaltante.toLocaleString()} por asignar.` 
+                      : `Sobra $${bookingSobrante.toLocaleString()}.`}
+                  </span>
+                  {isBookingSobra && (
+                    <button
+                      type="button"
+                      onClick={handleAutocorrectBookingSobrante}
+                      className="px-2 py-0.5 rounded bg-red-600 text-white text-[11px] font-bold cursor-pointer hover:bg-red-700"
+                    >
+                      Ajustar
+                    </button>
+                  )}
+                  {isBookingFalta && (
+                    <button
+                      type="button"
+                      onClick={() => handleAddNewBookingPaymentMethod('Pendiente')}
+                      className="px-2 py-0.5 rounded bg-amber-600 text-white text-[11px] font-bold cursor-pointer hover:bg-amber-700"
+                    >
+                      + Dejar restante como pendiente
+                    </button>
+                  )}
                 </div>
               )}
 
-              {data.payment_status === 'paid' && (
-                <div className="mt-1.5 flex justify-between items-center text-[11px] px-1 text-gray-600 dark:text-slate-400">
-                  <span>Total: <strong className="font-mono text-gray-900 dark:text-white">${priceTotal.toLocaleString()}</strong></span>
-                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">Pagado total • Resta: $0</span>
-                </div>
-              )}
-
-              {data.payment_status === 'pending' && (
-                <div className="mt-1.5 flex justify-between items-center text-[11px] px-1 text-gray-600 dark:text-slate-400">
-                  <span>Total: <strong className="font-mono text-gray-900 dark:text-white">${priceTotal.toLocaleString()}</strong></span>
-                  <span>Resta por pagar: <strong className="font-mono text-red-600 dark:text-red-400 font-bold">${priceTotal.toLocaleString()}</strong></span>
+              {/* Mensaje de error si la validación falla */}
+              {errorMessage && (
+                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-xl text-red-700 dark:text-red-300 text-xs font-semibold flex items-center gap-2">
+                  <AlertTriangle size={16} className="shrink-0 text-red-600 dark:text-red-400" />
+                  <span>{errorMessage}</span>
                 </div>
               )}
             </div>
+          )}
 
-            {/* 7. Notas u Observaciones */}
-            <div>
-              <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                Notas u Observaciones
-              </label>
-              <input 
-                type="text"
-                placeholder="Observaciones de la reserva..."
-                value={data.notes || ''}
-                onChange={e => setData({ ...data, notes: e.target.value })}
-                className="w-full h-8.5 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-            </div>
-          </div>
+          {/* Botones de Acción al Pie para Paso 1 y Paso 2 */}
+          <div className="flex items-center justify-between gap-2.5 pt-3 mt-2 border-t border-gray-100 dark:border-slate-800 shrink-0">
+            {step === 1 ? (
+              <>
+                {data.id && onCancelBooking ? (
+                  <button 
+                    type="button" 
+                    onClick={() => onCancelBooking(initialData || data)}
+                    disabled={isSubmitting}
+                    className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-white bg-red-600 hover:bg-red-700 transition-colors shadow-sm shadow-red-600/20 cursor-pointer disabled:opacity-50"
+                  >
+                    Cancelar reserva
+                  </button>
+                ) : null}
 
-          {/* Botones de Acción al Pie */}
-          <div className="flex gap-2.5 pt-3 mt-2 border-t border-gray-100 dark:border-slate-800 shrink-0">
-            <button 
-              type="button" 
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onClose();
-              }}
-              className="flex-1 py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-            >
-              Cancelar
-            </button>
-            <button 
-              type="button" 
-              onClick={handleSubmit} 
-              disabled={(!data.host_id && !data.clientName) || !data.date || !data.time || !data.court_id}
-              className="flex-[1.5] py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md disabled:opacity-50 cursor-pointer"
-            >
-              Confirmar Reserva
-            </button>
+                <div className="flex items-center gap-2 flex-1 justify-end">
+                  <button 
+                    type="button" 
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onClose();
+                    }}
+                    disabled={isSubmitting}
+                    className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {data.id ? 'Cerrar' : 'Cancelar'}
+                  </button>
+                  <button 
+                    type="button" 
+                    onClick={handleProceedToPayment} 
+                    disabled={isSubmitting || (!data.host_id && !data.clientName) || !data.date || !data.time || !data.court_id}
+                    className="py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                  >
+                    <span>Continuar al Pago</span>
+                    <ArrowRight size={15} />
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <button 
+                  type="button" 
+                  onClick={() => {
+                    setErrorMessage(null);
+                    setStep(1);
+                  }}
+                  disabled={isSubmitting}
+                  className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <ArrowLeft size={15} />
+                  <span>Volver a Datos</span>
+                </button>
+
+                <button 
+                  type="button" 
+                  onClick={handleSubmit} 
+                  disabled={isSubmitting || (priceTotal > 0 && !isBookingMathExact)}
+                  className="py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Check size={16} />
+                  <span>{isSubmitting ? 'Guardando...' : (data.id ? 'Guardar Cambios' : 'Confirmar Reserva')}</span>
+                </button>
+              </>
+            )}
           </div>
         </motion.div>
       </div>
@@ -3465,12 +3885,15 @@ const ScheduleView = ({
     return { isOpenDay: true, timeSlots: slots };
   }, [selectedDateStr, venueHours]);
 
-  // Match lookup para una cancha y un slot específicos
+  // Match lookup para una cancha y un slot específicos (excluye estrictamente reservas canceladas)
   const getMatchForCourtSlot = (courtId: string | number, rawHour: number) => {
     const targetHour = rawHour % 24;
     const courtObj = courts.find(c => String(c.id) === String(courtId));
     return matches.find(m => {
       if (!m) return false;
+      const status = String(m.status || '').toLowerCase();
+      if (status === 'cancelado' || status === 'cancelled') return false;
+
       const sameCourt = String(m.court_id) === String(courtId) || 
                         String((m as any).courtId) === String(courtId) ||
                         (courtObj && m.court_name && m.court_name === courtObj.name) ||
@@ -3511,9 +3934,13 @@ const ScheduleView = ({
 
   const currentTimePos = getCurrentTimePosition();
 
-  // Partidos confirmados para el día seleccionado
+  // Partidos confirmados para el día seleccionado (excluye cancelados)
   const dayBookingsCount = useMemo(() => {
-    return matches.filter(m => (m.date === selectedDateStr || (m.start_time && m.start_time.startsWith(selectedDateStr))) && String(m.status).toLowerCase() !== 'cancelado').length;
+    return matches.filter(m => {
+      const st = String(m.status || '').toLowerCase();
+      if (st === 'cancelado' || st === 'cancelled') return false;
+      return (m.date === selectedDateStr || (m.start_time && m.start_time.startsWith(selectedDateStr)));
+    }).length;
   }, [matches, selectedDateStr]);
 
   // 4.1. Clasificación estricta de partidos para la Vista Lista
@@ -4964,23 +5391,28 @@ const FinanceView = ({
 }) => {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [activeSection, setActiveSection] = useState<'movements' | 'operations' | 'pendings'>('movements');
+
+  // Datasets
+  const [operations, setOperations] = useState<OperationDocument[]>([]);
+  const [financialMovements, setFinancialMovements] = useState<FinancialMovementDocument[]>([]);
+  const [legacyTransactions, setLegacyTransactions] = useState<any[]>([]);
   const [rawBookings, setRawBookings] = useState<any[]>([]);
-  const [rawFirestoreTxs, setRawFirestoreTxs] = useState<any[]>([]);
-  const [rawManualTxs, setRawManualTxs] = useState<Transaction[]>([]);
-  const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'year'>('today');
-  const [txFilterTab, setTxFilterTab] = useState<'all' | 'income' | 'expense' | 'fiados'>('all');
-  const [summaries, setSummaries] = useState<Record<string, { income: number, expense: number, balance: number, reservas: number, otros: number, pendiente: number, growth: number, ocupacion: number }>>({
-    today: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
-    week: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
-    month: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
-    year: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 }
-  });
-  
+  const [users, setUsers] = useState<any[]>([]);
+  const [venueProfile, setVenueProfile] = useState<any>(null);
+
+  // Filters
+  const [movementFilter, setMovementFilter] = useState<'all' | 'income' | 'expense'>('all');
+  const [operationFilter, setOperationFilter] = useState<'all' | 'income' | 'expense'>('all');
+
+  // Modals & Navigation
   const [isPOSModalOpen, setIsPOSModalOpen] = useState(false);
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [isSettlingLoading, setIsSettlingLoading] = useState(false);
-  const [selectedTx, setSelectedTx] = useState<Transaction | null>(null);
+  const [isManualTxModalOpen, setIsManualTxModalOpen] = useState(false);
+  const [ticketModalOperation, setTicketModalOperation] = useState<OperationDocument | null>(null);
+  const [ticketModalMovements, setTicketModalMovements] = useState<FinancialMovementDocument[]>([]);
+  const [settleModalTarget, setSettleModalTarget] = useState<any | null>(null);
+
+  // Manual transaction state
   const [newTx, setNewTx] = useState({
     type: 'income' as 'income' | 'expense',
     amount: '',
@@ -4990,892 +5422,1220 @@ const FinanceView = ({
   });
   const [customCategory, setCustomCategory] = useState('');
 
-  const handleSettleFiado = async (tx: Transaction, method: 'efectivo' | 'transferencia' | 'tarjeta') => {
-    setIsSettlingLoading(true);
-    try {
-      await settleFiadoTransaction({
-        transactionId: String(tx.id),
-        fiadoAmount: Number(tx.amount || 0),
-        newMethod: method,
-        userId: tx.userId ? String(tx.userId) : undefined
-      });
-      setSelectedTx(null);
-    } catch (err: any) {
-      alert(`Error al saldar fiado: ${err?.message || 'Error desconocido'}`);
-    } finally {
-      setIsSettlingLoading(false);
-    }
-  };
+  // Expense categories and items from Editar mostrador
+  const [expenseCategories, setExpenseCategories] = useState<ProductCategory[]>([]);
+  const [expenseItems, setExpenseItems] = useState<Product[]>([]);
+  const [selectedExpenseItemName, setSelectedExpenseItemName] = useState<string>('');
+  const [pendingFilter, setPendingFilter] = useState<'all' | 'receivable' | 'payable'>('all');
 
-  const periods = ['today', 'week', 'month'];
-
-  const changePeriod = (newPeriod: string) => {
-    setPeriod(newPeriod as any);
-  };
-
-  const handleDragEnd = (event: any, info: any) => {
-    const swipeThreshold = 50;
-    if (info.offset.x < -swipeThreshold) {
-      const currentIndex = periods.indexOf(period);
-      if (currentIndex < periods.length - 1) {
-        setPeriod(periods[currentIndex + 1] as any);
-      }
-    } else if (info.offset.x > swipeThreshold) {
-      const currentIndex = periods.indexOf(period);
-      if (currentIndex > 0) {
-        setPeriod(periods[currentIndex - 1] as any);
-      }
-    }
-  };
-
-  // Recomputes finance summaries and period transactions from real Firestore bookings & POS transactions
-  const recomputeFromData = useCallback((bookingsList: any[], manualTxsList: Transaction[], firestoreTxsList: any[], currentSelectedPeriod: string) => {
-    const today = new Date();
-    const todayStr = safeFormatDate(today, 'yyyy-MM-dd') || format(today, 'yyyy-MM-dd');
-
-    const checkInPeriod = (dateVal: string | Date | undefined, p: string) => {
-      if (!dateVal) return false;
-      const d = safeParseDate(dateVal);
-      if (!d) return false;
-      if (p === 'today') return isSameDay(d, today);
-      if (p === 'week') {
-        const diff = differenceInDays(today, d);
-        return diff >= 0 && diff <= 7;
-      }
-      if (p === 'month') return isSameMonth(d, today);
-      return false;
-    };
-
-    const newSummaries: any = {
-      today: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
-      week: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
-      month: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 },
-      year: { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 }
-    };
-
-    for (const p of ['today', 'week', 'month']) {
-      const pBookings = (bookingsList || []).filter(b => {
-        if (!b) return false;
-        const bDate = b.date || b.start_time || b.startTime;
-        return checkInPeriod(bDate, p) && b.status !== 'cancelled';
-      });
-
-      const pManual = (manualTxsList || []).filter(t => checkInPeriod(t.date, p));
-      
-      const pFirestore = (firestoreTxsList || []).filter(t => {
-        const tDate = t.date || (t.createdAt?.toDate ? format(t.createdAt.toDate(), 'yyyy-MM-dd') : null);
-        return checkInPeriod(tDate, p);
-      });
-
-      let reservasTotal = 0;
-      let pendienteTotal = 0;
-
-      pBookings.forEach(b => {
-        const price = Number(b.price || b.price_total || 0);
-        const paid = b.payment_status === 'paid' ? price : Number(b.amount_paid || b.deposit || 0);
-        reservasTotal += paid;
-        if (b.payment_status !== 'paid' && price > paid) {
-          pendienteTotal += (price - paid);
-        }
-      });
-
-      let firestoreIncome = 0;
-      let firestoreExpense = 0;
-
-      pFirestore.forEach(t => {
-        const amt = Number(t.total ?? t.amount ?? 0);
-        if (t.type === 'venta' || t.type === 'income') {
-          firestoreIncome += amt;
-          if (t.paymentStatus === 'fiado') {
-            const fiadoAmt = Array.isArray(t.payments) 
-              ? t.payments.filter((pay: any) => pay.method === 'fiado').reduce((s: number, pay: any) => s + Number(pay.amount || 0), 0)
-              : amt;
-            pendienteTotal += fiadoAmt;
-          }
-        } else if (t.type === 'expense' || t.type === 'gasto') {
-          firestoreExpense += amt;
-        }
-      });
-
-      const manualIncome = pManual.filter(t => t.type === 'income').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
-      const manualExpense = pManual.filter(t => t.type === 'expense').reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0) + firestoreExpense;
-
-      const otrosTotal = manualIncome + firestoreIncome;
-      const incomeTotal = reservasTotal + otrosTotal;
-      const balanceTotal = incomeTotal - manualExpense;
-      const slots = p === 'today' ? 12 : p === 'week' ? 84 : 360;
-      const ocupacionPct = pBookings.length > 0 ? Math.min(100, Math.round((pBookings.length / slots) * 100)) : 0;
-
-      newSummaries[p] = {
-        income: incomeTotal,
-        expense: manualExpense,
-        balance: balanceTotal,
-        reservas: reservasTotal,
-        otros: otrosTotal,
-        pendiente: pendienteTotal,
-        growth: 0,
-        ocupacion: ocupacionPct
-      };
-    }
-
-    setSummaries(newSummaries);
-
-    // Build transactions for selected period
-    const activePeriodBookings = (bookingsList || []).filter(b => {
-      if (!b) return false;
-      const bDate = b.date || b.start_time || b.startTime;
-      return checkInPeriod(bDate, currentSelectedPeriod) && b.status !== 'cancelled';
-    });
-
-    const bookingTxs: Transaction[] = activePeriodBookings.map(b => {
-      const price = Number(b.price || b.price_total || 0);
-      const paid = b.payment_status === 'paid' ? price : Number(b.amount_paid || b.deposit || 0);
-      return {
-        id: `${b.id}-booking`,
-        type: 'income',
-        category: `Alquiler de Cancha (${b.courtName || 'Cancha'})`,
-        amount: paid > 0 ? paid : price,
-        date: b.date || (b.start_time ? String(b.start_time).split('T')[0] : todayStr),
-        description: `Reserva: ${b.clientName || 'Cliente'}`
-      };
-    });
-
-    const activePeriodFirestore = (firestoreTxsList || []).filter(t => {
-      const tDate = t.date || (t.createdAt?.toDate ? format(t.createdAt.toDate(), 'yyyy-MM-dd') : null);
-      return checkInPeriod(tDate, currentSelectedPeriod);
-    });
-
-    const firestoreMappedTxs: Transaction[] = activePeriodFirestore.map(t => {
-      const isVenta = t.type === 'venta';
-      const isGasto = t.type === 'expense' || t.type === 'gasto';
-      const type = isVenta ? 'income' : (isGasto ? 'expense' : (t.type || 'income'));
-
-      let desc = t.description;
-      if (!desc && Array.isArray(t.items)) {
-        desc = t.items.map((it: any) => `${it.quantity}x ${it.name}`).join(', ');
-      }
-      if (!desc && t.userName) {
-        desc = `Cliente: ${t.userName}`;
-      }
-
-      return {
-        id: t.id,
-        type: type as any,
-        category: t.category || (isVenta ? 'Venta Mostrador' : 'Gasto'),
-        amount: Number(t.total ?? t.amount ?? 0),
-        date: t.date || (t.createdAt?.toDate ? format(t.createdAt.toDate(), 'yyyy-MM-dd') : todayStr),
-        description: desc || (isVenta ? 'Venta Mostrador' : 'Movimiento'),
-        payments: t.payments,
-        items: t.items,
-        userId: t.userId,
-        userName: t.userName,
-        paymentStatus: t.paymentStatus,
-        complejoId: t.complejoId
-      };
-    });
-
-    const activePeriodManual = (manualTxsList || []).filter(t => checkInPeriod(t.date, currentSelectedPeriod));
-
-    const merged = [...firestoreMappedTxs, ...activePeriodManual, ...bookingTxs];
-    const uniqueMap = new Map<string | number, Transaction>();
-    for (const item of merged) {
-      if (!uniqueMap.has(item.id)) {
-        uniqueMap.set(item.id, item);
-      }
-    }
-
-    const sorted = Array.from(uniqueMap.values()).sort((a, b) => {
-      const dateA = safeParseDate(a.date)?.getTime() || 0;
-      const dateB = safeParseDate(b.date)?.getTime() || 0;
-      return dateB - dateA;
-    });
-
-    setTransactions(sorted);
-  }, []);
-
-  // Subscribe to real Firestore bookings and transactions for complexId
+  // 1. Subscriptions to real collections
   useEffect(() => {
     if (!targetId) return;
 
-    const unsubBookings = subscribeToBookings(targetId, (bookingsList) => {
-      const list = Array.isArray(bookingsList) ? bookingsList : [];
-      setRawBookings(list);
+    const unsubOps = subscribeToOperations(targetId, (opList) => {
+      setOperations(Array.isArray(opList) ? opList : []);
+    });
+
+    const unsubMovs = subscribeToFinancialMovements(targetId, (movList) => {
+      setFinancialMovements(Array.isArray(movList) ? movList : []);
     });
 
     const unsubTxs = subscribeToTransactions(targetId, (txList) => {
-      const list = Array.isArray(txList) ? txList : [];
-      setRawFirestoreTxs(list);
+      setLegacyTransactions(Array.isArray(txList) ? txList : []);
+    });
+
+    const unsubBookings = subscribeToBookings(targetId, (bList) => {
+      setRawBookings(Array.isArray(bList) ? bList : []);
+    });
+
+    const unsubClients = subscribeToClients(targetId, (cList) => {
+      setUsers(Array.isArray(cList) ? cList : []);
+    });
+
+    const unsubVenue = subscribeToVenueProfile(targetId, (prof) => {
+      setVenueProfile(prof);
+    });
+
+    const unsubExpCats = subscribeToExpenseCategories(targetId, (cats) => {
+      setExpenseCategories(cats);
+    });
+
+    const unsubExpItems = subscribeToExpenseItems(targetId, (items) => {
+      setExpenseItems(items);
     });
 
     return () => {
-      unsubBookings();
+      unsubOps();
+      unsubMovs();
       unsubTxs();
+      unsubBookings();
+      unsubClients();
+      unsubVenue();
+      unsubExpCats();
+      unsubExpItems();
     };
   }, [targetId]);
 
-  // Recalculate when period or datasets change
-  useEffect(() => {
-    recomputeFromData(rawBookings, rawManualTxs, rawFirestoreTxs, period);
-  }, [period, rawBookings, rawManualTxs, rawFirestoreTxs, recomputeFromData]);
-
-  // Load manual transactions from localStorage if any
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem(`jogo_manual_txs_${targetId}`);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          setRawManualTxs(parsed);
-        }
+  // Map lookups para resolución rápida e íntegra de entidades cruzadas
+  const operationsMap = useMemo(() => {
+    const map = new Map<string, OperationDocument>();
+    operations.forEach(op => {
+      if (op.id) map.set(op.id, op);
+      if (op.bookingId) {
+        map.set(op.bookingId, op);
+        map.set(`${op.bookingId}-booking`, op);
       }
-    } catch (e) {
-      console.warn('Error loading manual transactions from storage:', e);
-    }
-  }, [targetId]);
+      if (op.ticketCode) map.set(op.ticketCode, op);
+      if (op.legacySaleId) map.set(op.legacySaleId, op);
+    });
+    return map;
+  }, [operations]);
 
-  const handleSaveTx = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newTx.amount) return;
-    
-    const categoryToSave = newTx.category === 'Otro' && customCategory 
-      ? customCategory 
-      : newTx.category;
+  const bookingsMap = useMemo(() => {
+    const map = new Map<string, any>();
+    rawBookings.forEach(b => {
+      if (b.id) {
+        map.set(String(b.id), b);
+        map.set(`${b.id}-booking`, b);
+      }
+    });
+    return map;
+  }, [rawBookings]);
 
-    const notesWithMethod = `${newTx.paymentMethod} - ${newTx.description}`;
-    const todayStr = new Date().toISOString().split('T')[0];
+  // Handle opening ticket from an operation or movement
+  const handleOpenTicket = (op: OperationDocument) => {
+    const associatedMovements = financialMovements.filter(m => 
+      m.operationId === op.id || 
+      (op.bookingId && (m.bookingId === op.bookingId || m.operationId === `${op.bookingId}-booking`)) ||
+      (op.id.endsWith('-booking') && (m.bookingId === op.id.replace('-booking', '') || m.operationId === op.id))
+    );
+    setTicketModalMovements(associatedMovements);
+    setTicketModalOperation(op);
+  };
 
-    const localTx: Transaction = {
-      id: `manual-${Date.now()}`,
-      type: newTx.type,
-      category: categoryToSave,
-      amount: Number(newTx.amount),
-      description: notesWithMethod,
-      date: todayStr
-    };
 
-    setRawManualTxs(prev => {
-      const updated = [localTx, ...prev];
-      try {
-        localStorage.setItem(`jogo_manual_txs_${targetId}`, JSON.stringify(updated));
-      } catch (err) {}
-      return updated;
+  // -------------------------------------------------------------------------
+  // 1. SECCIÓN MOVIMIENTOS: Libro diario de dinero real (ingresos y egresos individuales)
+  // -------------------------------------------------------------------------
+  const combinedMovements = useMemo(() => {
+    const list: Array<{
+      id: string;
+      date: Date;
+      flow: 'income' | 'expense';
+      category: string;
+      amount: number;
+      paymentMethod: string;
+      responsibleName: string;
+      operationId?: string | null;
+      ticketCode?: string;
+      notes?: string;
+      isLegacy?: boolean;
+    }> = [];
+
+    // 1.1 Movimientos reales de /financial_movements
+    financialMovements.forEach(m => {
+      const d = m.effectiveDate?.toDate 
+        ? m.effectiveDate.toDate() 
+        : (m.createdAt?.toDate ? m.createdAt.toDate() : (m.createdAt ? new Date(m.createdAt) : new Date()));
+      
+      const linkedDoc = (m.operationId ? operationsMap.get(m.operationId) : null) ||
+                        ((m as any).bookingId ? bookingsMap.get((m as any).bookingId) : null) ||
+                        (m.operationId ? bookingsMap.get(m.operationId) : null);
+      const resolvedName = resolveClientName(m, users, linkedDoc);
+
+      list.push({
+        id: m.id,
+        date: d,
+        flow: m.flow,
+        category: m.category === 'sale_collection' ? 'Cobro Venta Mostrador' :
+                  m.category === 'booking_deposit' ? 'Seña Alquiler Cancha' :
+                  m.category === 'booking_settlement' ? 'Liquidación Alquiler Cancha' :
+                  m.category === 'historical_debt_payment' ? 'Abono Deuda Histórica' :
+                  m.category === 'refund' ? 'Reintegro / Devolución' :
+                  m.category === 'expense_payment' ? 'Pago Gasto' : m.category,
+        amount: Number(m.amount || 0),
+        paymentMethod: m.paymentMethod,
+        responsibleName: resolvedName,
+        operationId: m.operationId,
+        ticketCode: m.ticketCode,
+        notes: m.notes
+      });
     });
 
-    // Save also to Firestore transactions
+    // 1.2 Movimientos históricos de /transactions que no tengan movimiento financiero duplicado
+    // Reconocimiento mediante operationId / legacySaleId / idempotencyKey
+    const modernOpIds = new Set(operations.map(o => o.id));
+    const modernLegacyIds = new Set(operations.filter(o => o.legacySaleId).map(o => o.legacySaleId));
+
+    legacyTransactions.forEach(t => {
+      // Si la transacción ya está migrada o representada en /operations, no duplicarla en movimientos
+      if (t.id && (modernOpIds.has(t.id) || modernLegacyIds.has(t.id))) {
+        return;
+      }
+      // Si ya hay un financial_movement con este ticketCode o ID, ignorar
+      if (t.id && financialMovements.some(m => m.id === t.id || m.operationId === t.id)) {
+        return;
+      }
+
+      const d = t.createdAt?.toDate ? t.createdAt.toDate() : (t.date ? safeParseDate(t.date) || new Date() : new Date());
+      const isVenta = t.type === 'venta' || t.type === 'income';
+      const isGasto = t.type === 'expense' || t.type === 'gasto' || t.type === 'egreso';
+      const flow: 'income' | 'expense' = isGasto ? 'expense' : 'income';
+      const resolvedName = resolveClientName(t, users);
+
+      // Si tiene desglose de pagos, agregar cada pago real individualmente
+      if (Array.isArray(t.payments) && t.payments.length > 0) {
+        t.payments.forEach((p: any, pIdx: number) => {
+          const pAmt = Number(p.amount || 0);
+          if (pAmt > 0 && p.method !== 'fiado') {
+            list.push({
+              id: `${t.id}_pay_${pIdx}`,
+              date: d,
+              flow,
+              category: t.category || (isVenta ? 'Venta Mostrador' : 'Gasto'),
+              amount: pAmt,
+              paymentMethod: p.method,
+              responsibleName: resolvedName,
+              operationId: t.id,
+              ticketCode: t.ticketCode || t.id?.slice(0, 8),
+              notes: t.description,
+              isLegacy: true
+            });
+          }
+        });
+      } else {
+        const amt = Number(t.total ?? t.amount ?? 0);
+        if (amt > 0 && t.paymentStatus !== 'fiado') {
+          list.push({
+            id: t.id,
+            date: d,
+            flow,
+            category: t.category || (isVenta ? 'Venta Mostrador' : 'Gasto'),
+            amount: amt,
+            paymentMethod: t.paymentMethod || 'Efectivo',
+            responsibleName: resolvedName,
+            operationId: t.id,
+            ticketCode: t.ticketCode || t.id?.slice(0, 8),
+            notes: t.description,
+            isLegacy: true
+          });
+        }
+      }
+    });
+
+    // 1.3 Señas históricas de /bookings que no tengan movimiento financiero registrado en /financial_movements
+    const seenBookingMovs = new Set(
+      financialMovements
+        .filter(m => m.bookingId || m.operationId?.endsWith('-booking'))
+        .map(m => String(m.bookingId || m.operationId?.replace('-booking', '')))
+    );
+
+    rawBookings.forEach(b => {
+      if (!b) return;
+      const bStatus = String(b.status || '').toLowerCase();
+      if (bStatus === 'cancelado' || bStatus === 'cancelled') return;
+      if (seenBookingMovs.has(String(b.id))) return;
+
+      const depositAmt = Number(b.amount_paid ?? b.deposit ?? 0);
+      if (depositAmt > 0) {
+        const d = b.date ? safeParseDate(b.date) || new Date() : (b.start_time ? safeParseDate(b.start_time) || new Date() : new Date());
+        const resolvedName = resolveClientName(b, users);
+        list.push({
+          id: `${b.id}_deposit_legacy`,
+          date: d,
+          flow: 'income',
+          category: 'Seña Alquiler Cancha',
+          amount: depositAmt,
+          paymentMethod: 'Efectivo',
+          responsibleName: resolvedName,
+          operationId: `${b.id}-booking`,
+          ticketCode: `B-${String(b.id).slice(0, 6).toUpperCase()}`,
+          notes: `Seña reserva ${b.courtName || b.court_name || 'Cancha'}`,
+          isLegacy: true
+        });
+      }
+    });
+
+    // Ordenar de más reciente a más antiguo
+    return list.sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [financialMovements, operations, legacyTransactions, rawBookings, users, operationsMap, bookingsMap]);
+
+  const filteredMovements = useMemo(() => {
+    return combinedMovements.filter(m => {
+      if (movementFilter === 'income') return m.flow === 'income';
+      if (movementFilter === 'expense') return m.flow === 'expense';
+      return true; // 'all'
+    });
+  }, [combinedMovements, movementFilter]);
+
+  // -------------------------------------------------------------------------
+  // 2. SECCIÓN OPERACIONES: Vista comercial unificada (1 fila por venta/reserva)
+  // -------------------------------------------------------------------------
+  const combinedOperations = useMemo(() => {
+    const list: Array<{
+      id: string;
+      ticketCode: string;
+      date: Date;
+      concept: string;
+      clientName: string;
+      contractualAmount: number;
+      totalCollected: number;
+      amountPending: number;
+      paymentStatus: string;
+      isExpense?: boolean;
+      originalDoc?: OperationDocument;
+      isLegacy?: boolean;
+    }> = [];
+
+    const processedOpIds = new Set<string>();
+    const processedLegacyIds = new Set<string>();
+
+    // 2.1 Operaciones nuevas de /operations
+    operations.forEach(op => {
+      processedOpIds.add(op.id);
+      if (op.legacySaleId) processedLegacyIds.add(op.legacySaleId);
+
+      const d = op.createdAt?.toDate 
+        ? op.createdAt.toDate() 
+        : (op.createdAt ? new Date(op.createdAt) : new Date());
+
+      let concept = 'Venta Mostrador';
+      if (op.operationType === 'court_booking' || op.operationType === 'booking') concept = op.notes || 'Alquiler de Cancha';
+      else if (op.operationType === 'expense') concept = op.notes || 'Gasto Operativo';
+      else if (op.operationType === 'purchase') concept = op.notes || 'Compra de Mercadería';
+      else if (op.operationType === 'historical_debt_settlement') concept = 'Abono Deuda Histórica';
+      else if (Array.isArray(op.items) && op.items.length > 0) {
+        concept = op.items.map(it => `${it.quantity}x ${it.name}`).join(', ');
+      }
+
+      const linkedDoc = (op.bookingId ? bookingsMap.get(op.bookingId) : null) ||
+                        bookingsMap.get(op.id.replace('-booking', ''));
+      const resolvedName = resolveClientName(op, users, linkedDoc);
+      const isExp = op.operationType === 'expense' || op.operationType === 'purchase';
+
+      list.push({
+        id: op.id,
+        ticketCode: op.ticketCode || op.id.slice(0, 8).toUpperCase(),
+        date: d,
+        concept,
+        clientName: resolvedName,
+        contractualAmount: Number(op.contractualAmount || 0),
+        totalCollected: Number(op.totalCollected || 0),
+        amountPending: Number(op.amountPending || 0),
+        paymentStatus: op.paymentStatus,
+        isExpense: isExp,
+        originalDoc: {
+          ...op,
+          userName: resolvedName,
+          clientName: resolvedName
+        }
+      });
+    });
+
+    // 2.2 Ventas históricas de /transactions sin duplicar
+    legacyTransactions.forEach(t => {
+      if (processedOpIds.has(t.id) || processedLegacyIds.has(t.id)) return;
+
+      const d = t.createdAt?.toDate ? t.createdAt.toDate() : (t.date ? safeParseDate(t.date) || new Date() : new Date());
+      const isGasto = t.type === 'expense' || t.type === 'gasto' || t.type === 'egreso' || t.type === 'purchase' || t.type === 'compra';
+      const tot = Number(t.total ?? t.amount ?? 0);
+      
+      let collected = tot;
+      let pending = 0;
+      let status = 'paid';
+
+      if (t.paymentStatus === 'fiado') {
+        const fiadoAmt = Array.isArray(t.payments)
+          ? t.payments.filter((p: any) => p.method === 'fiado').reduce((s: number, p: any) => s + Number(p.amount || 0), 0)
+          : tot;
+        pending = fiadoAmt;
+        collected = Math.max(0, tot - pending);
+        status = collected > 0 ? 'partial' : 'unpaid';
+      }
+
+      let concept = t.category || (isGasto ? 'Gasto' : 'Venta Mostrador');
+      if (Array.isArray(t.items) && t.items.length > 0) {
+        concept = t.items.map((it: any) => `${it.quantity}x ${it.name}`).join(', ');
+      }
+
+      const resolvedName = resolveClientName(t, users);
+      const resolvedPhone = resolveClientPhone(t, users);
+
+      // Convertir a estructura virtual para visualización y ticket
+      const virtualOp: OperationDocument = {
+        id: t.id,
+        complexId: targetId,
+        ticketCode: t.ticketCode || t.id.slice(0, 8).toUpperCase(),
+        operationType: isGasto ? 'expense' : 'pos_sale',
+        responsibleType: t.userId ? 'user' : 'anonymous',
+        userId: t.userId || null,
+        clientId: t.userId || null,
+        userName: resolvedName,
+        clientName: resolvedName,
+        userPhone: resolvedPhone,
+        clientPhone: resolvedPhone,
+        contractualAmount: tot,
+        totalCollected: collected,
+        totalRefunded: 0,
+        netCollected: collected,
+        retainedAmount: 0,
+        amountPending: pending,
+        paymentStatus: status as any,
+        currentAccountAssigned: pending > 0,
+        currentAccountDebtAmount: pending,
+        items: Array.isArray(t.items) ? t.items : undefined,
+        notes: t.description || '',
+        createdAt: d,
+        updatedAt: d,
+        createdBy: 'histórico'
+      };
+
+      list.push({
+        id: t.id,
+        ticketCode: virtualOp.ticketCode,
+        date: d,
+        concept,
+        clientName: resolvedName,
+        contractualAmount: tot,
+        totalCollected: collected,
+        amountPending: pending,
+        paymentStatus: status,
+        isExpense: isGasto,
+        originalDoc: virtualOp,
+        isLegacy: true
+      });
+    });
+
+    // 2.3 Reservas de turnos de /bookings (si no tienen ya una operación creada)
+    const existingBookingIds = new Set(operations.filter(o => o.bookingId).map(o => o.bookingId));
+    rawBookings.forEach(b => {
+      if (existingBookingIds.has(b.id) || b.status === 'cancelled') return;
+
+      const d = b.date ? safeParseDate(b.date) || new Date() : (b.start_time ? safeParseDate(b.start_time) || new Date() : new Date());
+      const tot = Number(b.price || b.price_total || 0);
+      const paid = b.payment_status === 'paid' ? tot : Number(b.amount_paid || b.deposit || 0);
+      const pending = Math.max(0, tot - paid);
+      const status = paid >= tot ? 'paid' : (paid > 0 ? 'partial' : 'unpaid');
+
+      const resolvedName = resolveClientName(b, users);
+      const resolvedPhone = resolveClientPhone(b, users);
+
+      const virtualBookingOp: OperationDocument = {
+        id: `${b.id}-booking`,
+        complexId: targetId,
+        ticketCode: `B-${b.id.slice(0, 6).toUpperCase()}`,
+        operationType: 'court_booking',
+        bookingId: b.id,
+        responsibleType: b.userId ? 'user' : 'anonymous',
+        userId: b.userId || null,
+        clientId: b.userId || null,
+        userName: resolvedName,
+        clientName: resolvedName,
+        userPhone: resolvedPhone,
+        clientPhone: resolvedPhone,
+        contractualAmount: tot,
+        totalCollected: paid,
+        totalRefunded: 0,
+        netCollected: paid,
+        retainedAmount: 0,
+        amountPending: pending,
+        paymentStatus: status as any,
+        currentAccountAssigned: false,
+        currentAccountDebtAmount: 0,
+        notes: `Reserva Cancha: ${b.courtName || 'Cancha'}`,
+        createdAt: d,
+        updatedAt: d,
+        createdBy: 'sistema'
+      };
+
+      list.push({
+        id: `${b.id}-booking`,
+        ticketCode: virtualBookingOp.ticketCode,
+        date: d,
+        concept: `Alquiler Cancha (${b.courtName || 'Cancha'})`,
+        clientName: resolvedName,
+        contractualAmount: tot,
+        totalCollected: paid,
+        amountPending: pending,
+        paymentStatus: status,
+        originalDoc: virtualBookingOp
+      });
+    });
+
+    return list.sort((a, b) => b.date.getTime() - a.date.getTime());
+  }, [operations, legacyTransactions, rawBookings, targetId, users, bookingsMap]);
+
+  const filteredOperations = useMemo(() => {
+    return combinedOperations.filter(op => {
+      if (operationFilter === 'income') return !op.isExpense;
+      if (operationFilter === 'expense') return Boolean(op.isExpense);
+      return true; // 'all'
+    });
+  }, [combinedOperations, operationFilter]);
+
+  const handleOpenTicketFromMovement = (opId?: string | null) => {
+    if (!opId) return;
+    const foundInCombined = combinedOperations.find(o => o.id === opId)?.originalDoc;
+    if (foundInCombined) {
+      handleOpenTicket(foundInCombined);
+      return;
+    }
+    const foundInDirect = operations.find(o => o.id === opId);
+    if (foundInDirect) {
+      handleOpenTicket(foundInDirect);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // 3. SECCIÓN PENDIENTES: Saldos por cobrar (ingresos) y por pagar (egresos/compras)
+  // -------------------------------------------------------------------------
+  const pendingDebts = useMemo(() => {
+    return combinedOperations
+      .filter(op => op.amountPending > 0 && !op.paymentStatus?.startsWith('cancelled'))
+      .map(op => ({
+        id: op.id,
+        ticketCode: op.ticketCode,
+        date: op.date,
+        concept: op.concept,
+        clientName: op.clientName,
+        contractualAmount: op.contractualAmount,
+        totalCollected: op.totalCollected,
+        amountPending: op.amountPending,
+        originalDoc: op.originalDoc,
+        isLegacy: op.isLegacy,
+        isExpense: Boolean(op.isExpense || op.originalDoc?.operationType === 'expense' || op.originalDoc?.operationType === 'purchase'),
+        userId: op.originalDoc?.userId || null,
+        bookingId: op.originalDoc?.bookingId || null
+      }));
+  }, [combinedOperations]);
+
+  const filteredPendingDebts = useMemo(() => {
+    return pendingDebts.filter(d => {
+      if (pendingFilter === 'receivable') return !d.isExpense;
+      if (pendingFilter === 'payable') return Boolean(d.isExpense);
+      return true;
+    });
+  }, [pendingDebts, pendingFilter]);
+
+  // Handle manual transaction submission (Gastos como egresos e Ingresos manuales)
+  const handleSaveTx = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const amountVal = Number(newTx.amount);
+    if (isNaN(amountVal) || amountVal <= 0) return;
+    
+    const isGasto = newTx.type === 'expense';
+    const categoryToSave = newTx.category === 'Otro' && customCategory ? customCategory.trim() : newTx.category;
+    const conceptToSave = selectedExpenseItemName ? selectedExpenseItemName : (newTx.description?.trim() || categoryToSave);
+    const notesWithMethod = `${newTx.paymentMethod} - ${newTx.description || conceptToSave}`.trim();
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    const paymentMethodMap: Record<string, FinancialPaymentMethod> = {
+      'Efectivo': 'cash',
+      'Transferencia': 'transfer',
+      'Tarjeta': 'credit',
+      'MercadoPago': 'mercado_pago'
+    };
+    const mappedPaymentMethod: FinancialPaymentMethod = paymentMethodMap[newTx.paymentMethod] || 'cash';
+
     try {
+      const operationId = `manual_op_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const movId = `manual_mov_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      const currentYear = new Date().getFullYear().toString().slice(-2);
+      const ticketCode = `${isGasto ? 'E' : 'I'}-${currentYear}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+      // 1. Crear documento en /operations
+      await addDoc(collection(db, 'operations'), {
+        id: operationId,
+        complexId: targetId,
+        complejoId: targetId,
+        ticketCode,
+        operationType: isGasto ? 'expense' : 'pos_sale',
+        responsibleType: isGasto ? 'supplier' : 'anonymous',
+        userName: isGasto ? (conceptToSave || categoryToSave) : 'Cliente Mostrador',
+        clientName: isGasto ? (conceptToSave || categoryToSave) : 'Cliente Mostrador',
+        contractualAmount: amountVal,
+        totalCollected: amountVal,
+        totalRefunded: 0,
+        netCollected: amountVal,
+        retainedAmount: 0,
+        amountPending: 0,
+        paymentStatus: 'paid',
+        currentAccountAssigned: false,
+        currentAccountDebtAmount: 0,
+        items: [{
+          id: operationId,
+          name: conceptToSave,
+          quantity: 1,
+          unitPrice: amountVal,
+          subtotal: amountVal
+        }],
+        notes: notesWithMethod,
+        metadata: {
+          category: categoryToSave,
+          isManual: true
+        },
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: 'administrador'
+      });
+
+      // 2. Crear documento en /financial_movements
+      await addDoc(collection(db, 'financial_movements'), {
+        id: movId,
+        complexId: targetId,
+        complejoId: targetId,
+        operationId,
+        ticketCode,
+        idempotencyKey: `manual_${operationId}`,
+        flow: isGasto ? 'expense' : 'income',
+        category: isGasto ? 'expense_payment' : 'sale_collection',
+        amount: amountVal,
+        paymentMethod: mappedPaymentMethod,
+        effectiveDate: serverTimestamp(),
+        responsibleName: isGasto ? categoryToSave : 'Mostrador',
+        userName: isGasto ? categoryToSave : 'Mostrador',
+        clientName: isGasto ? categoryToSave : 'Cliente Mostrador',
+        clearedCurrentAccountDebt: 0,
+        notes: notesWithMethod,
+        operatorId: 'administrador',
+        createdAt: serverTimestamp()
+      });
+
+      // 3. Guardar en transactions para compatibilidad histórica
       await addDoc(collection(db, 'transactions'), {
         complejoId: targetId,
         type: newTx.type,
         category: categoryToSave,
-        amount: Number(newTx.amount),
-        total: Number(newTx.amount),
+        amount: amountVal,
+        total: amountVal,
         description: notesWithMethod,
         date: todayStr,
         paymentMethod: newTx.paymentMethod,
+        ticketCode,
+        operationId,
         createdAt: serverTimestamp()
       });
     } catch (err) {
       console.warn('Error saving tx to Firestore:', err);
     }
     
-    setIsModalOpen(false);
-    setNewTx({ type: 'income', amount: '', category: 'Alquiler de Cancha', paymentMethod: 'MercadoPago', description: '' });
+    setIsManualTxModalOpen(false);
+    setNewTx({ type: 'income', amount: '', category: 'Alquiler de Cancha', paymentMethod: 'Transferencia', description: '' });
     setCustomCategory('');
+    setSelectedExpenseItemName('');
   };
 
-  const filteredTransactions = transactions.filter(t => {
-    if (txFilterTab === 'all') return true;
-    if (txFilterTab === 'income') return t.type === 'income';
-    if (txFilterTab === 'expense') return t.type === 'expense';
-    if (txFilterTab === 'fiados') {
-      return t.paymentStatus === 'fiado' || (Array.isArray(t.payments) && t.payments.some((p: any) => p.method === 'fiado'));
-    }
-    return true;
-  });
+  // -------------------------------------------------------------------------
+  // Métricas Financieras (Separación de Dimensión Económica y Dimensión de Caja)
+  // -------------------------------------------------------------------------
+  const financialSummary = useMemo(() => {
+    // Dimensión Económica: Operaciones comerciales (Ventas + Reservas vs Gastos + Compras)
+    const validOperations = combinedOperations.filter(op => !op.paymentStatus?.startsWith('cancelled'));
+
+    const economicIncome = validOperations
+      .filter(op => !op.isExpense)
+      .reduce((sum, op) => sum + op.contractualAmount, 0);
+
+    const economicExpense = validOperations
+      .filter(op => Boolean(op.isExpense))
+      .reduce((sum, op) => sum + op.contractualAmount, 0);
+
+    const netResult = economicIncome - economicExpense;
+
+    // Dimensión de Caja: Flujo de dinero efectivamente cobrado o pagado
+    const cashInflows = combinedMovements
+      .filter(m => m.flow === 'income')
+      .reduce((sum, m) => sum + m.amount, 0);
+
+    const cashOutflows = combinedMovements
+      .filter(m => m.flow === 'expense')
+      .reduce((sum, m) => sum + m.amount, 0);
+
+    const cashAvailable = cashInflows - cashOutflows;
+
+    // Saldos Pendientes (por cobrar a clientes y por pagar a proveedores)
+    const pendingToCollect = pendingDebts
+      .filter(d => !d.isExpense)
+      .reduce((sum, d) => sum + d.amountPending, 0);
+
+    const pendingToPay = pendingDebts
+      .filter(d => Boolean(d.isExpense))
+      .reduce((sum, d) => sum + d.amountPending, 0);
+
+    return {
+      economicIncome,
+      economicExpense,
+      netResult,
+      cashInflows,
+      cashOutflows,
+      cashAvailable,
+      pendingToCollect,
+      pendingToPay
+    };
+  }, [combinedOperations, combinedMovements, pendingDebts]);
 
   return (
     <div className="space-y-4 pb-24">
-      {/* 1. Cabecera (Resumen Financiero - Tarjeta Principal) */}
-          <div className="px-1 md:px-0">
-            <div className="flex justify-between items-end mb-0">
-              <div className="pb-3 pl-1 md:pl-2">
-                <h2 className="text-base sm:text-lg md:text-xl font-bold text-gray-900 whitespace-nowrap tracking-tight">
-                  {period === 'today' ? '¿Cómo te fue hoy?' : period === 'week' ? '¿Cómo te fue esta semana?' : '¿Cómo te fue este mes?'}
-                </h2>
-              </div>
-              <div className="flex items-end relative z-10">
-                {['today', 'week', 'month'].map((p, pIdx) => (
-                  <button type="button"
-                    key={`fin-period-btn-${p}-${pIdx}`}
-                    onClick={() => changePeriod(p)}
-                    className={cn(
-                      "px-3 sm:px-4 md:px-6 py-2 sm:py-3 text-xs sm:text-sm font-bold rounded-t-2xl transition-all relative",
-                      period === p 
-                        ? "bg-white text-emerald-600 shadow-[0_-4px_10px_-4px_rgba(0,0,0,0.1)]" 
-                        : "bg-transparent text-gray-400 hover:text-gray-600"
-                    )}
-                  >
-                    {p === 'today' ? 'Hoy' : p === 'week' ? 'Sem' : 'Mes'}
-                  </button>
-                ))}
-              </div>
+      {/* 1. Header con Resumen General */}
+      <div className="px-1 md:px-0">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-gray-100 dark:border-slate-800 p-6">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 dark:border-slate-800 pb-5">
+            <div>
+              <h2 className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white tracking-tight flex items-center gap-2">
+                <DollarSign className="text-emerald-600" size={26} />
+                <span>Finanzas y Caja</span>
+              </h2>
+              <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">
+                Control de ingresos y egresos de caja, operaciones comerciales y saldos por cobrar.
+              </p>
             </div>
 
-            <div className="bg-white rounded-3xl rounded-tr-none md:rounded-tr-3xl shadow-sm border border-gray-100 p-6 relative z-20 -mt-px w-full">
-              <div className="w-full touch-pan-y" style={{ overflowX: 'clip', overflowY: 'visible' }}>
-                <motion.div
-                  drag="x"
-                  dragConstraints={{ left: 0, right: 0 }}
-                  dragElastic={0.8}
-                  onDragEnd={handleDragEnd}
-                  animate={{ x: `calc(-${periods.indexOf(period) * 100}% - ${periods.indexOf(period) * 16}px)` }}
-                  transition={{ type: "spring", bounce: 0.2, duration: 0.5 }}
-                  className="flex w-full cursor-grab active:cursor-grabbing gap-4"
-                >
-                  {periods.map((p, pIdx) => {
-                    const s = summaries[p] || { income: 0, expense: 0, balance: 0, reservas: 0, otros: 0, pendiente: 0, growth: 0, ocupacion: 0 };
-                    const isPositiveGrowth = s.growth >= 0;
-
-                    return (
-                      <div key={`finance-summary-slide-${p}-${pIdx}`} className="w-full shrink-0 flex flex-col justify-center">
-                        {p === 'month' ? (
-                          <div className="space-y-4">
-                            <div className="flex justify-between items-center text-gray-500 text-sm sm:text-base font-medium">
-                              <span>Ingresos</span>
-                              <span>+${s.income.toLocaleString()}</span>
-                            </div>
-                            <div className="flex justify-between items-center text-gray-500 text-sm sm:text-base font-medium border-b border-gray-100 pb-4">
-                              <span>Egresos</span>
-                              <span>-${s.expense.toLocaleString()}</span>
-                            </div>
-                            <div className="flex flex-col pt-2">
-                              <div className="flex justify-between items-center mb-1">
-                                <div className="text-sm sm:text-base text-gray-900 font-bold">Resultado neto</div>
-                                <div className="text-xl sm:text-2xl md:text-3xl font-black text-gray-900 tracking-tight">
-                                  ${s.balance.toLocaleString()}
-                                </div>
-                              </div>
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className={cn(
-                                  "text-xs font-bold px-2.5 py-0.5 rounded-full inline-flex items-center whitespace-nowrap shrink-0",
-                                  isPositiveGrowth ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
-                                )}>
-                                  {isPositiveGrowth ? '+' : ''}{s.growth}% {isPositiveGrowth ? '↑' : '↓'}
-                                </span>
-                                <span className="text-xs text-gray-500 font-medium whitespace-nowrap shrink-0">del mes anterior</span>
-                              </div>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="space-y-8">
-                            <div className="flex justify-between items-start">
-                              <div>
-                                <div className="flex items-center gap-2 mb-2">
-                                  <span className="text-sm sm:text-base font-bold text-gray-900">Ingresos</span>
-                                  <Eye size={20} className="text-emerald-600" />
-                                </div>
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <span className={cn(
-                                    "text-xs font-bold px-2.5 py-0.5 rounded-full inline-flex items-center whitespace-nowrap shrink-0",
-                                    isPositiveGrowth ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"
-                                  )}>
-                                    {isPositiveGrowth ? '+' : ''}{s.growth}% {isPositiveGrowth ? '↑' : '↓'}
-                                  </span>
-                                  <span className="text-xs text-gray-500 font-medium whitespace-nowrap shrink-0">
-                                    {p === 'today' ? 'de ayer' : 'de sem anterior'}
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="text-xl sm:text-2xl md:text-3xl font-black text-emerald-600 tracking-tight">
-                                ${s.income.toLocaleString()}
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-3 gap-2 sm:gap-3">
-                              <div 
-                                className="relative bg-emerald-50 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-emerald-100 active:scale-95"
-                                onMouseEnter={() => setActiveTooltip('reservas-' + p)}
-                                onMouseLeave={() => setActiveTooltip(null)}
-                                onTouchStart={() => setActiveTooltip('reservas-' + p)}
-                                onTouchEnd={() => setActiveTooltip(null)}
-                              >
-                                <AnimatePresence>
-                                  {activeTooltip === 'reservas-' + p && (
-                                    <motion.div 
-                                      key={`tooltip-reservas-${p}`}
-                                      initial={{ opacity: 0, y: 5, scale: 0.95 }}
-                                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                                      exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                                      className="absolute bottom-full mb-2 left-0 sm:left-1/2 sm:-translate-x-1/2 w-40 bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
-                                    >
-                                      Ingresos por alquiler de canchas
-                                      <div className="absolute top-full left-10 sm:left-1/2 sm:-translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
-                                    </motion.div>
-                                  )}
-                                </AnimatePresence>
-                                <CalendarCheck size={18} className="text-emerald-700 mb-1" />
-                                <span className="text-emerald-600 text-xs sm:text-sm font-bold truncate w-full">
-                                  {p === 'today' 
-                                    ? `${s.reservas.toLocaleString()}` 
-                                    : `${s.income > 0 ? Math.round((s.reservas / s.income) * 100) : 0}%`}
-                                </span>
-                              </div>
-
-                              <div 
-                                className="relative bg-emerald-50 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-emerald-100 active:scale-95"
-                                onMouseEnter={() => setActiveTooltip('otros-' + p)}
-                                onMouseLeave={() => setActiveTooltip(null)}
-                                onTouchStart={() => setActiveTooltip('otros-' + p)}
-                                onTouchEnd={() => setActiveTooltip(null)}
-                              >
-                                <AnimatePresence>
-                                  {activeTooltip === 'otros-' + p && (
-                                    <motion.div 
-                                      key={`tooltip-otros-${p}`}
-                                      initial={{ opacity: 0, y: 5, scale: 0.95 }}
-                                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                                      exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                                      className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-40 bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
-                                    >
-                                      Ingresos por mostrador, buffet y otros
-                                      <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
-                                    </motion.div>
-                                  )}
-                                </AnimatePresence>
-                                <ShoppingBag size={18} className="text-emerald-700 mb-1" />
-                                <span className="text-emerald-600 text-xs sm:text-sm font-bold truncate w-full">
-                                  {p === 'today' 
-                                    ? `${s.otros.toLocaleString()}` 
-                                    : `${s.income > 0 ? Math.round((s.otros / s.income) * 100) : 0}%`}
-                                </span>
-                              </div>
-
-                              {p === 'today' ? (
-                                <div 
-                                  className="relative bg-red-50 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-red-100 active:scale-95"
-                                  onMouseEnter={() => setActiveTooltip('pendiente-' + p)}
-                                  onMouseLeave={() => setActiveTooltip(null)}
-                                  onTouchStart={() => setActiveTooltip('pendiente-' + p)}
-                                  onTouchEnd={() => setActiveTooltip(null)}
-                                >
-                                  <AnimatePresence>
-                                    {activeTooltip === 'pendiente-' + p && (
-                                      <motion.div 
-                                        key={`tooltip-pendiente-${p}`}
-                                        initial={{ opacity: 0, y: 5, scale: 0.95 }}
-                                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                                        exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                                        className="absolute bottom-full mb-2 right-0 sm:right-auto sm:left-1/2 sm:-translate-x-1/2 w-[150px] bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
-                                      >
-                                        Pagos pendientes de cobro y fiados
-                                        <div className="absolute top-full right-10 sm:right-auto sm:left-1/2 sm:-translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
-                                      </motion.div>
-                                    )}
-                                  </AnimatePresence>
-                                  <Clock size={18} className="text-red-700 mb-1" />
-                                  <span className="text-red-600 text-xs sm:text-sm font-bold truncate w-full">
-                                    ${s.pendiente.toLocaleString()}
-                                  </span>
-                                </div>
-                              ) : (
-                                <div 
-                                  className="relative bg-gray-100 rounded-2xl p-3 flex flex-col items-center justify-center text-center cursor-pointer transition-all hover:bg-gray-200 active:scale-95"
-                                  onMouseEnter={() => setActiveTooltip('ocupacion-' + p)}
-                                  onMouseLeave={() => setActiveTooltip(null)}
-                                  onTouchStart={() => setActiveTooltip('ocupacion-' + p)}
-                                  onTouchEnd={() => setActiveTooltip(null)}
-                                >
-                                  <AnimatePresence>
-                                    {activeTooltip === 'ocupacion-' + p && (
-                                      <motion.div 
-                                        key={`tooltip-ocupacion-${p}`}
-                                        initial={{ opacity: 0, y: 5, scale: 0.95 }}
-                                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                                        exit={{ opacity: 0, y: 5, scale: 0.95 }}
-                                        className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 w-40 bg-gray-900 text-white text-[10px] sm:text-xs font-medium px-3 py-2 rounded-xl shadow-xl z-50 pointer-events-none"
-                                      >
-                                        Porcentaje de turnos ocupados
-                                        <div className="absolute top-full left-1/2 -translate-x-1/2 border-4 border-transparent border-t-gray-900"></div>
-                                      </motion.div>
-                                    )}
-                                  </AnimatePresence>
-                                  <Users size={18} className="text-gray-600 mb-1" />
-                                  <span className="text-gray-600 text-xs sm:text-sm font-bold truncate w-full">
-                                    {s.ocupacion}%
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </motion.div>
-              </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsManualTxModalOpen(true)}
+                className="px-3.5 py-2 text-xs font-bold text-gray-700 dark:text-slate-300 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+                title="Carga manual de ingreso o gasto administrativo"
+              >
+                <Plus size={14} />
+                <span>Carga manual</span>
+              </button>
             </div>
           </div>
 
-      {/* 2. Filtros de Transacciones (Debajo de la tarjeta principal) */}
-      <div className="flex items-center justify-between gap-2 overflow-x-auto px-1 py-1 no-scrollbar mb-2">
-        <div className="flex gap-2">
-          {[
-            { id: 'all', label: 'Todos' },
-            { id: 'income', label: 'Ingresos' },
-            { id: 'expense', label: 'Egresos' },
-            { id: 'fiados', label: 'Fiados' }
-          ].map((tab) => (
+          {/* Métricas consolidadas clave: 5 tarjetas (Ingresos, Egresos, Resultado Neto, Caja/Disponible y Pendientes) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 pt-4">
+            {/* 1. Ingresos Económicos */}
+            <div className="bg-emerald-50/70 dark:bg-emerald-950/30 p-3.5 rounded-2xl border border-emerald-100 dark:border-emerald-900/40 flex flex-col justify-between">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 block">
+                  Ingresos
+                </span>
+                <span className="text-[11px] text-emerald-600/80 dark:text-emerald-400/80">
+                  Ventas y reservas
+                </span>
+              </div>
+              <span className="text-xl sm:text-2xl font-black text-emerald-600 font-mono mt-2 block">
+                +${financialSummary.economicIncome.toLocaleString()}
+              </span>
+            </div>
+
+            {/* 2. Egresos Económicos */}
+            <div className="bg-red-50/70 dark:bg-red-950/30 p-3.5 rounded-2xl border border-red-100 dark:border-red-900/40 flex flex-col justify-between">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-red-800 dark:text-red-300 block">
+                  Egresos
+                </span>
+                <span className="text-[11px] text-red-600/80 dark:text-red-400/80">
+                  Gastos y compras
+                </span>
+              </div>
+              <span className="text-xl sm:text-2xl font-black text-red-600 font-mono mt-2 block">
+                -${financialSummary.economicExpense.toLocaleString()}
+              </span>
+            </div>
+
+            {/* 3. Resultado Neto */}
+            <div className="bg-blue-50/70 dark:bg-blue-950/30 p-3.5 rounded-2xl border border-blue-100 dark:border-blue-900/40 flex flex-col justify-between">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-800 dark:text-blue-300 block">
+                  Resultado Neto
+                </span>
+                <span className="text-[11px] text-blue-600/80 dark:text-blue-400/80">
+                  Ingresos - Egresos
+                </span>
+              </div>
+              <span className={cn(
+                "text-xl sm:text-2xl font-black font-mono mt-2 block",
+                financialSummary.netResult >= 0 ? "text-blue-600 dark:text-blue-400" : "text-red-600 dark:text-red-400"
+              )}>
+                {financialSummary.netResult >= 0 ? '+' : '-'}${Math.abs(financialSummary.netResult).toLocaleString()}
+              </span>
+            </div>
+
+            {/* 4. Caja / Disponible */}
+            <div className="bg-slate-50 dark:bg-slate-800/80 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-700/80 flex flex-col justify-between">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-800 dark:text-slate-300 block">
+                  Caja / Disponible
+                </span>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono block truncate">
+                  +${financialSummary.cashInflows.toLocaleString()} / -${financialSummary.cashOutflows.toLocaleString()}
+                </span>
+              </div>
+              <span className={cn(
+                "text-xl sm:text-2xl font-black font-mono mt-2 block",
+                financialSummary.cashAvailable >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"
+              )}>
+                {financialSummary.cashAvailable >= 0 ? '+' : '-'}${Math.abs(financialSummary.cashAvailable).toLocaleString()}
+              </span>
+            </div>
+
+            {/* 5. Pendientes */}
+            <div className="bg-amber-50/70 dark:bg-amber-950/30 p-3.5 rounded-2xl border border-amber-100 dark:border-amber-900/40 flex flex-col justify-between col-span-2 sm:col-span-1">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300 block">
+                  Pendientes
+                </span>
+                <span className="text-[10px] text-amber-700/80 dark:text-amber-400/80 block">
+                  Por cobrar / Por pagar
+                </span>
+              </div>
+              <div className="mt-2 space-y-0.5 font-mono">
+                <div className="flex items-center justify-between text-xs font-bold text-amber-700 dark:text-amber-300">
+                  <span className="text-[10px] font-normal">Cobrar:</span>
+                  <span>${financialSummary.pendingToCollect.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs font-bold text-red-600 dark:text-red-400">
+                  <span className="text-[10px] font-normal">Pagar:</span>
+                  <span>${financialSummary.pendingToPay.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. Selector de Secciones Principales (Movimientos, Operaciones, Pendientes) y Filtros */}
+      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 p-4 sm:p-6 shadow-sm space-y-4">
+        
+        {/* Barra superior de pestañas */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 dark:border-slate-800 pb-3">
+          <div className="flex items-center gap-1.5 p-1 bg-gray-100 dark:bg-slate-800 rounded-2xl w-fit">
             <button
               type="button"
-              key={`fin-tab-${tab.id}`}
-              onClick={() => setTxFilterTab(tab.id as any)}
+              onClick={() => setActiveSection('movements')}
               className={cn(
-                "px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1.5",
-                txFilterTab === tab.id
-                  ? "bg-emerald-600 text-white shadow-xs"
-                  : "bg-white dark:bg-slate-800 text-gray-500 dark:text-slate-300 border border-gray-100 dark:border-slate-700 hover:bg-gray-50 dark:hover:bg-slate-700/50"
+                "px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5",
+                activeSection === 'movements'
+                  ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm"
+                  : "text-gray-500 dark:text-slate-400 hover:text-gray-900"
               )}
             >
-              <span>{tab.label}</span>
-              {tab.id === 'fiados' && transactions.filter(t => t.paymentStatus === 'fiado').length > 0 && (
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300 font-bold">
-                  {transactions.filter(t => t.paymentStatus === 'fiado').length}
+              <span>1. Movimientos</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 font-mono">
+                {combinedMovements.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveSection('operations')}
+              className={cn(
+                "px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5",
+                activeSection === 'operations'
+                  ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm"
+                  : "text-gray-500 dark:text-slate-400 hover:text-gray-900"
+              )}
+            >
+              <span>2. Operaciones</span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-100 text-blue-800 font-mono">
+                {combinedOperations.length}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveSection('pendings')}
+              className={cn(
+                "px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5",
+                activeSection === 'pendings'
+                  ? "bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 shadow-sm"
+                  : "text-gray-500 dark:text-slate-400 hover:text-gray-900"
+              )}
+            >
+              <span>3. Pendientes</span>
+              {pendingDebts.length > 0 && (
+                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 font-bold font-mono">
+                  {pendingDebts.length}
                 </span>
               )}
             </button>
-          ))}
+          </div>
+
+          {/* Filtros a la derecha según la sección activa */}
+          <div className="flex items-center gap-2">
+            {activeSection === 'movements' && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-gray-400">Filtrar:</span>
+                <select
+                  value={movementFilter}
+                  onChange={(e) => setMovementFilter(e.target.value as any)}
+                  className="h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-gray-800 dark:text-slate-200 outline-none cursor-pointer"
+                >
+                  <option value="all">Total ({combinedMovements.length})</option>
+                  <option value="income">Ingresos ({combinedMovements.filter(m => m.flow === 'income').length})</option>
+                  <option value="expense">Egresos ({combinedMovements.filter(m => m.flow === 'expense').length})</option>
+                </select>
+              </div>
+            )}
+
+            {activeSection === 'operations' && (
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-gray-400">Filtrar:</span>
+                <select
+                  value={operationFilter}
+                  onChange={(e) => setOperationFilter(e.target.value as any)}
+                  className="h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-gray-800 dark:text-slate-200 outline-none cursor-pointer"
+                >
+                  <option value="all">Total ({combinedOperations.length})</option>
+                  <option value="income">Ingresos ({combinedOperations.filter(o => !o.isExpense).length})</option>
+                  <option value="expense">Egresos ({combinedOperations.filter(o => o.isExpense).length})</option>
+                </select>
+              </div>
+            )}
+
+            {activeSection === 'pendings' && (
+              <span className="text-xs font-bold text-gray-400 bg-gray-50 dark:bg-slate-800 px-3 py-1.5 rounded-xl border border-gray-200 dark:border-slate-700">
+                Filtro: Total ({pendingDebts.length})
+              </span>
+            )}
+          </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsModalOpen(true)}
-          className="text-xs font-bold text-gray-400 hover:text-emerald-600 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 cursor-pointer pr-1"
-          title="Carga manual de ingreso o gasto administrativo"
-        >
-          <Plus size={13} />
-          <span>Carga manual</span>
-        </button>
-      </div>
-
-      {/* 3. Lista de Transacciones */}
-      <div className="pb-6">
-        {Object.entries(
-          filteredTransactions.reduce((acc: any, tx: any) => {
-            const dateStr = safeFormatDate(tx.date, "d 'de' MMMM", { locale: es }) || 'Otras fechas';
-            if (!acc[dateStr]) acc[dateStr] = [];
-            acc[dateStr].push(tx);
-            return acc;
-          }, {})
-        ).map(([date, txs]: [string, any], gIdx: number) => (
-          <div key={`tx-group-${date}-${gIdx}`} className="mb-6">
-            <h3 className="font-bold text-gray-900 mb-2">{date}</h3>
-            <div className="">
-              {txs.map((tx: any, index: number) => (
-                <div key={`tx-${tx.id || 'none'}-${gIdx}-${index}`} onClick={() => setSelectedTx(tx)} className={cn(
-                  "py-4 flex items-center justify-between gap-3 cursor-pointer hover:bg-gray-50/50 rounded-xl px-2 -mx-2 transition-colors",
-                  index !== txs.length - 1 ? "border-b border-gray-100 dark:border-slate-800" : ""
-                )}>
-                  <div className="flex items-center gap-3 flex-1 min-w-0">
-                    <div className="w-10 h-10 rounded-full bg-gray-100 text-gray-500 flex items-center justify-center flex-shrink-0 border border-gray-200">
-                      {tx.category?.includes('Alquiler') ? <Calendar size={18} /> :
-                       (tx.category?.includes('Buffet') || tx.category?.includes('Mostrador') || tx.category?.includes('Kiosco') || tx.items) ? <ShoppingBag size={18} className="text-emerald-600" /> :
-                       tx.category?.includes('Mantenimiento') ? <Wallet size={18} /> :
-                       <DollarSign size={18} />}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-gray-900 text-[13px] sm:text-sm whitespace-nowrap tracking-tight">{tx.category}</span>
-                        {tx.userName && (
-                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-gray-100 text-gray-700 truncate max-w-[130px]">
-                            {tx.userName}
-                          </span>
-                        )}
-                        {tx.paymentStatus === 'fiado' && (
-                          <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800">
-                            Fiado
-                          </span>
-                        )}
-                      </div>
-                      {tx.description && <div className="text-[11px] sm:text-xs text-gray-500 truncate mt-0.5">{tx.description}</div>}
-                    </div>
-                  </div>
-                  <div className="text-right flex-shrink-0">
-                    <div className={cn(
-                      "font-bold text-sm whitespace-nowrap",
-                      tx.type === 'income' ? "text-emerald-600" : "text-red-600"
-                    )}>
-                      {tx.type === 'income' ? '+ ' : '- '}${tx.amount.toLocaleString()}
-                    </div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      {safeFormatDate(tx.date, "HH:mm", { locale: es })}
-                    </div>
-                  </div>
-                </div>
-              ))}
+        {/* =================================================================== */}
+        {/* SECCIÓN 1: MOVIMIENTOS (Libro diario de dinero real)                 */}
+        {/* =================================================================== */}
+        {activeSection === 'movements' && (
+          <div className="space-y-3">
+            <div className="text-xs text-gray-500 flex items-center justify-between">
+              <span>Mostrando ingresos y egresos reales de caja</span>
+              <span className="font-mono font-bold">{filteredMovements.length} movimientos</span>
             </div>
-          </div>
-        ))}
-        {filteredTransactions.length === 0 && (
-          <div className="text-center text-gray-500 py-8">
-            No hay transacciones en este periodo
+
+            {filteredMovements.length === 0 ? (
+              <div className="text-center py-12 text-gray-400">
+                <Coins size={36} className="mx-auto mb-2 opacity-30" />
+                <p className="text-sm font-bold text-gray-700 dark:text-slate-300">No hay movimientos en este filtro</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-slate-800">
+                {filteredMovements.map((m) => (
+                  <div
+                    key={`mov-row-${m.id}`}
+                    className="py-3.5 flex items-center justify-between gap-3 hover:bg-gray-50/60 dark:hover:bg-slate-800/40 rounded-xl px-2 transition-colors"
+                  >
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className={cn(
+                        "w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs shrink-0",
+                        m.flow === 'income' 
+                          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
+                          : "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
+                      )}>
+                        {m.flow === 'income' ? '+' : '-'}
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-xs sm:text-sm text-gray-900 dark:text-white">
+                            {m.category}
+                          </span>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300">
+                            {m.paymentMethod}
+                          </span>
+                          {m.responsibleName && m.responsibleName !== 'NN' && (
+                            <span className="text-[10px] font-medium text-gray-500">
+                              • {m.responsibleName}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex items-center gap-3 text-[11px] text-gray-400 font-mono mt-0.5">
+                          <span>{safeFormatDate(m.date, "dd/MM/yyyy HH:mm", { locale: es })}</span>
+                          {m.notes && <span className="truncate max-w-[200px]">• {m.notes}</span>}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3 shrink-0">
+                      <div className="text-right">
+                        <span className={cn(
+                          "font-black text-xs sm:text-sm font-mono block",
+                          m.flow === 'income' ? "text-emerald-600" : "text-red-600"
+                        )}>
+                          {m.flow === 'income' ? '+' : '-'}${m.amount.toLocaleString()}
+                        </span>
+                      </div>
+
+                      {/* Atajo para ir a la operación asociada */}
+                      {m.operationId && (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenTicketFromMovement(m.operationId)}
+                          className="px-2.5 py-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+                          title="Ver ticket de la operación comercial asociada"
+                        >
+                          <Receipt size={13} />
+                          <span className="hidden sm:inline">Operación</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
-        
-        {/* 4. Sección de Movimiento en Gráfico Circular (Donut) */}
-        {(() => {
-          const incomeTx = transactions.filter(t => t.type === 'income');
-          const expenseTx = transactions.filter(t => t.type === 'expense');
 
-          const totalIncome = incomeTx.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
-          const totalExpense = expenseTx.reduce((acc, curr) => acc + (Number(curr.amount) || 0), 0);
-          const grandTotal = totalIncome + totalExpense;
+        {/* =================================================================== */}
+        {/* SECCIÓN 2: OPERACIONES (1 fila por venta / reserva comercial)         */}
+        {/* =================================================================== */}
+        {activeSection === 'operations' && (
+          <div className="space-y-3">
+            <div className="text-xs text-gray-500 flex items-center justify-between">
+              <span>Cada venta o reserva se visualiza una única vez con sus saldos y ticket</span>
+              <span className="font-mono font-bold">{filteredOperations.length} operaciones</span>
+            </div>
 
-          const getCategoryGroup = (type: 'income' | 'expense', rawCategory: string = '') => {
-            const cat = (rawCategory || '').toLowerCase();
-            if (type === 'income') {
-              if (cat.includes('alquiler') || cat.includes('cancha') || cat.includes('reserva') || cat.includes('booking')) return 'Alquiler';
-              if (cat.includes('buffet') || cat.includes('kiosco') || cat.includes('bar') || cat.includes('bebida') || cat.includes('snack') || cat.includes('comida')) return 'Buffet';
-              if (cat.includes('torneo') || cat.includes('campeonato') || cat.includes('competencia')) return 'Torneos';
-              if (cat.includes('clase') || cat.includes('escuelita') || cat.includes('entren')) return 'Clases / Escuelita';
-              return rawCategory || 'Otros Ingresos';
-            } else {
-              if (cat.includes('mantenimiento') || cat.includes('repar') || cat.includes('obra') || cat.includes('pintura')) return 'Mantenimiento';
-              if (cat.includes('mercader') || cat.includes('insumo') || cat.includes('buffet') || cat.includes('stock')) return 'Mercadería / Buffet';
-              if (cat.includes('servicio') || cat.includes('luz') || cat.includes('agua') || cat.includes('gas') || cat.includes('internet')) return 'Servicios';
-              if (cat.includes('personal') || cat.includes('sueldo') || cat.includes('arbitr') || cat.includes('limpieza') || cat.includes('emplead')) return 'Personal / Sueldos';
-              return rawCategory || 'Otros Egresos';
-            }
-          };
+            {filteredOperations.length === 0 ? (
+              <div className="text-center py-12 text-gray-400">
+                <Receipt size={36} className="mx-auto mb-2 opacity-30" />
+                <p className="text-sm font-bold text-gray-700 dark:text-slate-300">No hay operaciones registradas</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-slate-800">
+                {filteredOperations.map((op) => (
+                  <div
+                    key={`op-row-${op.id}`}
+                    onClick={() => op.originalDoc && handleOpenTicket(op.originalDoc)}
+                    className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-gray-50/70 dark:hover:bg-slate-800/40 rounded-xl px-2 transition-colors cursor-pointer"
+                  >
+                    <div className="space-y-1 min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-xs font-black text-gray-900 dark:text-white">
+                          #{op.ticketCode}
+                        </span>
+                        <span className="font-bold text-xs sm:text-sm text-gray-800 dark:text-slate-200">
+                          {op.concept}
+                        </span>
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300">
+                          Cliente: {op.clientName}
+                        </span>
+                        <span className={cn(
+                          "text-[10px] font-bold px-2 py-0.5 rounded-full",
+                          op.paymentStatus === 'paid' ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" :
+                          op.paymentStatus === 'partial' ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" :
+                          "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                        )}>
+                          {op.paymentStatus === 'paid' ? 'Pagado' : op.paymentStatus === 'partial' ? 'Parcial' : 'Pendiente'}
+                        </span>
+                      </div>
 
-          const incomeColors = ['#0BA70B', '#16a34a', '#22c55e', '#4ade80', '#86efac', '#15803d'];
-          const expenseColors = ['#ef4444', '#dc2626', '#f87171', '#b91c1c', '#fca5a5', '#991b1b'];
+                      <div className="text-[11px] text-gray-400 font-mono">
+                        {safeFormatDate(op.date, "dd/MM/yyyy HH:mm", { locale: es })}
+                      </div>
+                    </div>
 
-          const incomeCategories = Object.entries(
-            incomeTx.reduce((acc: Record<string, { total: number, count: number }>, tx) => {
-              const group = getCategoryGroup('income', tx.category);
-              if (!acc[group]) acc[group] = { total: 0, count: 0 };
-              acc[group].total += Number(tx.amount) || 0;
-              acc[group].count += 1;
-              return acc;
-            }, {})
-          ).map(([name, data], idx) => ({
-            name,
-            type: 'income' as const,
-            typeLabel: 'Ingreso',
-            amount: data.total,
-            count: data.count,
-            color: incomeColors[idx % incomeColors.length],
-            percentageOfIncome: totalIncome > 0 ? Math.round((data.total / totalIncome) * 100) : 0,
-            percentageOfTotal: grandTotal > 0 ? Math.round((data.total / grandTotal) * 100) : 0,
-          })).sort((a, b) => b.amount - a.amount);
+                    <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0 font-mono text-xs">
+                      <div className="text-right">
+                        <span className="text-gray-400 text-[10px] block">Total</span>
+                        <span className="font-black text-gray-900 dark:text-white sm:text-sm">
+                          ${op.contractualAmount.toLocaleString()}
+                        </span>
+                      </div>
 
-          const expenseCategories = Object.entries(
-            expenseTx.reduce((acc: Record<string, { total: number, count: number }>, tx) => {
-              const group = getCategoryGroup('expense', tx.category);
-              if (!acc[group]) acc[group] = { total: 0, count: 0 };
-              acc[group].total += Number(tx.amount) || 0;
-              acc[group].count += 1;
-              return acc;
-            }, {})
-          ).map(([name, data], idx) => ({
-            name,
-            type: 'expense' as const,
-            typeLabel: 'Egreso',
-            amount: data.total,
-            count: data.count,
-            color: expenseColors[idx % expenseColors.length],
-            percentageOfExpense: totalExpense > 0 ? Math.round((data.total / totalExpense) * 100) : 0,
-            percentageOfTotal: grandTotal > 0 ? Math.round((data.total / grandTotal) * 100) : 0,
-          })).sort((a, b) => b.amount - a.amount);
+                      <div className="text-right">
+                        <span className="text-gray-400 text-[10px] block">Cobrado</span>
+                        <span className="font-bold text-emerald-600">
+                          ${op.totalCollected.toLocaleString()}
+                        </span>
+                      </div>
 
-          // Combined pie segments: Incomes (Verde Jogo spectrum) + Expenses (Red spectrum)
-          const pieData = [...incomeCategories, ...expenseCategories];
+                      {op.amountPending > 0 && (
+                        <div className="text-right">
+                          <span className="text-gray-400 text-[10px] block">Pendiente</span>
+                          <span className="font-bold text-amber-600">
+                            ${op.amountPending.toLocaleString()}
+                          </span>
+                        </div>
+                      )}
 
-          if (grandTotal === 0) {
-            return null;
-          }
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (op.originalDoc) handleOpenTicket(op.originalDoc);
+                        }}
+                        className="px-2.5 py-1.5 bg-gray-100 dark:bg-slate-800 hover:bg-emerald-600 hover:text-white text-gray-700 dark:text-slate-300 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                        title="Ver comprobante de venta"
+                      >
+                        <Receipt size={14} />
+                        <span>Ticket</span>
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
-          return (
-            <div className="mt-8 mb-20 bg-white dark:bg-slate-800 p-5 sm:p-6 rounded-3xl shadow-sm border border-gray-100 dark:border-slate-700/80">
-              {/* Header */}
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="font-bold text-gray-900 dark:text-white text-base sm:text-lg">Movimiento</h3>
-                  <p className="text-xs text-gray-500 dark:text-slate-400">Ingresos y egresos por categoría</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[#0BA70B] bg-[#0BA70B]/10 px-2.5 py-1 rounded-full">
-                    +${totalIncome.toLocaleString()}
-                  </span>
-                  <span className="inline-flex items-center gap-1 text-[11px] font-bold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-950/40 px-2.5 py-1 rounded-full">
-                    -${totalExpense.toLocaleString()}
-                  </span>
-                </div>
+        {/* =================================================================== */}
+        {/* SECCIÓN 3: PENDIENTES (Por cobrar: ingresos / Por pagar: egresos)    */}
+        {/* =================================================================== */}
+        {activeSection === 'pendings' && (
+          <div className="space-y-4">
+            {/* Switcher de Pendientes: Todos | Por Cobrar | Por Pagar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-1.5 p-1 bg-gray-100 dark:bg-slate-800 rounded-2xl">
+                <button
+                  type="button"
+                  onClick={() => setPendingFilter('all')}
+                  className={cn(
+                    "px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer",
+                    pendingFilter === 'all'
+                      ? "bg-white dark:bg-slate-900 text-gray-900 dark:text-white shadow-xs"
+                      : "text-gray-500 hover:text-gray-900 dark:text-slate-400"
+                  )}
+                >
+                  Todos ({pendingDebts.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingFilter('receivable')}
+                  className={cn(
+                    "px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1",
+                    pendingFilter === 'receivable'
+                      ? "bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-xs"
+                      : "text-gray-500 hover:text-gray-900 dark:text-slate-400"
+                  )}
+                >
+                  <span>Por Cobrar</span>
+                  <span className="font-mono">({pendingDebts.filter(d => !d.isExpense).length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPendingFilter('payable')}
+                  className={cn(
+                    "px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1",
+                    pendingFilter === 'payable'
+                      ? "bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-xs"
+                      : "text-gray-500 hover:text-gray-900 dark:text-slate-400"
+                  )}
+                >
+                  <span>Por Pagar</span>
+                  <span className="font-mono">({pendingDebts.filter(d => d.isExpense).length})</span>
+                </button>
               </div>
 
-              {/* Circular (Donut) Chart */}
-              <div className="relative h-64 w-full flex items-center justify-center my-2">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={pieData}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={62}
-                      outerRadius={84}
-                      paddingAngle={3}
-                      dataKey="amount"
-                      nameKey="name"
-                      stroke="none"
-                    >
-                      {pieData.map((entry, index) => (
-                        <Cell 
-                          key={`movement-pie-cell-${entry.name}-${index}`} 
-                          fill={entry.color} 
-                        />
-                      ))}
-                    </Pie>
-                    <Tooltip 
-                      content={({ active, payload }: any) => {
-                        if (active && payload && payload.length) {
-                          const d = payload[0].payload;
-                          const isInc = d.type === 'income';
-                          return (
-                            <div className="bg-slate-900/95 text-white px-3 py-2 rounded-xl shadow-xl border border-slate-700 text-xs space-y-1">
-                              <div className="flex items-center gap-1.5 font-bold">
-                                <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: d.color }}></span>
-                                <span>{d.name}</span>
-                                <span className={isInc ? "text-[#0BA70B] text-[10px]" : "text-red-400 text-[10px]"}>
-                                  ({d.typeLabel})
-                                </span>
-                              </div>
-                              <div className="flex justify-between gap-4 text-slate-300">
-                                <span>Monto:</span>
-                                <strong className="text-white">${d.amount.toLocaleString()}</strong>
-                              </div>
-                              <div className="flex justify-between gap-4 text-slate-300">
-                                <span>% {d.typeLabel}:</span>
-                                <strong className={isInc ? "text-[#0BA70B]" : "text-red-400"}>
-                                  {isInc ? d.percentageOfIncome : d.percentageOfExpense}%
-                                </strong>
-                              </div>
-                            </div>
-                          );
-                        }
-                        return null;
-                      }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-
-                {/* Center Badge / Balance in the donut hole */}
-                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none select-none">
-                  <span className="text-[10px] uppercase font-bold tracking-wider text-gray-400 dark:text-slate-500">
-                    Neto
-                  </span>
-                  <span className={cn(
-                    "text-sm sm:text-base font-black tracking-tight",
-                    (totalIncome - totalExpense) >= 0 ? "text-[#0BA70B]" : "text-red-600 dark:text-red-400"
-                  )}>
-                    {(totalIncome - totalExpense) >= 0 ? '+' : '-'}${Math.abs(totalIncome - totalExpense).toLocaleString()}
-                  </span>
-                </div>
-              </div>
-
-              {/* Breakdown by side: Left = Ingresos (Verde Jogo), Right = Egresos (Rojo) */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-gray-100 dark:border-slate-700/60 mt-2">
-                {/* Lado Ingresos (Verde Jogo) */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between pb-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-full bg-[#0BA70B]"></span>
-                      <span className="text-xs font-black uppercase tracking-wider text-[#0BA70B]">
-                        Ingresos ({incomeTx.length})
-                      </span>
-                    </div>
-                    <span className="text-xs font-black text-[#0BA70B]">
-                      +${totalIncome.toLocaleString()}
-                    </span>
-                  </div>
-
-                  {incomeCategories.length === 0 ? (
-                    <div className="text-xs text-gray-400 italic py-2">Sin ingresos registrados</div>
-                  ) : (
-                    <div className="space-y-2">
-                      {incomeCategories.map((cat, idx) => (
-                        <div key={`pie-inc-cat-${cat.name}-${idx}`} className="flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span 
-                              className="w-2.5 h-2.5 rounded-full flex-shrink-0" 
-                              style={{ backgroundColor: cat.color }}
-                            />
-                            <span className="text-gray-700 dark:text-slate-300 font-medium truncate">
-                              {cat.name}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 flex-shrink-0">
-                            <span className="font-bold text-gray-900 dark:text-white">
-                              ${cat.amount.toLocaleString()}
-                            </span>
-                            <span className="text-gray-400 dark:text-slate-400 font-semibold w-8 text-right text-[11px]">
-                              {cat.percentageOfIncome}%
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Lado Egresos (Rojo) */}
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between pb-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-full bg-red-500"></span>
-                      <span className="text-xs font-black uppercase tracking-wider text-red-600 dark:text-red-400">
-                        Egresos ({expenseTx.length})
-                      </span>
-                    </div>
-                    <span className="text-xs font-black text-red-600 dark:text-red-400">
-                      -${totalExpense.toLocaleString()}
-                    </span>
-                  </div>
-
-                  {expenseCategories.length === 0 ? (
-                    <div className="text-xs text-gray-400 italic py-2">Sin egresos registrados</div>
-                  ) : (
-                    <div className="space-y-2">
-                      {expenseCategories.map((cat, idx) => (
-                        <div key={`pie-exp-cat-${cat.name}-${idx}`} className="flex items-center justify-between text-xs">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span 
-                              className="w-2.5 h-2.5 rounded-full flex-shrink-0" 
-                              style={{ backgroundColor: cat.color }}
-                            />
-                            <span className="text-gray-700 dark:text-slate-300 font-medium truncate">
-                              {cat.name}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-2 flex-shrink-0">
-                            <span className="font-bold text-gray-900 dark:text-white">
-                              ${cat.amount.toLocaleString()}
-                            </span>
-                            <span className="text-gray-400 dark:text-slate-400 font-semibold w-8 text-right text-[11px]">
-                              {cat.percentageOfExpense}%
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+              <div className="text-xs text-gray-500 dark:text-slate-400 font-medium">
+                {pendingFilter === 'receivable' && 'Ventas de mostrador y reservas adeudadas'}
+                {pendingFilter === 'payable' && 'Compras de mercadería y gastos pendientes de pago'}
+                {pendingFilter === 'all' && 'Total de cuentas corrientes y saldos pendientes'}
               </div>
             </div>
-          );
-        })()}
+
+            {filteredPendingDebts.length === 0 ? (
+              <div className="text-center py-12 text-gray-400">
+                <CheckCircle2 size={40} className="mx-auto text-emerald-500 mb-2 opacity-80" />
+                <p className="text-sm font-bold text-gray-800 dark:text-slate-200">
+                  {pendingFilter === 'receivable' ? '¡Sin cobros pendientes!' : pendingFilter === 'payable' ? '¡Sin pagos a proveedores pendientes!' : '¡Al día! No hay cuentas pendientes'}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">Todas las operaciones de esta sección han sido canceladas en su totalidad.</p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100 dark:divide-slate-800">
+                {filteredPendingDebts.map((debt) => (
+                  <div
+                    key={`debt-row-${debt.id}`}
+                    className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-gray-50/60 dark:hover:bg-slate-800/40 rounded-xl px-2 transition-colors"
+                  >
+                    <div className="space-y-1 min-w-0 flex-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-xs font-bold text-gray-900 dark:text-white">
+                          #{debt.ticketCode}
+                        </span>
+                        <span className="font-bold text-xs sm:text-sm text-gray-900 dark:text-white">
+                          {debt.isExpense ? 'Proveedor:' : 'Cliente:'} {debt.clientName}
+                        </span>
+                        <span className={cn(
+                          "text-[10px] font-bold px-2 py-0.5 rounded-full",
+                          debt.isExpense
+                            ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
+                            : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                        )}>
+                          {debt.isExpense ? 'Por Pagar (Acreedor)' : 'Por Cobrar (Deudor)'}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-slate-300">
+                        <span className="font-semibold text-gray-400">Concepto:</span>
+                        <span className="truncate max-w-[280px] font-medium">{debt.concept}</span>
+                      </div>
+
+                      <div className="flex items-center gap-3 text-[11px] text-gray-400 font-mono">
+                        <span>Fecha: {safeFormatDate(debt.date, "dd/MM/yyyy HH:mm", { locale: es })}</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-4 shrink-0 font-mono text-xs flex-wrap">
+                      <div className="text-right">
+                        <span className="text-gray-400 text-[10px] block font-sans">Total</span>
+                        <span className="font-bold text-gray-700 dark:text-slate-300">
+                          ${debt.contractualAmount.toLocaleString()}
+                        </span>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-gray-400 text-[10px] block font-sans">
+                          {debt.isExpense ? 'Pagado' : 'Cobrado'}
+                        </span>
+                        <span className="font-bold text-emerald-600">
+                          ${debt.totalCollected.toLocaleString()}
+                        </span>
+                      </div>
+
+                      <div className="text-right">
+                        <span className="text-gray-400 text-[10px] block font-sans">Pendiente</span>
+                        <span className={cn(
+                          "font-black text-sm",
+                          debt.isExpense ? "text-amber-600 dark:text-amber-400" : "text-amber-600 dark:text-amber-400"
+                        )}>
+                          ${debt.amountPending.toLocaleString()}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {/* Ver ticket de la operación */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (debt.originalDoc) handleOpenTicket(debt.originalDoc);
+                          }}
+                          className="px-2.5 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 font-bold text-xs rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+                          title="Ver ticket de la operación"
+                        >
+                          <Receipt size={14} />
+                          <span className="hidden sm:inline">Ticket</span>
+                        </button>
+
+                        {/* Registrar cobro o pago */}
+                        <button
+                          type="button"
+                          onClick={() => setSettleModalTarget(debt)}
+                          className={cn(
+                            "px-3.5 py-2 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5",
+                            debt.isExpense
+                              ? "bg-amber-600 hover:bg-amber-700"
+                              : "bg-emerald-600 hover:bg-emerald-700"
+                          )}
+                          title={debt.isExpense ? "Registrar pago de compra o gasto pendiente" : "Registrar cobro de deuda pendiente"}
+                        >
+                          <Coins size={14} />
+                          <span>{debt.isExpense ? 'Pagar' : 'Cobrar'}</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
       </div>
 
-      {/* 4. Botón Flotante (+): Abre directamente el Modal del Mostrador (POS) */}
+      {/* 4. Botón Flotante (+): Abre directamente el Mostrador (POS) */}
       <button 
         type="button" 
         onClick={() => setIsPOSModalOpen(true)}
@@ -5893,16 +6653,73 @@ const FinanceView = ({
         onNavigateToUserProfile={onNavigateToUserProfile}
       />
 
-      {/* 5. Modal de Carga Manual */}
+      {/* Modal de Ticket de Venta */}
+      <TicketModal
+        isOpen={Boolean(ticketModalOperation)}
+        onClose={() => setTicketModalOperation(null)}
+        operation={ticketModalOperation}
+        movements={ticketModalMovements}
+        venueProfile={venueProfile}
+        operatorName={auth.currentUser?.displayName || undefined}
+        originSection={activeSection}
+        users={users}
+        bookings={rawBookings}
+        onRegisterPayment={(op) => {
+          setTicketModalOperation(null);
+          setSettleModalTarget({
+            id: op.id,
+            ticketCode: op.ticketCode,
+            clientName: op.userName,
+            userName: op.userName,
+            concept: op.notes || (op.operationType === 'court_booking' ? 'Alquiler Cancha' : 'Operación comercial'),
+            contractualAmount: op.contractualAmount,
+            amountPending: op.amountPending,
+            totalCollected: op.totalCollected,
+            isLegacy: (op as any).isLegacy,
+            userId: op.userId,
+            bookingId: op.bookingId,
+            originalDoc: op
+          });
+        }}
+      />
+
+      {/* Modal de Cobro de Pendientes / Fiados */}
+      <PendingSettleModal
+        isOpen={Boolean(settleModalTarget)}
+        onClose={() => setSettleModalTarget(null)}
+        operation={settleModalTarget ? {
+          id: settleModalTarget.id,
+          ticketCode: settleModalTarget.ticketCode,
+          userName: settleModalTarget.clientName || settleModalTarget.userName,
+          clientName: settleModalTarget.clientName || settleModalTarget.userName,
+          concept: settleModalTarget.concept,
+          contractualAmount: settleModalTarget.contractualAmount,
+          amountPending: settleModalTarget.amountPending,
+          totalCollected: settleModalTarget.totalCollected,
+          isLegacy: settleModalTarget.isLegacy,
+          userId: settleModalTarget.userId,
+          bookingId: settleModalTarget.bookingId,
+          originalDoc: settleModalTarget.originalDoc
+        } : null}
+        complexId={targetId}
+        operatorId={auth.currentUser?.uid || 'pos_operator'}
+        users={users}
+        bookings={rawBookings}
+        onSuccess={() => {
+          setSettleModalTarget(null);
+        }}
+      />
+
+      {/* Modal de Carga Manual Administrativa */}
       <AnimatePresence>
-        {isModalOpen && (
+        {isManualTxModalOpen && (
           <div 
             key="modal-new-tx-backdrop"
             className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 backdrop-blur-sm"
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              setIsModalOpen(false);
+              setIsManualTxModalOpen(false);
             }}
           >
             <motion.div 
@@ -5917,11 +6734,7 @@ const FinanceView = ({
                 <h3 className="font-bold text-xl text-gray-900">Nueva Transacción</h3>
                 <button 
                   type="button" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setIsModalOpen(false);
-                  }} 
+                  onClick={() => setIsManualTxModalOpen(false)} 
                   className="p-2 bg-gray-100 rounded-full text-gray-500 hover:bg-gray-200 cursor-pointer"
                 >
                   <X size={20} />
@@ -5929,25 +6742,19 @@ const FinanceView = ({
               </div>
               
               <form className="space-y-6" onSubmit={handleSaveTx}>
-                {/* Tipo de Movimiento */}
                 <div className="flex bg-gray-100 p-1 rounded-xl">
                   <button 
                     type="button" 
-                    onClick={() => {
-                      setNewTx({...newTx, type: 'income', category: 'Alquiler de Cancha'});
-                    }}
+                    onClick={() => setNewTx({...newTx, type: 'income', category: 'Alquiler de Cancha'})}
                     className={cn("flex-1 py-3 rounded-lg text-sm font-bold transition-all", newTx.type === 'income' ? "bg-white text-emerald-600 shadow-sm" : "text-gray-500 hover:text-gray-700")}
                   >Ingreso</button>
                   <button 
                     type="button" 
-                    onClick={() => {
-                      setNewTx({...newTx, type: 'expense', category: 'Mantenimiento'});
-                    }}
+                    onClick={() => setNewTx({...newTx, type: 'expense', category: 'Mantenimiento'})}
                     className={cn("flex-1 py-3 rounded-lg text-sm font-bold transition-all", newTx.type === 'expense' ? "bg-white text-red-600 shadow-sm" : "text-gray-500 hover:text-gray-700")}
                   >Egreso</button>
                 </div>
 
-                {/* Monto */}
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-2">Monto</label>
                   <div className="relative">
@@ -5963,12 +6770,14 @@ const FinanceView = ({
                   </div>
                 </div>
 
-                {/* Categoría */}
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-2">Categoría</label>
                   <select 
                     value={newTx.category}
-                    onChange={e => setNewTx({...newTx, category: e.target.value})}
+                    onChange={e => {
+                      setNewTx({...newTx, category: e.target.value});
+                      setSelectedExpenseItemName('');
+                    }}
                     className="w-full p-4 bg-gray-50 rounded-xl font-medium text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 appearance-none mb-2"
                   >
                     {newTx.type === 'income' ? (
@@ -5981,18 +6790,68 @@ const FinanceView = ({
                       </>
                     ) : (
                       <>
-                        <option>Mantenimiento</option>
-                        <option>Mercadería / Buffet</option>
-                        <option>Servicios (Luz, Agua)</option>
-                        <option>Personal / Sueldos</option>
+                        {expenseCategories.filter(c => c.status !== 'inactivo').length > 0 ? (
+                          expenseCategories.filter(c => c.status !== 'inactivo').map(c => (
+                            <option key={`exp-opt-cat-${c.id}`} value={c.name}>
+                              {c.name}
+                            </option>
+                          ))
+                        ) : (
+                          <>
+                            <option>Mantenimiento</option>
+                            <option>Mercadería / Buffet</option>
+                            <option>Servicios (Luz, Agua)</option>
+                            <option>Personal / Sueldos</option>
+                            <option>Insumos</option>
+                          </>
+                        )}
                         <option>Otro</option>
                       </>
                     )}
                   </select>
+
+                  {/* Selector de concepto / ítem predefinido cuando es Egreso */}
+                  {newTx.type === 'expense' && (
+                    <div className="mt-2 space-y-2">
+                      {(() => {
+                        const itemsForCat = expenseItems.filter(it => it.categoryId === newTx.category && it.status !== 'inactivo');
+                        if (itemsForCat.length > 0) {
+                          return (
+                            <div>
+                              <label className="block text-[11px] font-bold text-gray-500 mb-1">
+                                Concepto predefinido de "{newTx.category}"
+                              </label>
+                              <select
+                                value={selectedExpenseItemName}
+                                onChange={e => {
+                                  const val = e.target.value;
+                                  setSelectedExpenseItemName(val);
+                                  const found = itemsForCat.find(i => i.name === val);
+                                  if (found && Number(found.purchasePrice || 0) > 0) {
+                                    setNewTx(prev => ({ ...prev, amount: String(found.purchasePrice) }));
+                                  }
+                                }}
+                                className="w-full p-3 bg-gray-50 rounded-xl text-xs font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-emerald-500"
+                              >
+                                <option value="">-- Seleccionar concepto predefinido (o escribir abajo) --</option>
+                                {itemsForCat.map(it => (
+                                  <option key={`exp-it-opt-${it.id}`} value={it.name}>
+                                    {it.name} {Number(it.purchasePrice || 0) > 0 ? `($${Number(it.purchasePrice).toLocaleString()})` : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </div>
+                  )}
+
                   {newTx.category === 'Otro' && (
                     <input 
                       type="text"
-                      className="w-full p-4 bg-gray-50 rounded-xl font-medium text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500"
+                      className="w-full p-4 bg-gray-50 rounded-xl font-medium text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 mt-2"
                       placeholder="Escribe la categoría..."
                       value={customCategory}
                       onChange={e => setCustomCategory(e.target.value)}
@@ -6001,7 +6860,6 @@ const FinanceView = ({
                   )}
                 </div>
 
-                {/* Método de Pago */}
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-2">Método de Pago</label>
                   <div className="grid grid-cols-2 gap-3">
@@ -6023,7 +6881,6 @@ const FinanceView = ({
                   </div>
                 </div>
 
-                {/* Descripción */}
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-2">Notas (Opcional)</label>
                   <textarea 
@@ -6039,130 +6896,6 @@ const FinanceView = ({
                   Guardar Transacción
                 </button>
               </form>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-      
-      {/* Transaction Detail Modal */}
-      <AnimatePresence>
-        {selectedTx && (
-          <div 
-            key="modal-tx-detail-backdrop"
-            className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              setSelectedTx(null);
-            }}
-          >
-            <motion.div 
-              key="modal-tx-detail-card"
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden"
-            >
-              <div className="flex justify-between items-center p-6 border-b border-gray-100">
-                <h2 className="text-xl font-bold text-gray-900">Detalles de Transacción</h2>
-                <button 
-                  type="button" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    setSelectedTx(null);
-                  }} 
-                  className="p-2 bg-gray-100 text-gray-500 rounded-full hover:bg-gray-200 cursor-pointer"
-                >
-                  <X size={20} />
-                </button>
-              </div>
-              <div className="p-6 space-y-4">
-                <div className="flex justify-between border-b border-gray-50 pb-3">
-                  <span className="text-gray-900 font-bold text-sm">Tipo</span>
-                  <span className="text-gray-500 text-sm">
-                    {selectedTx.type === 'income' ? 'Ingreso' : 'Egreso'}
-                  </span>
-                </div>
-                <div className="flex justify-between border-b border-gray-50 pb-3">
-                  <span className="text-gray-900 font-bold text-sm">Categoría</span>
-                  <span className="text-gray-500 text-sm">{selectedTx.category}</span>
-                </div>
-                <div className="flex justify-between border-b border-gray-50 pb-3">
-                  <span className="text-gray-900 font-bold text-sm">Monto</span>
-                  <span className="text-gray-500 text-sm">${selectedTx.amount.toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between border-b border-gray-50 pb-3">
-                  <span className="text-gray-900 font-bold text-sm">Fecha</span>
-                  <span className="text-gray-500 text-sm">{safeFormatDate(selectedTx.date, "d 'de' MMMM, yyyy", { locale: es })}</span>
-                </div>
-                <div className="flex justify-between border-b border-gray-50 pb-3">
-                  <span className="text-gray-900 font-bold text-sm">Método de Pago</span>
-                  <span className="text-gray-500 text-sm">
-                    {Array.isArray(selectedTx.payments) && selectedTx.payments.length > 0
-                      ? selectedTx.payments.map((p: any) => `${p.method}: $${Number(p.amount).toLocaleString()}`).join(', ')
-                      : 'Efectivo'}
-                  </span>
-                </div>
-                {selectedTx.userName && (
-                  <div className="flex justify-between border-b border-gray-50 pb-3">
-                    <span className="text-gray-900 font-bold text-sm">Cliente</span>
-                    <span className="text-gray-500 text-sm">{selectedTx.userName}</span>
-                  </div>
-                )}
-                {selectedTx.paymentStatus && (
-                  <div className="flex justify-between border-b border-gray-50 pb-3">
-                    <span className="text-gray-900 font-bold text-sm">Estado de Cobro</span>
-                    <span className={cn(
-                      "text-xs font-bold px-2 py-0.5 rounded-full capitalize",
-                      selectedTx.paymentStatus === 'fiado' ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
-                    )}>
-                      {selectedTx.paymentStatus === 'fiado' ? 'Fiado (Pendiente)' : 'Cobrado / Pagado'}
-                    </span>
-                  </div>
-                )}
-                {Array.isArray(selectedTx.items) && selectedTx.items.length > 0 && (
-                  <div className="border-b border-gray-50 pb-3">
-                    <span className="text-gray-900 font-bold text-sm block mb-1">Detalle de Productos</span>
-                    <div className="space-y-1 bg-gray-50 p-2.5 rounded-xl text-xs">
-                      {selectedTx.items.map((it: any, iIdx: number) => (
-                        <div key={`tx-item-det-${iIdx}`} className="flex justify-between">
-                          <span>{it.quantity}x {it.name}</span>
-                          <span className="font-bold">${Number(it.subtotal || (it.unitPrice * it.quantity) || 0).toLocaleString()}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {selectedTx.description && (
-                  <div>
-                    <span className="text-gray-900 font-bold text-sm block mb-1">Descripción</span>
-                    <p className="text-sm text-gray-500 bg-gray-50 p-3 rounded-xl">{selectedTx.description}</p>
-                  </div>
-                )}
-
-                {selectedTx.paymentStatus === 'fiado' && (
-                  <div className="pt-3 border-t border-gray-100 dark:border-slate-800 space-y-2">
-                    <span className="text-xs font-bold text-gray-700 dark:text-slate-300 block">
-                      Cobrar y Saldar Fiado:
-                    </span>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(['efectivo', 'transferencia', 'tarjeta'] as const).map((method) => (
-                        <button
-                          key={`settle-fiado-${method}`}
-                          type="button"
-                          disabled={isSettlingLoading}
-                          onClick={() => handleSettleFiado(selectedTx, method)}
-                          className="py-2 px-2 bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-600 hover:text-white text-emerald-700 dark:text-emerald-400 font-bold rounded-xl text-xs transition-colors capitalize text-center border border-emerald-200 dark:border-emerald-800 disabled:opacity-50 cursor-pointer"
-                        >
-                          {method}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
             </motion.div>
           </div>
         )}
@@ -7604,6 +8337,8 @@ export default function App() {
   const [isCreateMatchOpen, setCreateMatchOpen] = useState(false);
   const [isCreateUserOpen, setCreateUserOpen] = useState(false);
   const [isNotificationsOpen, setNotificationsOpen] = useState(false);
+  const [cancelModalBooking, setCancelModalBooking] = useState<any | null>(null);
+  const [deleteModalBooking, setDeleteModalBooking] = useState<any | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   // Unified navigation controller ensuring exact sync and widget reset
@@ -7787,6 +8522,7 @@ export default function App() {
         userPhone: bookingData.userPhone || bookingData.clientPhone || '',
         userEmail: bookingData.userEmail || bookingData.clientEmail || '',
         notes: bookingData.notes || '',
+        payments: bookingData.payments || undefined,
         ownerId: auth.currentUser?.uid || '',
         adminId: ''
       };
@@ -7796,6 +8532,7 @@ export default function App() {
       setRefreshKey(prev => prev + 1);
     } catch (err) {
       console.error('[Firestore] Error creating booking:', err);
+      throw err;
     }
   };
 
@@ -8126,6 +8863,8 @@ export default function App() {
               setRefreshKey(prev => prev + 1);
               setSelectedMatch(null); // Close modal to reflect changes
             }}
+            onCancelBooking={(m) => setCancelModalBooking(m)}
+            onDeleteBooking={(m) => setDeleteModalBooking(m)}
           />
         )}
         {isNotificationsOpen && (
@@ -8141,19 +8880,47 @@ export default function App() {
             complexId={activeComplexId}
             initialData={selectedMatch}
             onNavigate={handleNavigate}
+            onCancelBooking={(b) => setCancelModalBooking(b)}
+            onDeleteBooking={(b) => setDeleteModalBooking(b)}
             onCreate={selectedMatch && selectedMatch.id ? async (data) => {
-              try {
-                await updateBookingInFirestore(selectedMatch.id, {
-                  ...data,
-                  complexId: activeComplexId
-                });
-              } catch (e) {
-                console.warn('Error updating in Firestore:', e);
-              }
+              await updateBookingInFirestore(selectedMatch.id, {
+                ...data,
+                complexId: activeComplexId
+              });
               setRefreshKey(prev => prev + 1);
               setSelectedMatch(null);
             } : handleCreateMatch}
             onQuickAddUser={(userData) => handleCreateUser({ ...userData, email: '', skill_level: 'Amateur' })}
+          />
+        )}
+        {cancelModalBooking && (
+          <CancelBookingModal
+            key="modal-cancel-booking"
+            isOpen={Boolean(cancelModalBooking)}
+            onClose={() => setCancelModalBooking(null)}
+            booking={cancelModalBooking}
+            complexId={activeComplexId}
+            operatorId={auth.currentUser?.uid || 'pos_operator'}
+            onSuccess={() => {
+              setRefreshKey(prev => prev + 1);
+              setSelectedMatch(null);
+              setCreateMatchOpen(false);
+              setCancelModalBooking(null);
+            }}
+          />
+        )}
+        {deleteModalBooking && (
+          <DeleteBookingModal
+            key="modal-delete-booking"
+            isOpen={Boolean(deleteModalBooking)}
+            onClose={() => setDeleteModalBooking(null)}
+            booking={deleteModalBooking}
+            onSuccess={() => {
+              setRefreshKey(prev => prev + 1);
+              setSelectedMatch(null);
+              setCreateMatchOpen(false);
+              setDeleteModalBooking(null);
+            }}
           />
         )}
         {isCreateUserOpen && (
