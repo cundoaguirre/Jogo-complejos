@@ -12,12 +12,13 @@ import {
   ArrowLeft,
   MapPin,
   Phone,
-  MessageCircle
+  MessageCircle,
+  Trash2
 } from 'lucide-react';
 import type { OperationDocument, FinancialMovementDocument, User } from '../types';
 import { safeFormatDate } from '../lib/utils';
 import { es } from 'date-fns/locale';
-import { resolveClientName, resolveClientPhone } from '../lib/firestoreSync';
+import { resolveClientName, resolveClientPhone, permanentlyDeleteFinancialRecordInFirestore } from '../lib/firestoreSync';
 
 interface TicketModalProps {
   isOpen: boolean;
@@ -35,6 +36,8 @@ interface TicketModalProps {
   originSection?: 'movements' | 'operations' | 'pendings';
   users?: User[];
   bookings?: any[];
+  complexId?: string;
+  onDeleted?: () => void;
 }
 
 export const TicketModal: React.FC<TicketModalProps> = ({
@@ -47,10 +50,34 @@ export const TicketModal: React.FC<TicketModalProps> = ({
   onRegisterPayment,
   originSection = 'operations',
   users = [],
-  bookings = []
+  bookings = [],
+  complexId,
+  onDeleted
 }) => {
   const ticketRef = useRef<HTMLDivElement>(null);
   const [copiedToast, setCopiedToast] = React.useState(false);
+  const [showConfirmDelete, setShowConfirmDelete] = React.useState(false);
+  const [isDeleting, setIsDeleting] = React.useState(false);
+
+  const handleDeleteRecord = async () => {
+    if (!operation) return;
+    setIsDeleting(true);
+    try {
+      await permanentlyDeleteFinancialRecordInFirestore({
+        complexId: complexId || operation.complexId || (operation as any).complejoId || 'B',
+        operationId: operation.id,
+        bookingId: operation.bookingId,
+        isLegacyTransaction: Boolean((operation as any).isLegacy)
+      });
+      setShowConfirmDelete(false);
+      if (onDeleted) onDeleted();
+      onClose();
+    } catch (err) {
+      console.error('Error deleting financial record:', err);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // Encontrar reserva vinculada si la operación corresponde a un turno
   const linkedBooking = React.useMemo(() => {
@@ -305,6 +332,14 @@ export const TicketModal: React.FC<TicketModalProps> = ({
               </button>
               <button
                 type="button"
+                onClick={() => setShowConfirmDelete(true)}
+                className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                title="Eliminar definitivamente este registro"
+              >
+                <Trash2 size={16} />
+              </button>
+              <button
+                type="button"
                 onClick={onClose}
                 className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-white rounded-xl transition-colors cursor-pointer"
                 title="Cerrar"
@@ -539,7 +574,66 @@ export const TicketModal: React.FC<TicketModalProps> = ({
               <ArrowLeft size={14} />
               <span>Volver a {originSection === 'movements' ? 'Movimientos' : (originSection === 'pendings' ? 'Pendientes' : 'Operaciones')}</span>
             </button>
+
+            {/* Botón Eliminar Definitivamente */}
+            <button
+              type="button"
+              onClick={() => setShowConfirmDelete(true)}
+              className="w-full py-2 bg-red-50 hover:bg-red-100 dark:bg-red-950/30 dark:hover:bg-red-950/50 text-red-600 dark:text-red-400 font-bold text-xs rounded-xl transition-colors cursor-pointer flex items-center justify-center gap-1.5 border border-red-200 dark:border-red-900/50"
+            >
+              <Trash2 size={13} />
+              <span>Eliminar definitivamente</span>
+            </button>
           </div>
+
+          {/* Modal de confirmación para Eliminación Definitiva */}
+          {showConfirmDelete && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+              <div className="bg-white dark:bg-slate-900 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-gray-100 dark:border-slate-800 space-y-4">
+                <div className="w-12 h-12 rounded-2xl bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto">
+                  <Trash2 size={24} />
+                </div>
+
+                <div className="text-center space-y-2">
+                  <h3 className="text-sm font-black text-gray-900 dark:text-white">
+                    ¿Eliminar definitivamente este registro?
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-slate-400">
+                    Se borrará de Finanzas, Agenda, Stock y de la base de datos en la nube como si nunca hubiera existido.
+                  </p>
+                  <div className="p-2 bg-gray-50 dark:bg-slate-800/60 rounded-xl text-xs font-mono text-gray-700 dark:text-slate-300 font-semibold">
+                    Ticket #{ticketCode}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-2">
+                  <button
+                    type="button"
+                    disabled={isDeleting}
+                    onClick={() => setShowConfirmDelete(false)}
+                    className="flex-1 py-2.5 rounded-xl bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isDeleting}
+                    onClick={handleDeleteRecord}
+                    className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 active:scale-95 text-white text-xs font-bold transition-all shadow-md shadow-red-900/20 cursor-pointer flex items-center justify-center gap-1.5"
+                  >
+                    {isDeleting ? (
+                      <span>Eliminando...</span>
+                    ) : (
+                      <>
+                        <Trash2 size={14} />
+                        <span>Eliminar definitivamente</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </motion.div>
       </div>
     </AnimatePresence>

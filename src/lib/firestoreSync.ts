@@ -7,6 +7,7 @@ import {
   addDoc, 
   deleteDoc, 
   updateDoc, 
+  deleteField,
   onSnapshot, 
   query, 
   where, 
@@ -527,7 +528,8 @@ export async function saveVenueProfileInFirestore(
 // =========================================================================
 
 /**
- * Escucha reservas filtrando por complejoId == activeComplejoId y opcionalmente por date == selectedDate
+ * Escucha reservas filtrando por complejoId / complexId == targetId y opcionalmente por date == selectedDate,
+ * fusionando ambas consultas para garantizar sincronización 100% en tiempo real en Vercel y entornos locales.
  */
 export function subscribeToBookings(
   complexId: string, 
@@ -537,31 +539,52 @@ export function subscribeToBookings(
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   try {
     const colRef = collection(db, BOOKINGS_COLLECTION);
-    const constraints: any[] = [where('complejoId', '==', targetId)];
+    const constraints1: any[] = [where('complexId', '==', targetId)];
+    const constraints2: any[] = [where('complejoId', '==', targetId)];
     if (selectedDate) {
-      constraints.push(where('date', '==', selectedDate));
+      constraints1.push(where('date', '==', selectedDate));
+      constraints2.push(where('date', '==', selectedDate));
     }
 
-    const q = query(colRef, ...constraints);
+    const map1 = new Map<string, Match>();
+    const map2 = new Map<string, Match>();
 
-    return onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(d => formatBookingToMatch({ id: d.id, ...d.data() }));
+    const emitMerged = () => {
+      const merged = new Map<string, Match>([...map1, ...map2]);
+      let list = Array.from(merged.values());
+      if (selectedDate) {
+        list = list.filter(b => b.date === selectedDate || (b.startTime && String(b.startTime).startsWith(selectedDate)));
+      }
       onUpdate(list);
-    }, (error) => {
-      console.warn('[Firestore] Fallback en query de bookings:', error.message);
-      // Fallback a sólo complejoId y filtro client-side de fecha
-      const qFallback = query(colRef, where('complejoId', '==', targetId));
-      return onSnapshot(qFallback, (snap) => {
-        let list = snap.docs.map(d => formatBookingToMatch({ id: d.id, ...d.data() }));
-        if (selectedDate) {
-          list = list.filter(b => b.date === selectedDate || (b.startTime && String(b.startTime).startsWith(selectedDate)));
-        }
-        onUpdate(list);
-      }, (err) => {
-        console.error('[Firestore] Error crítico en bookings subscription fallback:', err);
-        onUpdate([]);
+    };
+
+    const q1 = query(colRef, ...constraints1);
+    const q2 = query(colRef, ...constraints2);
+
+    const unsub1 = onSnapshot(q1, (snap) => {
+      map1.clear();
+      snap.forEach(d => {
+        map1.set(d.id, formatBookingToMatch({ id: d.id, ...d.data() }));
       });
+      emitMerged();
+    }, (err) => {
+      console.warn('[Firestore] Error escuchando bookings (q1 complexId):', err);
     });
+
+    const unsub2 = onSnapshot(q2, (snap) => {
+      map2.clear();
+      snap.forEach(d => {
+        map2.set(d.id, formatBookingToMatch({ id: d.id, ...d.data() }));
+      });
+      emitMerged();
+    }, (err) => {
+      console.warn('[Firestore] Error escuchando bookings (q2 complejoId):', err);
+    });
+
+    return () => {
+      unsub1();
+      unsub2();
+    };
   } catch (err) {
     console.error('[Firestore] Error subscribiendo a bookings:', err);
     onUpdate([]);
@@ -724,7 +747,10 @@ export async function createBookingInFirestore(data: {
   [key: string]: any;
 }): Promise<string> {
   const targetComplexId = (!data.complejoId || data.complejoId === 'complejo_central') ? 'B' : data.complejoId;
-  const resolvedCourtId = String(data.courtId || data.court_id || 'c_1');
+  const resolvedCourtId = String(data.courtId || data.court_id || '').trim();
+  if (!resolvedCourtId) {
+    throw new Error('Identificador de cancha (courtId) inválido o ausente.');
+  }
   const resolvedCourtName = data.courtName || data.court_name || 'Cancha 1';
   const startTime = data.startTime || '18:00';
   const endTime = data.endTime || '19:00';
@@ -1215,13 +1241,20 @@ export async function permanentlyDeleteBookingInFirestore(bookingId: string | nu
     for (let i = 0; i < affectedCourts.length; i++) {
       const lSnap = lockSnaps[i];
       if (lSnap.exists()) {
-        const bMap = { ...(lSnap.data().bookings || {}) };
-        if (bMap[strId]) {
-          delete bMap[strId];
-          await setDoc(lockRefs[i], {
-            bookings: bMap,
+        try {
+          await updateDoc(lockRefs[i], {
+            [`bookings.${strId}`]: deleteField(),
             updatedAt: serverTimestamp()
-          }, { merge: true });
+          });
+        } catch {
+          const bMap = { ...(lSnap.data().bookings || {}) };
+          if (bMap[strId]) {
+            delete bMap[strId];
+            await setDoc(lockRefs[i], {
+              bookings: bMap,
+              updatedAt: serverTimestamp()
+            }, { merge: true });
+          }
         }
       }
     }
@@ -4100,7 +4133,8 @@ export async function cancelOperationWithSettlement(
 }
 
 /**
- * Escucha en tiempo real las operaciones de un complejo ordenadas cronológicamente.
+ * Escucha en tiempo real las operaciones de un complejo ordenadas cronológicamente,
+ * fusionando queries por complexId y complejoId para garantizar cobertura total en Vercel.
  */
 export function subscribeToOperations(
   complexId: string,
@@ -4108,27 +4142,52 @@ export function subscribeToOperations(
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const colRef = collection(db, OPERATIONS_COLLECTION);
-  const q = query(colRef, where('complexId', '==', targetId));
+  const q1 = query(colRef, where('complexId', '==', targetId));
+  const q2 = query(colRef, where('complejoId', '==', targetId));
 
-  return onSnapshot(q, (snap) => {
-    const list: OperationDocument[] = [];
-    snap.forEach((d) => {
-      list.push(d.data() as OperationDocument);
-    });
+  const map1 = new Map<string, OperationDocument>();
+  const map2 = new Map<string, OperationDocument>();
+
+  const emitMerged = () => {
+    const merged = new Map<string, OperationDocument>([...map1, ...map2]);
+    const list = Array.from(merged.values());
     list.sort((a, b) => {
       const tA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
       const tB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
       return tB - tA;
     });
     cb(list);
+  };
+
+  const unsub1 = onSnapshot(q1, (snap) => {
+    map1.clear();
+    snap.forEach((d) => {
+      map1.set(d.id, { id: d.id, ...d.data() } as OperationDocument);
+    });
+    emitMerged();
   }, (err) => {
-    console.warn('[Firestore] Error escuchando operaciones:', err);
-    cb([]);
+    console.warn('[Firestore] Error escuchando operaciones (q1):', err);
   });
+
+  const unsub2 = onSnapshot(q2, (snap) => {
+    map2.clear();
+    snap.forEach((d) => {
+      map2.set(d.id, { id: d.id, ...d.data() } as OperationDocument);
+    });
+    emitMerged();
+  }, (err) => {
+    console.warn('[Firestore] Error escuchando operaciones (q2):', err);
+  });
+
+  return () => {
+    unsub1();
+    unsub2();
+  };
 }
 
 /**
- * Escucha en tiempo real los movimientos de caja (/financial_movements) de un complejo.
+ * Escucha en tiempo real los movimientos de caja (/financial_movements) de un complejo,
+ * fusionando queries por complexId y complejoId para garantizar cobertura total en Vercel.
  */
 export function subscribeToFinancialMovements(
   complexId: string,
@@ -4136,23 +4195,225 @@ export function subscribeToFinancialMovements(
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const colRef = collection(db, FINANCIAL_MOVEMENTS_COLLECTION);
-  const q = query(colRef, where('complexId', '==', targetId));
+  const q1 = query(colRef, where('complexId', '==', targetId));
+  const q2 = query(colRef, where('complejoId', '==', targetId));
 
-  return onSnapshot(q, (snap) => {
-    const list: FinancialMovementDocument[] = [];
-    snap.forEach((d) => {
-      list.push(d.data() as FinancialMovementDocument);
-    });
+  const map1 = new Map<string, FinancialMovementDocument>();
+  const map2 = new Map<string, FinancialMovementDocument>();
+
+  const emitMerged = () => {
+    const merged = new Map<string, FinancialMovementDocument>([...map1, ...map2]);
+    const list = Array.from(merged.values());
     list.sort((a, b) => {
       const tA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
       const tB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
       return tB - tA;
     });
     cb(list);
+  };
+
+  const unsub1 = onSnapshot(q1, (snap) => {
+    map1.clear();
+    snap.forEach((d) => {
+      map1.set(d.id, { id: d.id, ...d.data() } as FinancialMovementDocument);
+    });
+    emitMerged();
   }, (err) => {
-    console.warn('[Firestore] Error escuchando movimientos financieros:', err);
-    cb([]);
+    console.warn('[Firestore] Error escuchando movimientos (q1):', err);
   });
+
+  const unsub2 = onSnapshot(q2, (snap) => {
+    map2.clear();
+    snap.forEach((d) => {
+      map2.set(d.id, { id: d.id, ...d.data() } as FinancialMovementDocument);
+    });
+    emitMerged();
+  }, (err) => {
+    console.warn('[Firestore] Error escuchando movimientos (q2):', err);
+  });
+
+  return () => {
+    unsub1();
+    unsub2();
+  };
+}
+
+/**
+ * Elimina definitivamente cualquier registro financiero (operación, movimiento o reserva)
+ * revirtiendo stock, deudas de cuenta corriente y borrando de todas las colecciones vinculadas.
+ */
+export async function permanentlyDeleteFinancialRecordInFirestore(params: {
+  complexId: string;
+  operationId?: string | null;
+  movementId?: string | null;
+  bookingId?: string | null;
+  isLegacyTransaction?: boolean;
+}): Promise<{ success: boolean }> {
+  const opId = params.operationId ? String(params.operationId).trim() : null;
+  const movId = params.movementId ? String(params.movementId).trim() : null;
+  const bId = params.bookingId ? String(params.bookingId).trim() : null;
+
+  // 1. CASO A — Si está vinculado a una reserva de cancha
+  const isBookingExplicit = Boolean(bId || (opId && opId.endsWith('-booking')));
+
+  let opDocData: any = null;
+  if (opId) {
+    try {
+      const opSnap = await getDoc(doc(db, OPERATIONS_COLLECTION, opId));
+      if (opSnap.exists()) {
+        opDocData = opSnap.data();
+      }
+    } catch (e) {
+      console.warn('[Firestore] Error leyendo operación:', e);
+    }
+  }
+
+  const isOpBookingType = opDocData && (
+    opDocData.bookingId ||
+    opDocData.operationType === 'court_booking' ||
+    opDocData.operationType === 'booking'
+  );
+
+  if (isBookingExplicit || isOpBookingType) {
+    const realBookingId = bId || opDocData?.bookingId || opId?.replace('-booking', '');
+    if (realBookingId) {
+      await permanentlyDeleteBookingInFirestore(realBookingId);
+      return { success: true };
+    }
+  }
+
+  // 2. CASO B — Operación de Mostrador (pos_sale), Compra (purchase), Gasto (expense) o movimiento
+  let movDocData: any = null;
+  if (movId) {
+    try {
+      const mSnap = await getDoc(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId));
+      if (mSnap.exists()) {
+        movDocData = mSnap.data();
+      }
+    } catch (e) {
+      console.warn('[Firestore] Error leyendo movimiento:', e);
+    }
+  }
+
+  const effectiveOpId = opId || movDocData?.operationId || null;
+
+  if (effectiveOpId && !opDocData) {
+    try {
+      const opSnap = await getDoc(doc(db, OPERATIONS_COLLECTION, effectiveOpId));
+      if (opSnap.exists()) {
+        opDocData = opSnap.data();
+      } else {
+        const txSnap = await getDoc(doc(db, TRANSACTIONS_COLLECTION, effectiveOpId));
+        if (txSnap.exists()) opDocData = txSnap.data();
+      }
+    } catch {}
+  }
+
+  if (opDocData) {
+    const isSale = opDocData.operationType === 'pos_sale' || opDocData.type === 'pos' || opDocData.type === 'sale';
+    const isPurchase = opDocData.operationType === 'purchase' || opDocData.type === 'purchase' || opDocData.type === 'compra';
+
+    // B.1. Restauración de Stock
+    if (isSale && Array.isArray(opDocData.items)) {
+      // Sumar nuevamente quantity al stock en products/{productId}
+      for (const it of opDocData.items) {
+        const pId = it.productId || it.id;
+        const qty = Number(it.quantity) || 0;
+        if (pId && qty > 0) {
+          try {
+            await updateDoc(doc(db, PRODUCTS_COLLECTION, String(pId)), {
+              stock: increment(qty),
+              updatedAt: serverTimestamp()
+            });
+          } catch (err) {
+            console.warn('[Firestore] Error restaurando stock tras eliminar venta:', err);
+          }
+        }
+      }
+    } else if (isPurchase) {
+      // Restar la cantidad comprada del stock en products/{productId}
+      const pId = opDocData.productId || (Array.isArray(opDocData.items) && opDocData.items[0]?.productId) || (Array.isArray(opDocData.items) && opDocData.items[0]?.id);
+      const qty = Number(opDocData.quantity ?? (Array.isArray(opDocData.items) && opDocData.items[0]?.quantity) ?? 0);
+      if (pId && qty > 0) {
+        try {
+          const pRef = doc(db, PRODUCTS_COLLECTION, String(pId));
+          const pSnap = await getDoc(pRef);
+          if (pSnap.exists()) {
+            const currentStock = Number(pSnap.data().stock || 0);
+            await updateDoc(pRef, {
+              stock: Math.max(0, currentStock - qty),
+              updatedAt: serverTimestamp()
+            });
+          }
+        } catch (err) {
+          console.warn('[Firestore] Error descontando stock tras eliminar compra:', err);
+        }
+      }
+
+      // Remover lote asociado en batches si existe
+      if (effectiveOpId) {
+        try {
+          const batchQ = query(collection(db, 'batches'), where('operationId', '==', String(effectiveOpId)));
+          const bSnap = await getDocs(batchQ);
+          const bBatch = writeBatch(db);
+          bSnap.forEach(d => bBatch.delete(d.ref));
+          await bBatch.commit();
+        } catch {}
+      }
+    }
+
+    // B.2. Revertir saldo de deuda en cuenta corriente si aplica
+    const debtAmt = Number(opDocData.currentAccountDebtAmount || 0);
+    const userId = opDocData.userId || opDocData.clientId;
+    if (debtAmt > 0 && userId) {
+      try {
+        await updateDoc(doc(db, USERS_COLLECTION, String(userId)), {
+          debt: increment(-debtAmt),
+          updatedAt: serverTimestamp()
+        });
+      } catch (err) {
+        console.warn('[Firestore] Error revirtiendo saldo deudor del cliente:', err);
+      }
+    }
+  }
+
+  // B.3. Eliminación de documentos en Firestore
+  const deleteBatch = writeBatch(db);
+
+  if (effectiveOpId) {
+    // Documento en operations
+    deleteBatch.delete(doc(db, OPERATIONS_COLLECTION, String(effectiveOpId)));
+
+    // Documentos en financial_movements con operationId == effectiveOpId
+    try {
+      const fmQ = query(collection(db, FINANCIAL_MOVEMENTS_COLLECTION), where('operationId', '==', String(effectiveOpId)));
+      const fmSnap = await getDocs(fmQ);
+      fmSnap.forEach(d => deleteBatch.delete(d.ref));
+    } catch {}
+
+    // Documentos en inventory_movements con operationId == effectiveOpId
+    try {
+      const imQ = query(collection(db, INVENTORY_MOVEMENTS_COLLECTION), where('operationId', '==', String(effectiveOpId)));
+      const imSnap = await getDocs(imQ);
+      imSnap.forEach(d => deleteBatch.delete(d.ref));
+    } catch {}
+
+    // Documentos en transactions (por ID o operationId)
+    deleteBatch.delete(doc(db, TRANSACTIONS_COLLECTION, String(effectiveOpId)));
+    try {
+      const txQ = query(collection(db, TRANSACTIONS_COLLECTION), where('operationId', '==', String(effectiveOpId)));
+      const txSnap = await getDocs(txQ);
+      txSnap.forEach(d => deleteBatch.delete(d.ref));
+    } catch {}
+  }
+
+  // Si se pasó un movimiento individual puntual, asegurar su eliminación
+  if (movId) {
+    deleteBatch.delete(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId));
+  }
+
+  await deleteBatch.commit();
+  return { success: true };
 }
 
 /**

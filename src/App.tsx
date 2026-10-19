@@ -1139,7 +1139,7 @@ const CreateMatchModal = ({
   courts: Court[], 
   users: User[], 
   onCreate: (data: any) => void, 
-  onQuickAddUser?: (user: any) => void, 
+  onQuickAddUser?: (user: any) => Promise<string | undefined> | any, 
   initialData?: any,
   complexId?: string,
   onNavigate?: (tab: NavTabId | string) => void,
@@ -1393,6 +1393,39 @@ const CreateMatchModal = ({
   const availableHours = getAvailableHours();
   const displayHours = availableHours;
 
+  // Evalúa si una cancha específica está ocupada para el día (data.date) y horario (data.time) actual
+  const isCourtOccupiedForTime = useCallback((courtId: string | number) => {
+    if (!data.date || !data.time) return false;
+    const [h, m] = data.time.split(':').map(Number);
+    const slotStartMin = (isNaN(h) ? 0 : h) * 60 + (isNaN(m) ? 0 : m);
+    const slotEndMin = slotStartMin + 60;
+
+    return (existingBookings || []).some(b => {
+      if (!b) return false;
+      if (data.id && String(b.id) === String(data.id)) return false;
+
+      const bStatus = String(b.status || '').toLowerCase();
+      if (bStatus === 'cancelado' || bStatus === 'cancelled') return false;
+
+      const currentCourtObj = courts.find(c => String(c.id) === String(courtId));
+      const sameCourt = String(b.court_id) === String(courtId) || 
+                        String(b.courtId) === String(courtId) ||
+                        (currentCourtObj && (b.court_name === currentCourtObj.name || b.courtName === currentCourtObj.name));
+      if (!sameCourt) return false;
+
+      const bDate = b.date || (b.start_time ? String(b.start_time).split('T')[0] : '');
+      if (bDate !== data.date) return false;
+
+      const bStartStr = b.startTime || (b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : '');
+      const bEndStr = b.endTime || (b.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : '');
+      if (!bStartStr) return false;
+
+      const bStartMin = timeStringToMinutes(bStartStr);
+      let bEndMin = bEndStr ? timeStringToMinutes(bEndStr) : bStartMin + 60;
+      return intervalsOverlap(slotStartMin, slotEndMin, bStartMin, bEndMin);
+    });
+  }, [data.date, data.time, data.id, existingBookings, courts]);
+
   // Si cambia la cancha o la fecha y el horario previo quedó ocupado, actualizar al primer disponible
   useEffect(() => {
     if (data.date && data.court_id) {
@@ -1404,6 +1437,24 @@ const CreateMatchModal = ({
       }
     }
   }, [data.date, data.court_id, getAvailableHours]);
+
+  // Si cambia la fecha o la hora y la cancha actual queda ocupada, reasignar a la primera libre
+  useEffect(() => {
+    if (data.date && data.time && data.court_id) {
+      if (isCourtOccupiedForTime(data.court_id)) {
+        const freeCourt = courts.find(c => !isCourtOccupiedForTime(c.id));
+        if (freeCourt && String(freeCourt.id) !== String(data.court_id)) {
+          const newPrice = Number(freeCourt?.price_per_hour ?? freeCourt?.price ?? 0);
+          setData((prev: any) => ({ ...prev, court_id: String(freeCourt.id) }));
+          if (bookingPayments.length <= 1) {
+            setBookingPayments([
+              { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: newPrice }
+            ]);
+          }
+        }
+      }
+    }
+  }, [data.date, data.time, isCourtOccupiedForTime, courts]);
 
   // Cálculos reactivos de pagos mixtos para la reserva (Paso 2)
   const totalAssignedBookingPayments = useMemo(() => {
@@ -1477,6 +1528,10 @@ const CreateMatchModal = ({
       setErrorMessage('Por favor seleccioná una cancha.');
       return;
     }
+    if (isCourtOccupiedForTime(data.court_id)) {
+      setErrorMessage('La cancha seleccionada ya está ocupada en ese horario. Por favor elegí otra cancha.');
+      return;
+    }
     const avail = getAvailableHours();
     if (!avail.includes(data.time) && !(data.id && initialData?.time === data.time)) {
       setErrorMessage('Este horario ya no está disponible. Elegí otro.');
@@ -1496,6 +1551,14 @@ const CreateMatchModal = ({
     setErrorMessage(null);
     if (!data.time) {
       setErrorMessage('Por favor elegí un horario.');
+      return;
+    }
+    if (!data.court_id) {
+      setErrorMessage('Por favor seleccioná una cancha.');
+      return;
+    }
+    if (isCourtOccupiedForTime(data.court_id)) {
+      setErrorMessage('La cancha seleccionada ya está ocupada en ese horario. Por favor elegí otra cancha.');
       return;
     }
 
@@ -1594,7 +1657,7 @@ const CreateMatchModal = ({
   };
 
   // Alta anidada de usuario sin desmontar el modal de reserva
-  const handleSaveNewUser = (e: React.FormEvent) => {
+  const handleSaveNewUser = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newUserForm.name.trim() || !newUserForm.phone.trim()) return;
 
@@ -1606,14 +1669,25 @@ const CreateMatchModal = ({
       status: 'activo'
     };
 
+    let realUserId = '';
     if (onQuickAddUser) {
-      onQuickAddUser(newUserData);
+      try {
+        const res = await onQuickAddUser(newUserData);
+        if (res && typeof res === 'string') {
+          realUserId = res;
+        }
+      } catch (err) {
+        console.warn('Error al crear usuario rápido:', err);
+      }
     }
+
+    const assignedId = realUserId || `temp_${Date.now()}`;
 
     // Auto-seleccionar el usuario creado y conservar intactos los demás campos
     setData((prev: any) => ({
       ...prev,
-      host_id: `temp_${Date.now()}`,
+      host_id: assignedId,
+      userId: assignedId,
       clientName: newUserData.name,
       clientPhone: newUserData.phone,
       clientEmail: newUserData.email
@@ -1835,6 +1909,7 @@ const CreateMatchModal = ({
                   value={data.court_id ? String(data.court_id) : ''}
                   onChange={e => {
                     const newCourtId = e.target.value;
+                    if (isCourtOccupiedForTime(newCourtId)) return;
                     const court = courts.find(c => String(c.id) === String(newCourtId));
                     const newPrice = Number(court?.price_per_hour ?? court?.price ?? 0);
                     setData((prev: any) => ({
@@ -1849,11 +1924,19 @@ const CreateMatchModal = ({
                   }}
                   className="w-full h-9.5 px-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
                 >
-                  {courts.map((court, cIdx) => (
-                    <option key={`court-opt-${court.id || cIdx}`} value={String(court.id)}>
-                      {court.name} - ${Number(court.price_per_hour ?? court.price ?? 0).toLocaleString()}
-                    </option>
-                  ))}
+                  {courts.map((court, cIdx) => {
+                    const isOccupied = isCourtOccupiedForTime(court.id);
+                    return (
+                      <option 
+                        key={`court-opt-${court.id || cIdx}`} 
+                        value={String(court.id)}
+                        disabled={isOccupied}
+                        className={isOccupied ? "text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-slate-800" : ""}
+                      >
+                        {court.name} - ${Number(court.price_per_hour ?? court.price ?? 0).toLocaleString()} {isOccupied ? '(Ocupada)' : ''}
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
@@ -6719,6 +6802,10 @@ const FinanceView = ({
         originSection={activeSection}
         users={users}
         bookings={rawBookings}
+        complexId={targetId}
+        onDeleted={() => {
+          setTicketModalOperation(null);
+        }}
         onRegisterPayment={(op) => {
           setTicketModalOperation(null);
           setSettleModalTarget({
@@ -8560,9 +8647,16 @@ export default function App() {
   const handleCreateMatch = async (bookingData: any) => {
     try {
       const selectedCourt = courts.find(c => String(c.id) === String(bookingData.courtId || bookingData.court_id));
+      const resolvedCourtId = String(bookingData.courtId || bookingData.court_id || selectedCourt?.id || '').trim();
+      if (!resolvedCourtId) {
+        throw new Error('Debes seleccionar una cancha válida antes de confirmar la reserva.');
+      }
+
       const payload = {
         complejoId: activeComplexId,
         complejoName: activeComplejoName || 'Colo loco',
+        courtId: resolvedCourtId,
+        court_id: resolvedCourtId,
         courtName: bookingData.courtName || selectedCourt?.name || 'Cancha 1',
         date: bookingData.date,
         startTime: bookingData.startTime || bookingData.time || '18:00',
@@ -8591,7 +8685,7 @@ export default function App() {
     }
   };
 
-  const handleCreateUser = async (data: any) => {
+  const handleCreateUser = async (data: any): Promise<string | undefined> => {
     try {
       const now = new Date();
       const userPayload = {
@@ -8619,10 +8713,12 @@ export default function App() {
         ownerId: auth.currentUser?.uid || '',
         adminId: ''
       };
-      await saveClientInFirestore(activeComplexId, userPayload);
+      const createdId = await saveClientInFirestore(activeComplexId, userPayload);
       setRefreshKey(prev => prev + 1);
+      return createdId;
     } catch (e) {
       console.error('[Firestore] Error creating user:', e);
+      return undefined;
     }
   };
 

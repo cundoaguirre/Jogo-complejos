@@ -206,13 +206,15 @@ export function calculateUserLifecycleMetrics(
 ): UserLifecycleMetrics {
   const todayYMD = parseYMD(systemDate)!;
 
+  // Todas las reservas realizadas (incluye activas, jugadas y canceladas)
+  const allValidBookings = associatedBookings.filter(b => Boolean(b && (b.date || b.startTime || b.start_time)));
+  const reservas = allValidBookings.length;
+
   // Filtrar reservas no canceladas
   const activeBookings = associatedBookings.filter(b => {
     const st = String(b.status || '').toLowerCase();
     return st !== 'cancelled' && st !== 'cancelado';
   });
-
-  const reservas = activeBookings.length;
 
   // Filtrar exclusivamente partidos que ya han sido jugados/finalizados
   const playedBookings = activeBookings.filter(b => isBookingPlayed(b, systemDate));
