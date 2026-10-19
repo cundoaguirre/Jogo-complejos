@@ -21,7 +21,8 @@ export interface UserLifecycleMetrics {
   activacionFormatted: string;  // DD/MM/YY o "-"
   ttvFormatted: string;         // ej. "2d", "14d", "0d" o "-"
   semanaActFormatted: string;   // ej. "W0", "W1", "W2" o "-"
-  juegos: number;               // Entero puro (ej. 0, 1, 4)
+  reservas: number;             // Total de reservas activas (no canceladas)
+  juegos: number;               // Entero puro (partidos ya finalizados)
   frecuencia: number;           // Entero (ej. 1, 0)
   ultimoJuegoFormatted: string; // DD/MM/YY o "-"
   sinJugarFormatted: string;    // ej. "3d", "2d" o "-"
@@ -137,6 +138,67 @@ export function formatDDMMYY(val: any): string {
  * G. Días sin Jugar (D_inactivo): floor((T_hoy - T_last) / 86400000)
  * H. Ciclo de Vida (LTV_días): floor((T_hoy - T_act) / 86400000)
  */
+/**
+ * Determina si una reserva califica estrictamente como partido finalizado/jugado:
+ * a) status es 'jugado' o 'completed', O BIEN
+ * b) la fecha/hora de finalización del turno es <= now.getTime() (contemplando cruce de medianoche).
+ * Si el turno es futuro (endMs > now.getTime()) y su estado es 'confirmado' o 'scheduled', retorna false.
+ */
+export function isBookingPlayed(b: RawBooking, now: Date = new Date()): boolean {
+  if (!b) return false;
+  const st = String(b.status || '').toLowerCase().trim();
+  if (st === 'cancelled' || st === 'cancelado') return false;
+  if (st === 'jugado' || st === 'completed') return true;
+
+  const dateStr = b.date || (b.startTime ? String(b.startTime).split('T')[0] : (b.start_time ? String(b.start_time).split('T')[0] : null));
+  const ymd = parseYMD(dateStr);
+  if (!ymd) return false;
+
+  const rawStart = String(b.startTime || b.start_time || '00:00');
+  const startPart = rawStart.includes('T') ? rawStart.split('T')[1] : rawStart;
+  const startMatch = startPart.match(/(\d{1,2}):(\d{2})/);
+  const startHour = startMatch ? parseInt(startMatch[1], 10) : 0;
+  const startMin = startMatch ? parseInt(startMatch[2], 10) : 0;
+
+  const rawEnd = b.endTime || b.end_time;
+  let endHour = startHour + 1;
+  let endMin = startMin;
+  let crossMidnight = false;
+
+  if (rawEnd) {
+    const endPart = String(rawEnd).includes('T') ? String(rawEnd).split('T')[1] : String(rawEnd);
+    const endMatch = endPart.match(/(\d{1,2}):(\d{2})/);
+    if (endMatch) {
+      endHour = parseInt(endMatch[1], 10);
+      endMin = parseInt(endMatch[2], 10);
+      if (endHour < startHour || (endHour === startHour && endMin <= startMin)) {
+        crossMidnight = true;
+      }
+    }
+  } else if (b.durationMinutes) {
+    const totalMin = startHour * 60 + startMin + Number(b.durationMinutes);
+    endHour = Math.floor(totalMin / 60);
+    endMin = totalMin % 60;
+    if (endHour >= 24) {
+      crossMidnight = true;
+      endHour = endHour % 24;
+    }
+  }
+
+  const endDay = ymd.day + (crossMidnight ? 1 : 0);
+  const endDate = new Date(ymd.year, ymd.month - 1, endDay, endHour, endMin, 0, 0);
+  const endMs = endDate.getTime();
+
+  if (isNaN(endMs)) return false;
+
+  if (endMs <= now.getTime()) {
+    return true;
+  }
+
+  // Turno futuro con estado confirmado o scheduled
+  return false;
+}
+
 export function calculateUserLifecycleMetrics(
   user: any,
   associatedBookings: RawBooking[] = [],
@@ -144,16 +206,51 @@ export function calculateUserLifecycleMetrics(
 ): UserLifecycleMetrics {
   const todayYMD = parseYMD(systemDate)!;
 
-  // Filtrar reservas no canceladas para métricas de juego
+  // Filtrar reservas no canceladas
   const activeBookings = associatedBookings.filter(b => {
     const st = String(b.status || '').toLowerCase();
     return st !== 'cancelled' && st !== 'cancelado';
   });
 
-  // Fechas de partidos válidas ordenadas cronológicamente
+  const reservas = activeBookings.length;
+
+  // Filtrar exclusivamente partidos que ya han sido jugados/finalizados
+  const playedBookings = activeBookings.filter(b => isBookingPlayed(b, systemDate));
+  const juegos = playedBookings.length;
+
+  // A. Adquisición (T_adq)
+  const rawAdq = user.acquisitionDate || user.acquisition_date || user.created_at || user.createdAt;
+  let adqYMD = parseYMD(rawAdq);
+
+  // Si no hay partidos jugados, inicializar métricas según especificación
+  if (playedBookings.length === 0) {
+    if (!adqYMD) {
+      adqYMD = todayYMD;
+    }
+    const adquisicionFormatted = formatDDMMYY(adqYMD);
+
+    return {
+      adquisicionFormatted,
+      activacionFormatted: '-',
+      ttvFormatted: '-',
+      semanaActFormatted: '-',
+      reservas,
+      juegos: 0,
+      frecuencia: 0,
+      ultimoJuegoFormatted: '-',
+      sinJugarFormatted: '-',
+      cicloFormatted: '-',
+      ttvDays: null,
+      sinJugarDays: null,
+      cicloDays: null,
+      isActivated: false
+    };
+  }
+
+  // Fechas de partidos jugados ordenadas cronológicamente
   const bookingDates: { raw: string; ymd: ParsedYMD; ms: number }[] = [];
-  for (const b of activeBookings) {
-    const dateStr = b.date || (b.startTime ? String(b.startTime).split('T')[0] : null);
+  for (const b of playedBookings) {
+    const dateStr = b.date || (b.startTime ? String(b.startTime).split('T')[0] : (b.start_time ? String(b.start_time).split('T')[0] : null));
     if (dateStr) {
       const ymd = parseYMD(dateStr);
       if (ymd) {
@@ -163,12 +260,9 @@ export function calculateUserLifecycleMetrics(
   }
   bookingDates.sort((a, b) => a.ms - b.ms);
 
-  const firstBooking = bookingDates.length > 0 ? bookingDates[0] : null;
-  const lastBooking = bookingDates.length > 0 ? bookingDates[bookingDates.length - 1] : null;
+  const firstBooking = bookingDates[0];
+  const lastBooking = bookingDates[bookingDates.length - 1];
 
-  // A. Adquisición (T_adq)
-  const rawAdq = user.acquisitionDate || user.acquisition_date || user.created_at || user.createdAt;
-  let adqYMD = parseYMD(rawAdq);
   if (!adqYMD && firstBooking) {
     adqYMD = firstBooking.ymd;
   }
@@ -177,11 +271,10 @@ export function calculateUserLifecycleMetrics(
   }
   const adquisicionFormatted = formatDDMMYY(adqYMD);
 
-  // B. Activación (T_act): primer partido o activationDate guardado
-  const rawAct = user.activationDate || user.activation_date || user.first_visit || (firstBooking ? firstBooking.raw : null);
-  const actYMD = parseYMD(rawAct);
-  const activacionFormatted = actYMD ? formatDDMMYY(actYMD) : '-';
-  const isActivated = Boolean(actYMD);
+  // B. Activación (T_act): primer partido jugado
+  const actYMD = firstBooking.ymd;
+  const activacionFormatted = formatDDMMYY(actYMD);
+  const isActivated = true;
 
   // C. Time to Value (TTV): floor((T_act - T_adq) / 86400000)
   let ttvDays: number | null = null;
@@ -198,40 +291,21 @@ export function calculateUserLifecycleMetrics(
     semanaActFormatted = `W${weekCohort}`;
   }
 
-  // E. Partidos Jugados (N_juegos): turnos completados o confirmados
-  const confirmedMatchesCount = activeBookings.filter(b => {
-    const s = String(b.status || '').toLowerCase();
-    return s === 'jugado' || s === 'confirmado' || s === 'completed' || s === 'live' || s === 'active';
-  }).length;
-
-  const userStoredGames = Number(user.totalMatchesPlayed ?? user.matches_played ?? user.totalBookings ?? 0);
-  const juegos = Math.max(confirmedMatchesCount, userStoredGames);
-
-  // F. Último Juego (T_last): max date de B_u o lastGameDate
-  const rawLast = user.lastGameDate || user.last_visit || (lastBooking ? lastBooking.raw : null);
-  const lastYMD = parseYMD(rawLast);
-  const ultimoJuegoFormatted = lastYMD ? formatDDMMYY(lastYMD) : '-';
+  // F. Último Juego (T_last): max date de playedBookings
+  const lastYMD = lastBooking.ymd;
+  const ultimoJuegoFormatted = formatDDMMYY(lastYMD);
 
   // G. Días sin Jugar (D_inactivo): floor((T_hoy - T_last) / 86400000)
-  let sinJugarDays: number | null = null;
-  let sinJugarFormatted = '-';
-  if (lastYMD) {
-    const diff = differenceInCalendarDays(todayYMD, lastYMD);
-    sinJugarDays = Math.max(0, diff);
-    sinJugarFormatted = `${sinJugarDays}d`;
-  }
+  const diffSinJugar = differenceInCalendarDays(todayYMD, lastYMD);
+  const sinJugarDays = Math.max(0, diffSinJugar);
+  const sinJugarFormatted = `${sinJugarDays}d`;
 
   // H. Ciclo de Vida (LTV_días): floor((T_hoy - T_act) / 86400000)
-  let cicloDays: number | null = null;
-  let cicloFormatted = '-';
-  if (actYMD) {
-    const diff = differenceInCalendarDays(todayYMD, actYMD);
-    cicloDays = Math.max(0, diff);
-    cicloFormatted = `${cicloDays}d`;
-  }
+  const diffCiclo = differenceInCalendarDays(todayYMD, actYMD);
+  const cicloDays = Math.max(0, diffCiclo);
+  const cicloFormatted = `${cicloDays}d`;
 
   // Frecuencia (Frec)
-  // Cálculo: Juegos divididos por semanas completas del ciclo de vida activo
   let frecuencia = 0;
   if (juegos > 0 && cicloDays !== null && cicloDays >= 7) {
     const weeks = Math.floor(cicloDays / 7);
@@ -243,6 +317,7 @@ export function calculateUserLifecycleMetrics(
     activacionFormatted,
     ttvFormatted,
     semanaActFormatted,
+    reservas,
     juegos,
     frecuencia,
     ultimoJuegoFormatted,

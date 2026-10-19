@@ -5018,6 +5018,7 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
                 <th className="px-2 py-3">Activación</th>
                 <th className="px-2 py-3 text-center">TTV</th>
                 <th className="px-2 py-3 text-center">Sem. Act.</th>
+                <th className="px-2 py-3 text-center">Reservas</th>
                 <th className="px-2 py-3 text-center">Juegos</th>
                 <th className="px-2 py-3">Último Juego</th>
                 <th className="px-2 py-3 text-center">Sin Jugar</th>
@@ -5082,6 +5083,13 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
                       ) : (
                         <span className="text-gray-400 font-mono">-</span>
                       )}
+                    </td>
+
+                    {/* Reservas */}
+                    <td className="px-2 py-3 font-medium text-center">
+                      <span className="bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-md font-mono font-semibold">
+                        {metrics.reservas}
+                      </span>
                     </td>
 
                     {/* 7. Juegos */}
@@ -5809,7 +5817,9 @@ const FinanceView = ({
     // 2.3 Reservas de turnos de /bookings (si no tienen ya una operación creada)
     const existingBookingIds = new Set(operations.filter(o => o.bookingId).map(o => o.bookingId));
     rawBookings.forEach(b => {
-      if (existingBookingIds.has(b.id) || b.status === 'cancelled') return;
+      if (!b || existingBookingIds.has(b.id)) return;
+      const bStatus = String(b.status || '').toLowerCase();
+      if (bStatus === 'cancelado' || bStatus === 'cancelled') return;
 
       const d = b.date ? safeParseDate(b.date) || new Date() : (b.start_time ? safeParseDate(b.start_time) || new Date() : new Date());
       const tot = Number(b.price || b.price_total || 0);
@@ -5890,8 +5900,9 @@ const FinanceView = ({
   // 3. SECCIÓN PENDIENTES: Saldos por cobrar (ingresos) y por pagar (egresos/compras)
   // -------------------------------------------------------------------------
   const pendingDebts = useMemo(() => {
+    const CANCELLED_STATUSES = ['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded'];
     return combinedOperations
-      .filter(op => op.amountPending > 0 && !op.paymentStatus?.startsWith('cancelled'))
+      .filter(op => op.amountPending > 0 && !CANCELLED_STATUSES.includes(op.paymentStatus))
       .map(op => ({
         id: op.id,
         ticketCode: op.ticketCode,
@@ -6029,18 +6040,38 @@ const FinanceView = ({
   // Métricas Financieras (Separación de Dimensión Económica y Dimensión de Caja)
   // -------------------------------------------------------------------------
   const financialSummary = useMemo(() => {
+    const CANCELLED_STATUSES = ['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded'];
+
     // Dimensión Económica: Operaciones comerciales (Ventas + Reservas vs Gastos + Compras)
-    const validOperations = combinedOperations.filter(op => !op.paymentStatus?.startsWith('cancelled'));
-
-    const economicIncome = validOperations
+    const economicIncome = combinedOperations
       .filter(op => !op.isExpense)
-      .reduce((sum, op) => sum + op.contractualAmount, 0);
+      .reduce((sum, op) => {
+        if (CANCELLED_STATUSES.includes(op.paymentStatus)) {
+          return sum + Math.max(0, Number(op.originalDoc?.retainedAmount ?? op.originalDoc?.netCollected ?? 0));
+        }
+        if (op.paymentStatus === 'cancelled') {
+          return sum;
+        }
+        return sum + op.contractualAmount;
+      }, 0);
 
-    const economicExpense = validOperations
+    const economicExpense = combinedOperations
       .filter(op => Boolean(op.isExpense))
+      .filter(op => !CANCELLED_STATUSES.includes(op.paymentStatus) && op.paymentStatus !== 'cancelled')
       .reduce((sum, op) => sum + op.contractualAmount, 0);
 
     const netResult = economicIncome - economicExpense;
+
+    // Cobrado: Cobranzas netas a clientes (ingresos menos devoluciones/reintegros)
+    const totalCollectedIncome = combinedMovements
+      .filter(m => m.flow === 'income')
+      .reduce((sum, m) => sum + m.amount, 0);
+
+    const totalRefunds = combinedMovements
+      .filter(m => m.flow === 'expense' && (m.category === 'Reintegro / Devolución' || m.category === 'refund' || m.category === 'Reintegro'))
+      .reduce((sum, m) => sum + m.amount, 0);
+
+    const totalCollectedFromClients = totalCollectedIncome - totalRefunds;
 
     // Dimensión de Caja: Flujo de dinero efectivamente cobrado o pagado
     const cashInflows = combinedMovements
@@ -6066,6 +6097,7 @@ const FinanceView = ({
       economicIncome,
       economicExpense,
       netResult,
+      totalCollectedFromClients,
       cashInflows,
       cashOutflows,
       cashAvailable,
@@ -6103,8 +6135,8 @@ const FinanceView = ({
             </div>
           </div>
 
-          {/* Métricas consolidadas clave: 5 tarjetas (Ingresos, Egresos, Resultado Neto, Caja/Disponible y Pendientes) */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 pt-4">
+          {/* Métricas consolidadas clave: 7 tarjetas claramente separadas */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7 gap-3 pt-4">
             {/* 1. Ingresos Económicos */}
             <div className="bg-emerald-50/70 dark:bg-emerald-950/30 p-3.5 rounded-2xl border border-emerald-100 dark:border-emerald-900/40 flex flex-col justify-between">
               <div>
@@ -6115,7 +6147,7 @@ const FinanceView = ({
                   Ventas y reservas
                 </span>
               </div>
-              <span className="text-xl sm:text-2xl font-black text-emerald-600 font-mono mt-2 block">
+              <span className="text-xl sm:text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono mt-2 block">
                 +${financialSummary.economicIncome.toLocaleString()}
               </span>
             </div>
@@ -6130,7 +6162,7 @@ const FinanceView = ({
                   Gastos y compras
                 </span>
               </div>
-              <span className="text-xl sm:text-2xl font-black text-red-600 font-mono mt-2 block">
+              <span className="text-xl sm:text-2xl font-black text-red-600 dark:text-red-400 font-mono mt-2 block">
                 -${financialSummary.economicExpense.toLocaleString()}
               </span>
             </div>
@@ -6153,7 +6185,22 @@ const FinanceView = ({
               </span>
             </div>
 
-            {/* 4. Caja / Disponible */}
+            {/* 4. Cobrado */}
+            <div className="bg-teal-50/70 dark:bg-teal-950/30 p-3.5 rounded-2xl border border-teal-100 dark:border-teal-900/40 flex flex-col justify-between">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-teal-800 dark:text-teal-300 block">
+                  Cobrado
+                </span>
+                <span className="text-[11px] text-teal-600/80 dark:text-teal-400/80">
+                  Cobranzas a clientes
+                </span>
+              </div>
+              <span className="text-xl sm:text-2xl font-black text-teal-600 dark:text-teal-400 font-mono mt-2 block">
+                +${financialSummary.totalCollectedFromClients.toLocaleString()}
+              </span>
+            </div>
+
+            {/* 5. Caja / Disponible */}
             <div className="bg-slate-50 dark:bg-slate-800/80 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-700/80 flex flex-col justify-between">
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-slate-800 dark:text-slate-300 block">
@@ -6171,26 +6218,34 @@ const FinanceView = ({
               </span>
             </div>
 
-            {/* 5. Pendientes */}
-            <div className="bg-amber-50/70 dark:bg-amber-950/30 p-3.5 rounded-2xl border border-amber-100 dark:border-amber-900/40 flex flex-col justify-between col-span-2 sm:col-span-1">
+            {/* 6. Por cobrar */}
+            <div className="bg-amber-50/70 dark:bg-amber-950/30 p-3.5 rounded-2xl border border-amber-100 dark:border-amber-900/40 flex flex-col justify-between">
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300 block">
-                  Pendientes
+                  Por cobrar
                 </span>
-                <span className="text-[10px] text-amber-700/80 dark:text-amber-400/80 block">
-                  Por cobrar / Por pagar
+                <span className="text-[11px] text-amber-600/80 dark:text-amber-400/80">
+                  Saldos de clientes
                 </span>
               </div>
-              <div className="mt-2 space-y-0.5 font-mono">
-                <div className="flex items-center justify-between text-xs font-bold text-amber-700 dark:text-amber-300">
-                  <span className="text-[10px] font-normal">Cobrar:</span>
-                  <span>${financialSummary.pendingToCollect.toLocaleString()}</span>
-                </div>
-                <div className="flex items-center justify-between text-xs font-bold text-red-600 dark:text-red-400">
-                  <span className="text-[10px] font-normal">Pagar:</span>
-                  <span>${financialSummary.pendingToPay.toLocaleString()}</span>
-                </div>
+              <span className="text-xl sm:text-2xl font-black text-amber-600 dark:text-amber-400 font-mono mt-2 block">
+                ${financialSummary.pendingToCollect.toLocaleString()}
+              </span>
+            </div>
+
+            {/* 7. Por pagar */}
+            <div className="bg-rose-50/70 dark:bg-rose-950/30 p-3.5 rounded-2xl border border-rose-100 dark:border-rose-900/40 flex flex-col justify-between">
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-rose-800 dark:text-rose-300 block">
+                  Por pagar
+                </span>
+                <span className="text-[11px] text-rose-600/80 dark:text-rose-400/80">
+                  Saldos de compras
+                </span>
               </div>
+              <span className="text-xl sm:text-2xl font-black text-rose-600 dark:text-rose-400 font-mono mt-2 block">
+                ${financialSummary.pendingToPay.toLocaleString()}
+              </span>
             </div>
           </div>
         </div>

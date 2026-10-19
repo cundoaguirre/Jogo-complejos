@@ -37,6 +37,7 @@ import {
   formatTicketCode
 } from './financialMath';
 import { calculateCancellationFinancialPlan } from './cancellationPolicy';
+import { isBookingPlayed } from './userMetrics';
 
 export const COMPLEJOS_COLLECTION = 'complejos';
 export const BOOKINGS_COLLECTION = 'bookings';
@@ -597,10 +598,8 @@ export async function syncUserMetricsWithBookings(userId: string | number, userP
       return st !== 'cancelled' && st !== 'cancelado';
     });
 
-    const totalPlayed = validBookings.filter(b => {
-      const st = String(b.status || '').toLowerCase();
-      return st === 'jugado' || st === 'confirmado' || st === 'completed';
-    }).length;
+    const now = new Date();
+    const totalPlayed = validBookings.filter(b => isBookingPlayed(b, now)).length;
 
     const dates = validBookings.map(b => b.date).filter(Boolean).sort();
     const firstDate = dates[0] || null;
