@@ -4151,11 +4151,16 @@ export function subscribeToOperations(
   const emitMerged = () => {
     const merged = new Map<string, OperationDocument>([...map1, ...map2]);
     const list = Array.from(merged.values());
-    list.sort((a, b) => {
-      const tA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
-      const tB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
-      return tB - tA;
-    });
+    const parseTime = (item: any) => {
+      const v = item?.createdAt || item?.date;
+      if (!v) return 0;
+      if (typeof v?.toDate === 'function') return v.toDate().getTime();
+      if (typeof v?.toMillis === 'function') return v.toMillis();
+      if (v instanceof Date) return v.getTime();
+      const t = new Date(v).getTime();
+      return isNaN(t) ? 0 : t;
+    };
+    list.sort((a, b) => parseTime(b) - parseTime(a));
     cb(list);
   };
 
@@ -4166,7 +4171,7 @@ export function subscribeToOperations(
     });
     emitMerged();
   }, (err) => {
-    console.warn('[Firestore] Error escuchando operaciones (q1):', err);
+    console.warn('[Firestore] Error escuchando operaciones (q1 complexId):', err);
   });
 
   const unsub2 = onSnapshot(q2, (snap) => {
@@ -4176,7 +4181,7 @@ export function subscribeToOperations(
     });
     emitMerged();
   }, (err) => {
-    console.warn('[Firestore] Error escuchando operaciones (q2):', err);
+    console.warn('[Firestore] Error escuchando operaciones (q2 complejoId):', err);
   });
 
   return () => {
@@ -4204,11 +4209,16 @@ export function subscribeToFinancialMovements(
   const emitMerged = () => {
     const merged = new Map<string, FinancialMovementDocument>([...map1, ...map2]);
     const list = Array.from(merged.values());
-    list.sort((a, b) => {
-      const tA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
-      const tB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
-      return tB - tA;
-    });
+    const parseTime = (item: any) => {
+      const v = item?.createdAt || item?.date;
+      if (!v) return 0;
+      if (typeof v?.toDate === 'function') return v.toDate().getTime();
+      if (typeof v?.toMillis === 'function') return v.toMillis();
+      if (v instanceof Date) return v.getTime();
+      const t = new Date(v).getTime();
+      return isNaN(t) ? 0 : t;
+    };
+    list.sort((a, b) => parseTime(b) - parseTime(a));
     cb(list);
   };
 
@@ -4219,7 +4229,7 @@ export function subscribeToFinancialMovements(
     });
     emitMerged();
   }, (err) => {
-    console.warn('[Firestore] Error escuchando movimientos (q1):', err);
+    console.warn('[Firestore] Error escuchando movimientos (q1 complexId):', err);
   });
 
   const unsub2 = onSnapshot(q2, (snap) => {
@@ -4229,7 +4239,7 @@ export function subscribeToFinancialMovements(
     });
     emitMerged();
   }, (err) => {
-    console.warn('[Firestore] Error escuchando movimientos (q2):', err);
+    console.warn('[Firestore] Error escuchando movimientos (q2 complejoId):', err);
   });
 
   return () => {
@@ -4240,7 +4250,7 @@ export function subscribeToFinancialMovements(
 
 /**
  * Elimina definitivamente cualquier registro financiero (operación, movimiento o reserva)
- * revirtiendo stock, deudas de cuenta corriente y borrando de todas las colecciones vinculadas.
+ * revirtiendo stock, deudas de cuenta corriente y borrando de todas las colecciones vinculadas sin dejar rastros.
  */
 export async function permanentlyDeleteFinancialRecordInFirestore(params: {
   complexId: string;
@@ -4249,65 +4259,96 @@ export async function permanentlyDeleteFinancialRecordInFirestore(params: {
   bookingId?: string | null;
   isLegacyTransaction?: boolean;
 }): Promise<{ success: boolean }> {
-  const opId = params.operationId ? String(params.operationId).trim() : null;
+  let opId = params.operationId ? String(params.operationId).trim() : null;
   const movId = params.movementId ? String(params.movementId).trim() : null;
-  const bId = params.bookingId ? String(params.bookingId).trim() : null;
+  let bId = params.bookingId ? String(params.bookingId).trim() : null;
 
-  // 1. CASO A — Si está vinculado a una reserva de cancha
-  const isBookingExplicit = Boolean(bId || (opId && opId.endsWith('-booking')));
-
-  let opDocData: any = null;
-  if (opId) {
-    try {
-      const opSnap = await getDoc(doc(db, OPERATIONS_COLLECTION, opId));
-      if (opSnap.exists()) {
-        opDocData = opSnap.data();
-      }
-    } catch (e) {
-      console.warn('[Firestore] Error leyendo operación:', e);
-    }
-  }
-
-  const isOpBookingType = opDocData && (
-    opDocData.bookingId ||
-    opDocData.operationType === 'court_booking' ||
-    opDocData.operationType === 'booking'
-  );
-
-  if (isBookingExplicit || isOpBookingType) {
-    const realBookingId = bId || opDocData?.bookingId || opId?.replace('-booking', '');
-    if (realBookingId) {
-      await permanentlyDeleteBookingInFirestore(realBookingId);
-      return { success: true };
-    }
-  }
-
-  // 2. CASO B — Operación de Mostrador (pos_sale), Compra (purchase), Gasto (expense) o movimiento
+  // 1. Si se invocó desde un movimiento, leer primero el documento para extraer operationId y bookingId
   let movDocData: any = null;
   if (movId) {
     try {
       const mSnap = await getDoc(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId));
       if (mSnap.exists()) {
         movDocData = mSnap.data();
+        if (!opId && movDocData.operationId) {
+          opId = String(movDocData.operationId).trim();
+        }
+        if (!bId && movDocData.bookingId) {
+          bId = String(movDocData.bookingId).trim();
+        }
       }
     } catch (e) {
       console.warn('[Firestore] Error leyendo movimiento:', e);
     }
   }
 
-  const effectiveOpId = opId || movDocData?.operationId || null;
-
-  if (effectiveOpId && !opDocData) {
+  // 2. Si se tiene operationId, leer los datos del documento de operación o transacción
+  let opDocData: any = null;
+  if (opId) {
     try {
-      const opSnap = await getDoc(doc(db, OPERATIONS_COLLECTION, effectiveOpId));
+      const opSnap = await getDoc(doc(db, OPERATIONS_COLLECTION, opId));
       if (opSnap.exists()) {
         opDocData = opSnap.data();
+        if (!bId && opDocData.bookingId) {
+          bId = String(opDocData.bookingId).trim();
+        }
       } else {
-        const txSnap = await getDoc(doc(db, TRANSACTIONS_COLLECTION, effectiveOpId));
-        if (txSnap.exists()) opDocData = txSnap.data();
+        const txSnap = await getDoc(doc(db, TRANSACTIONS_COLLECTION, opId));
+        if (txSnap.exists()) {
+          opDocData = txSnap.data();
+          if (!bId && opDocData.bookingId) {
+            bId = String(opDocData.bookingId).trim();
+          }
+        }
       }
-    } catch {}
+    } catch (e) {
+      console.warn('[Firestore] Error leyendo operación:', e);
+    }
   }
+
+  // 3. Resolución unificada de ID de Reserva de Cancha
+  let resolvedBookingId = bId;
+  if (!resolvedBookingId) {
+    if (opId && opId.endsWith('-booking')) {
+      resolvedBookingId = opId.replace('-booking', '');
+    } else if (movId && movId.includes('_deposit_legacy')) {
+      resolvedBookingId = movId.split('_deposit_legacy')[0];
+    } else if (movDocData?.operationId && movDocData.operationId.endsWith('-booking')) {
+      resolvedBookingId = movDocData.operationId.replace('-booking', '');
+    } else if (movDocData?.operationId && movDocData.operationId.includes('_deposit_legacy')) {
+      resolvedBookingId = movDocData.operationId.split('_deposit_legacy')[0];
+    }
+  }
+
+  const isOpBookingType = Boolean(
+    resolvedBookingId ||
+    (opDocData && (
+      opDocData.bookingId ||
+      opDocData.operationType === 'court_booking' ||
+      opDocData.operationType === 'booking'
+    )) ||
+    (movDocData && (
+      movDocData.category === 'Alquiler de Cancha' && (movDocData.bookingId || movDocData.operationId)
+    ))
+  );
+
+  // CASO A — Corresponde a una Reserva de Cancha: eliminación total en cascada
+  if (isOpBookingType) {
+    const finalBookingId = resolvedBookingId || opDocData?.bookingId || movDocData?.bookingId || opId?.replace('-booking', '');
+    if (finalBookingId) {
+      await permanentlyDeleteBookingInFirestore(finalBookingId);
+      // Limpieza adicional garantizada del movimiento individual si existiese
+      if (movId) {
+        try {
+          await deleteDoc(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId));
+        } catch {}
+      }
+      return { success: true };
+    }
+  }
+
+  // CASO B — Operación de Mostrador (pos_sale), Compra (purchase) o Gasto (expense)
+  const effectiveOpId = opId || movDocData?.operationId || null;
 
   if (opDocData) {
     const isSale = opDocData.operationType === 'pos_sale' || opDocData.type === 'pos' || opDocData.type === 'sale';
@@ -4315,7 +4356,6 @@ export async function permanentlyDeleteFinancialRecordInFirestore(params: {
 
     // B.1. Restauración de Stock
     if (isSale && Array.isArray(opDocData.items)) {
-      // Sumar nuevamente quantity al stock en products/{productId}
       for (const it of opDocData.items) {
         const pId = it.productId || it.id;
         const qty = Number(it.quantity) || 0;
@@ -4331,7 +4371,7 @@ export async function permanentlyDeleteFinancialRecordInFirestore(params: {
         }
       }
     } else if (isPurchase) {
-      // Restar la cantidad comprada del stock en products/{productId}
+      // Restar la cantidad comprada del stock
       const pId = opDocData.productId || (Array.isArray(opDocData.items) && opDocData.items[0]?.productId) || (Array.isArray(opDocData.items) && opDocData.items[0]?.id);
       const qty = Number(opDocData.quantity ?? (Array.isArray(opDocData.items) && opDocData.items[0]?.quantity) ?? 0);
       if (pId && qty > 0) {
@@ -4404,6 +4444,13 @@ export async function permanentlyDeleteFinancialRecordInFirestore(params: {
       const txQ = query(collection(db, TRANSACTIONS_COLLECTION), where('operationId', '==', String(effectiveOpId)));
       const txSnap = await getDocs(txQ);
       txSnap.forEach(d => deleteBatch.delete(d.ref));
+    } catch {}
+
+    // Eliminar claves de idempotencia vinculadas si existen
+    try {
+      const idempQ = query(collection(db, 'idempotency_keys'), where('operationId', '==', String(effectiveOpId)));
+      const idempSnap = await getDocs(idempQ);
+      idempSnap.forEach(d => deleteBatch.delete(d.ref));
     } catch {}
   }
 

@@ -50,7 +50,8 @@ import {
   resolveClientName,
   resolveClientPhone,
   subscribeToExpenseCategories,
-  subscribeToExpenseItems
+  subscribeToExpenseItems,
+  permanentlyDeleteFinancialRecordInFirestore
 } from './lib/firestoreSync';
 import type { OperationDocument, FinancialMovementDocument, ProductCategory, Product, FinancialPaymentMethod } from './types';
 import { POSView } from './components/POSView';
@@ -1438,24 +1439,6 @@ const CreateMatchModal = ({
     }
   }, [data.date, data.court_id, getAvailableHours]);
 
-  // Si cambia la fecha o la hora y la cancha actual queda ocupada, reasignar a la primera libre
-  useEffect(() => {
-    if (data.date && data.time && data.court_id) {
-      if (isCourtOccupiedForTime(data.court_id)) {
-        const freeCourt = courts.find(c => !isCourtOccupiedForTime(c.id));
-        if (freeCourt && String(freeCourt.id) !== String(data.court_id)) {
-          const newPrice = Number(freeCourt?.price_per_hour ?? freeCourt?.price ?? 0);
-          setData((prev: any) => ({ ...prev, court_id: String(freeCourt.id) }));
-          if (bookingPayments.length <= 1) {
-            setBookingPayments([
-              { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: newPrice }
-            ]);
-          }
-        }
-      }
-    }
-  }, [data.date, data.time, isCourtOccupiedForTime, courts]);
-
   // Cálculos reactivos de pagos mixtos para la reserva (Paso 2)
   const totalAssignedBookingPayments = useMemo(() => {
     return bookingPayments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
@@ -1938,6 +1921,12 @@ const CreateMatchModal = ({
                     );
                   })}
                 </select>
+                {data.court_id && isCourtOccupiedForTime(data.court_id) && (
+                  <p className="text-[11px] text-red-600 dark:text-red-400 font-bold mt-1.5 flex items-center gap-1">
+                    <AlertCircle size={13} className="shrink-0" />
+                    <span>Esta cancha ya está ocupada en el horario seleccionado. Elegí otra cancha o cambiá el horario.</span>
+                  </p>
+                )}
               </div>
 
               {/* 5. Notas u Observaciones */}
@@ -5519,6 +5508,52 @@ const FinanceView = ({
   const [selectedExpenseItemName, setSelectedExpenseItemName] = useState<string>('');
   const [pendingFilter, setPendingFilter] = useState<'all' | 'receivable' | 'payable'>('all');
 
+  // Estado para Modal de Confirmación de Eliminación Definitiva y Toast
+  const [deleteTarget, setDeleteTarget] = useState<{
+    type: 'movement' | 'operation' | 'pending';
+    id: string;
+    movementId?: string | null;
+    operationId?: string | null;
+    bookingId?: string | null;
+    title: string;
+    client: string;
+    amount: number;
+    isIncome: boolean;
+  } | null>(null);
+  const [isDeletingTarget, setIsDeletingTarget] = useState(false);
+  const [deleteToast, setDeleteToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!deleteToast) return;
+    const timer = setTimeout(() => {
+      setDeleteToast(null);
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, [deleteToast]);
+
+  const handleConfirmPermanentDelete = async () => {
+    if (!deleteTarget) return;
+    setIsDeletingTarget(true);
+    try {
+      await permanentlyDeleteFinancialRecordInFirestore({
+        complexId: targetId,
+        operationId: deleteTarget.operationId,
+        movementId: deleteTarget.movementId,
+        bookingId: deleteTarget.bookingId
+      });
+      const deletedTitle = deleteTarget.title;
+      setDeleteTarget(null);
+      if (ticketModalOperation && (ticketModalOperation.id === deleteTarget.operationId || ticketModalOperation.id === deleteTarget.id)) {
+        setTicketModalOperation(null);
+      }
+      setDeleteToast(`Se ha eliminado ${deletedTitle} completamente del sistema.`);
+    } catch (err) {
+      console.error('Error eliminando registro definitivamente:', err);
+    } finally {
+      setIsDeletingTarget(false);
+    }
+  };
+
   // 1. Subscriptions to real collections
   useEffect(() => {
     if (!targetId) return;
@@ -6507,6 +6542,28 @@ const FinanceView = ({
                           <span className="hidden sm:inline">Operación</span>
                         </button>
                       )}
+
+                      {/* Botón Eliminar definitivamente */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteTarget({
+                            type: 'movement',
+                            id: m.id,
+                            movementId: m.id,
+                            operationId: m.operationId,
+                            title: m.category,
+                            client: m.responsibleName && m.responsibleName !== 'NN' ? m.responsibleName : 'Mostrador',
+                            amount: m.amount,
+                            isIncome: m.flow === 'income'
+                          });
+                        }}
+                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                        title="Eliminar definitivamente"
+                      >
+                        <Trash2 size={14} />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -6599,6 +6656,28 @@ const FinanceView = ({
                       >
                         <Receipt size={14} />
                         <span>Ticket</span>
+                      </button>
+
+                      {/* Botón Eliminar definitivamente */}
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setDeleteTarget({
+                            type: 'operation',
+                            id: op.id,
+                            operationId: op.id,
+                            bookingId: op.originalDoc?.bookingId || (op.id.endsWith('-booking') ? op.id.replace('-booking', '') : undefined),
+                            title: `${op.concept} (#${op.ticketCode})`,
+                            client: op.clientName || 'Cliente',
+                            amount: op.contractualAmount,
+                            isIncome: !op.isExpense
+                          });
+                        }}
+                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                        title="Eliminar definitivamente"
+                      >
+                        <Trash2 size={14} />
                       </button>
                     </div>
                   </div>
@@ -6762,6 +6841,28 @@ const FinanceView = ({
                           <Coins size={14} />
                           <span>{debt.isExpense ? 'Pagar' : 'Cobrar'}</span>
                         </button>
+
+                        {/* Botón Eliminar definitivamente */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleteTarget({
+                              type: 'pending',
+                              id: debt.id,
+                              operationId: debt.id,
+                              bookingId: debt.originalDoc?.bookingId || (debt.id.endsWith('-booking') ? debt.id.replace('-booking', '') : undefined),
+                              title: `${debt.concept} (#${debt.ticketCode})`,
+                              client: debt.clientName || 'Cliente',
+                              amount: debt.amountPending,
+                              isIncome: !debt.isExpense
+                            });
+                          }}
+                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                          title="Eliminar definitivamente"
+                        >
+                          <Trash2 size={14} />
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -6803,8 +6904,9 @@ const FinanceView = ({
         users={users}
         bookings={rawBookings}
         complexId={targetId}
-        onDeleted={() => {
+        onDeleted={(concept) => {
           setTicketModalOperation(null);
+          setDeleteToast(`Se ha eliminado ${concept || 'el registro'} completamente del sistema.`);
         }}
         onRegisterPayment={(op) => {
           setTicketModalOperation(null);
@@ -6851,6 +6953,91 @@ const FinanceView = ({
           setSettleModalTarget(null);
         }}
       />
+
+      {/* Modal de Confirmación de Eliminación Definitiva */}
+      {deleteTarget && (
+        <div 
+          className="fixed inset-0 z-[75] flex items-center justify-center bg-black/75 backdrop-blur-xs p-4 animate-in fade-in duration-150"
+          onClick={() => {
+            if (!isDeletingTarget) setDeleteTarget(null);
+          }}
+        >
+          <div 
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-slate-900 rounded-3xl p-6 max-w-sm w-full shadow-2xl border border-gray-100 dark:border-slate-800 space-y-4"
+          >
+            <div className="w-12 h-12 rounded-2xl bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto">
+              <Trash2 size={24} />
+            </div>
+
+            <div className="text-center space-y-2.5">
+              <h3 className="text-sm font-black text-gray-900 dark:text-white">
+                ¿Estás seguro de eliminar este registro?
+              </h3>
+              
+              <div className="p-3 bg-gray-50 dark:bg-slate-800/60 rounded-xl text-left space-y-1 font-mono text-xs border border-gray-100 dark:border-slate-700/60">
+                <div className="flex justify-between items-center text-gray-800 dark:text-slate-200 font-bold">
+                  <span className="text-gray-400 font-sans text-[11px]">Concepto:</span>
+                  <span className="truncate max-w-[180px]">{deleteTarget.title}</span>
+                </div>
+                {deleteTarget.client && (
+                  <div className="flex justify-between items-center text-gray-600 dark:text-slate-400 text-[11px]">
+                    <span className="text-gray-400 font-sans">Cliente/Prov:</span>
+                    <span className="truncate max-w-[180px]">{deleteTarget.client}</span>
+                  </div>
+                )}
+                <div className="flex justify-between items-center pt-1 border-t border-gray-200/60 dark:border-slate-700/60">
+                  <span className="text-gray-400 font-sans text-[11px]">Monto:</span>
+                  <span className={cn(
+                    "font-black text-sm",
+                    deleteTarget.isIncome ? "text-emerald-600" : "text-red-600"
+                  )}>
+                    ${deleteTarget.amount.toLocaleString()}
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-[11px] text-gray-500 dark:text-slate-400 leading-relaxed text-left">
+                Se eliminará absolutamente de todos lados (Finanzas, Agenda de reservas, Stock de productos, Cuenta corriente del usuario y base de datos en la nube) como si nunca hubiera existido. Esta acción no se puede deshacer.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingTarget}
+                onClick={() => setDeleteTarget(null)}
+                className="flex-1 py-2.5 rounded-xl bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingTarget}
+                onClick={handleConfirmPermanentDelete}
+                className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 active:scale-95 text-white text-xs font-bold transition-all shadow-md shadow-red-900/20 cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                {isDeletingTarget ? (
+                  <span>Eliminando...</span>
+                ) : (
+                  <>
+                    <Trash2 size={14} />
+                    <span>Sí, eliminar definitivamente</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notificación flotante Toast verde/esmeralda visible por 3.5 segundos */}
+      {deleteToast && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[80] bg-emerald-600 text-white px-5 py-3 rounded-2xl shadow-2xl font-bold text-xs sm:text-sm flex items-center gap-2.5 animate-in fade-in slide-in-from-bottom-3 duration-200 border border-emerald-500/50">
+          <CheckCircle2 size={18} className="shrink-0 text-white" />
+          <span>{deleteToast}</span>
+        </div>
+      )}
 
       {/* Modal de Carga Manual Administrativa */}
       <AnimatePresence>

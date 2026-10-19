@@ -37,7 +37,7 @@ interface TicketModalProps {
   users?: User[];
   bookings?: any[];
   complexId?: string;
-  onDeleted?: () => void;
+  onDeleted?: (concept?: string) => void;
 }
 
 export const TicketModal: React.FC<TicketModalProps> = ({
@@ -70,7 +70,10 @@ export const TicketModal: React.FC<TicketModalProps> = ({
         isLegacyTransaction: Boolean((operation as any).isLegacy)
       });
       setShowConfirmDelete(false);
-      if (onDeleted) onDeleted();
+      if (onDeleted) {
+        const itemConcept = (operation as any).concept || operation.notes || (operation.operationType === 'court_booking' ? 'la reserva de cancha' : 'la operación');
+        onDeleted(itemConcept);
+      }
       onClose();
     } catch (err) {
       console.error('Error deleting financial record:', err);
