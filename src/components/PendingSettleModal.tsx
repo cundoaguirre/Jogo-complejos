@@ -68,31 +68,31 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
     return resolveClientName(operation, users, operation?.originalDoc);
   }, [operation, users]);
 
-  if (!isOpen || !operation) return null;
-
-  const totalDebt = Math.max(0, Number(operation.amountPending || 0));
+  const totalDebt = Math.max(0, Number(operation?.amountPending || 0));
 
   // Payment rows state (starts with single method with exact remaining debt)
-  const [payments, setPayments] = useState<PaymentRow[]>([
-    { id: 'pay_0', method: 'cash', amount: totalDebt }
-  ]);
+  const [payments, setPayments] = useState<PaymentRow[]>([]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Sync payments when operation opens
   useEffect(() => {
-    if (operation) {
+    if (isOpen && operation) {
+      const debt = Math.max(0, Number(operation.amountPending || 0));
       setPayments([
-        { id: `pay_${Date.now()}`, method: 'cash', amount: totalDebt }
+        { id: `pay_${Date.now()}`, method: 'cash', amount: debt }
       ]);
       setErrorMsg(null);
+      setIsSubmitting(false);
     }
-  }, [operation?.id, totalDebt]);
+  }, [isOpen, operation?.id, operation?.amountPending]);
 
   // Calculations
   const totalAssigned = useMemo(() => {
     return payments.reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
   }, [payments]);
+
+  if (!isOpen || !operation) return null;
 
   const diff = totalAssigned - totalDebt;
   const isSobra = diff > 0.01;
