@@ -973,9 +973,14 @@ export async function createBookingInFirestore(data: {
       });
 
       const rawPayments: Array<{ amount: number; paymentMethod: FinancialPaymentMethod; notes?: string }> = 
-        (Array.isArray(data.payments) && data.payments.length > 0)
+        ((Array.isArray(data.payments) && data.payments.length > 0)
           ? data.payments
-          : (deposit > 0 ? [{ amount: deposit, paymentMethod: (data.paymentMethod as FinancialPaymentMethod) || 'cash' }] : []);
+          : (deposit > 0 ? [{ amount: deposit, paymentMethod: (data.paymentMethod as FinancialPaymentMethod) || 'cash' }] : [])
+        ).filter((pay: any) => {
+          const m = String(pay?.paymentMethod || pay?.method || '').toLowerCase();
+          const amt = Number(pay?.amount || 0);
+          return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado';
+        });
 
       rawPayments.forEach((pay, idx) => {
         const pAmt = Number(pay.amount) || 0;
@@ -2178,7 +2183,11 @@ export async function executeExpenseOperation(params: {
   }
 
   const rawPayments = Array.isArray(params.payments) ? params.payments : [];
-  const validPayments = rawPayments.filter(p => Number(p.amount) > 0);
+  const validPayments = rawPayments.filter(p => {
+    const m = String(p.paymentMethod || (p as any).method || '').toLowerCase();
+    const amt = Number(p.amount || 0);
+    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado';
+  });
   const totalPaid = validPayments.reduce((s, p) => s + Number(p.amount), 0);
 
   if (totalPaid > amount + 0.01) {
@@ -2719,7 +2728,11 @@ export async function registerMerchandisePurchaseInFirestore(params: {
   }
 
   const totalPurchase = qty * cost;
-  const rawPayments = Array.isArray(params.payments) ? params.payments : [];
+  const rawPayments = (Array.isArray(params.payments) ? params.payments : []).filter(p => {
+    const m = String(p.paymentMethod || (p as any).method || '').toLowerCase();
+    const amt = Number(p.amount || 0);
+    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado';
+  });
   const totalPaid = rawPayments.reduce((s, p) => s + Math.max(0, Number(p.amount) || 0), 0);
 
   if (totalPaid > totalPurchase + 0.01) {
@@ -3249,9 +3262,14 @@ export async function createOperationWithInitialPayment(
   const counterRef = doc(db, COMPLEX_COUNTERS_COLLECTION, params.complexId);
 
   // Normalizar pagos iniciales (soporta pago único o split payments)
-  const rawPayments = params.initialPayments && params.initialPayments.length > 0
+  const rawPayments = (params.initialPayments && params.initialPayments.length > 0
     ? params.initialPayments
-    : (params.initialPayment ? [params.initialPayment] : []);
+    : (params.initialPayment ? [params.initialPayment] : [])
+  ).filter(p => {
+    const m = String((p as any).paymentMethod || (p as any).method || '').toLowerCase();
+    const amt = Number(p.amount || 0);
+    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado';
+  });
 
   const opIdemRef = params.idempotencyKey
     ? doc(db, IDEMPOTENCY_COLLECTION, params.idempotencyKey)
@@ -5135,7 +5153,7 @@ export async function cancelBookingWithPolicy(
 
     // 2.2 Registrar movimiento de egreso si hay devolución
     let refundMovementId: string | undefined = undefined;
-    if (plan.refundAmount > 0) {
+    if (plan.refundAmount > 0 && totalCollected > 0) {
       refundMovementId = generateUUID();
       const refundMovRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, refundMovementId);
       const ticketCode = `B-${params.bookingId.slice(0, 6).toUpperCase()}`;

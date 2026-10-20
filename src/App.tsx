@@ -1154,7 +1154,7 @@ const CreateMatchModal = ({
     method: 'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente';
     amount: number | '';
   }>>([
-    { id: 'bpay_1', method: 'Efectivo', amount: '' }
+    { id: 'bpay_1', method: 'Pendiente', amount: '' }
   ]);
 
   const [data, setData] = useState<any>({ 
@@ -1295,7 +1295,7 @@ const CreateMatchModal = ({
       ]);
     } else {
       setBookingPayments([
-        { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: courtPrice > 0 ? courtPrice : '' }
+        { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: courtPrice > 0 ? courtPrice : '' }
       ]);
     }
   }, [isOpen, initialData, courts]);
@@ -1523,7 +1523,7 @@ const CreateMatchModal = ({
 
     if (bookingPayments.length <= 1 && (bookingPayments[0]?.amount === '' || bookingPayments[0]?.amount === 0)) {
       setBookingPayments([
-        { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: priceTotal }
+        { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: priceTotal }
       ]);
     }
     setStep(2);
@@ -1901,7 +1901,7 @@ const CreateMatchModal = ({
                     }));
                     if (bookingPayments.length <= 1) {
                       setBookingPayments([
-                        { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: newPrice }
+                        { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: newPrice }
                       ]);
                     }
                   }}
@@ -5534,6 +5534,10 @@ const FinanceView = ({
   const handleConfirmPermanentDelete = async () => {
     if (!deleteTarget) return;
     setIsDeletingTarget(true);
+    const targetOpId = deleteTarget.operationId || (deleteTarget.type === 'operation' || deleteTarget.type === 'pending' ? deleteTarget.id : null);
+    const targetMovId = deleteTarget.movementId || (deleteTarget.type === 'movement' ? deleteTarget.id : null);
+    const targetBId = deleteTarget.bookingId || (targetOpId && targetOpId.endsWith('-booking') ? targetOpId.replace('-booking', '') : null);
+
     try {
       await permanentlyDeleteFinancialRecordInFirestore({
         complexId: targetId,
@@ -5542,6 +5546,28 @@ const FinanceView = ({
         bookingId: deleteTarget.bookingId
       });
       const deletedTitle = deleteTarget.title;
+
+      // Limpieza inmediata en estados locales para feedback visual instantáneo (latencia cero)
+      if (targetOpId) {
+        setOperations(prev => prev.filter(o => o.id !== targetOpId && (!targetBId || o.bookingId !== targetBId)));
+      }
+      if (targetMovId || targetOpId || targetBId) {
+        setFinancialMovements(prev => prev.filter(m => 
+          (!targetMovId || m.id !== targetMovId) &&
+          (!targetOpId || (m.operationId !== targetOpId && (!targetBId || m.operationId !== `${targetBId}-booking`))) &&
+          (!targetBId || m.bookingId !== targetBId)
+        ));
+      }
+      if (targetBId) {
+        setRawBookings(prev => prev.filter(b => String(b.id) !== String(targetBId)));
+      }
+      if (targetOpId || targetBId) {
+        setLegacyTransactions(prev => prev.filter(t => 
+          (!targetOpId || (t.id !== targetOpId && t.operationId !== targetOpId)) &&
+          (!targetBId || t.bookingId !== targetBId)
+        ));
+      }
+
       setDeleteTarget(null);
       if (ticketModalOperation && (ticketModalOperation.id === deleteTarget.operationId || ticketModalOperation.id === deleteTarget.id)) {
         setTicketModalOperation(null);
@@ -6127,21 +6153,6 @@ const FinanceView = ({
         clearedCurrentAccountDebt: 0,
         notes: notesWithMethod,
         operatorId: 'administrador',
-        createdAt: serverTimestamp()
-      });
-
-      // 3. Guardar en transactions para compatibilidad histórica
-      await addDoc(collection(db, 'transactions'), {
-        complejoId: targetId,
-        type: newTx.type,
-        category: categoryToSave,
-        amount: amountVal,
-        total: amountVal,
-        description: notesWithMethod,
-        date: todayStr,
-        paymentMethod: newTx.paymentMethod,
-        ticketCode,
-        operationId,
         createdAt: serverTimestamp()
       });
     } catch (err) {
@@ -6905,6 +6916,14 @@ const FinanceView = ({
         bookings={rawBookings}
         complexId={targetId}
         onDeleted={(concept) => {
+          if (ticketModalOperation) {
+            const opId = ticketModalOperation.id;
+            const bId = ticketModalOperation.bookingId || (opId.endsWith('-booking') ? opId.replace('-booking', '') : null);
+            setOperations(prev => prev.filter(o => o.id !== opId && (!bId || o.bookingId !== bId)));
+            setFinancialMovements(prev => prev.filter(m => m.operationId !== opId && (!bId || (m.operationId !== `${bId}-booking` && m.bookingId !== bId))));
+            if (bId) setRawBookings(prev => prev.filter(b => String(b.id) !== String(bId)));
+            setLegacyTransactions(prev => prev.filter(t => t.operationId !== opId && (!bId || t.bookingId !== bId)));
+          }
           setTicketModalOperation(null);
           setDeleteToast(`Se ha eliminado ${concept || 'el registro'} completamente del sistema.`);
         }}

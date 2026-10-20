@@ -276,7 +276,7 @@ export async function claimSaasInvitation(
 
     // 4. Update or create collaborator with non-destructive memberships
     if (!colabSnap.exists()) {
-      const newColab: CollaboratorProfile = {
+      const newColab: CollaboratorProfile & { claimedInvitationToken?: string } = {
         uid: user.uid,
         email: user.email || null,
         name: user.displayName || user.email?.split('@')[0] || 'Operador',
@@ -290,6 +290,7 @@ export async function claimSaasInvitation(
             role: invData.role || 'owner'
           }
         ],
+        claimedInvitationToken: inviteDocId,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
@@ -310,6 +311,7 @@ export async function claimSaasInvitation(
         memberships: updatedMemberships,
         complexIds: updatedComplexIds,
         activeComplexId: invData.complexId, // Switch to the freshly claimed venue
+        claimedInvitationToken: inviteDocId,
         updatedAt: serverTimestamp()
       });
     }
@@ -331,7 +333,8 @@ export async function claimSaasInvitation(
       );
 
       const complexUpdates: any = {
-        updatedAt: serverTimestamp()
+        updatedAt: serverTimestamp(),
+        claimedInvitationToken: inviteDocId
       };
 
       if (!cData.isActivated) {
@@ -407,12 +410,16 @@ export async function createSaasInvitation(params: {
   const { complexId, complexName = 'Mi Complejo', role = 'owner', durationHours = 24 } = params;
 
   // Cryptographically secure random token (32 hex characters)
-  const randomBytes = new Uint8Array(16);
-  if (typeof window !== 'undefined' && window.crypto && window.crypto.getRandomValues) {
-    window.crypto.getRandomValues(randomBytes);
-  } else {
-    for (let i = 0; i < 16; i++) randomBytes[i] = Math.floor(Math.random() * 256);
+  const cryptoObj = (typeof window !== 'undefined' && window.crypto) 
+    ? window.crypto 
+    : (typeof globalThis !== 'undefined' ? (globalThis as any).crypto : null);
+
+  if (!cryptoObj || typeof cryptoObj.getRandomValues !== 'function') {
+    throw new Error('Generador criptográficamente seguro (crypto.getRandomValues) no disponible para generar tokens de invitación.');
   }
+
+  const randomBytes = new Uint8Array(16);
+  cryptoObj.getRandomValues(randomBytes);
   const token = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
 
   const now = new Date();

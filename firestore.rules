@@ -11,25 +11,21 @@ service cloud.firestore {
     function isSuperAdmin() {
       return isSignedIn() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        request.auth.token.email in ['aguirrecundo@gmail.com', 'cundooaguirre@gmail.com', 'thekillerpro.fa@gmail.com']
+        (request.auth.token.email_verified == true &&
+         request.auth.token.email in ['aguirrecundo@gmail.com', 'cundooaguirre@gmail.com', 'thekillerpro.fa@gmail.com'])
       );
     }
 
     // Check if the authenticated user has verified membership in complexId
-    // activeComplexId / activeComplejoId or complexIds array
     function isCollaboratorOf(complexId) {
+      let colabPath = /databases/$(database)/documents/collaborators/$(request.auth.uid);
       return isSignedIn() && (
         isSuperAdmin() ||
         (
-          exists(/databases/$(database)/documents/collaborators/$(request.auth.uid)) &&
-          (
-            ('complexIds' in get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data &&
-             complexId in get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data.complexIds) ||
-            ('activeComplejoId' in get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data &&
-             get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data.activeComplejoId == complexId) ||
-            ('activeComplexId' in get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data &&
-             get(/databases/$(database)/documents/collaborators/$(request.auth.uid)).data.activeComplexId == complexId)
-          )
+          exists(colabPath) &&
+          'complexIds' in get(colabPath).data &&
+          get(colabPath).data.complexIds is list &&
+          complexId in get(colabPath).data.complexIds
         )
       );
     }
@@ -81,12 +77,146 @@ service cloud.firestore {
       );
     }
 
-    // Helper to resolve complex ID from document data regardless of field naming (complexId or complejoId)
+    // Resolves complex ID from document data regardless of field naming (complexId or complejoId)
+    function getDocComplexId(data) {
+      return ('complexId' in data && data.complexId != null) ? data.complexId :
+             (('complejoId' in data && data.complejoId != null) ? data.complejoId : null);
+    }
+
     function canAccessDocComplex(data) {
-      return (
-        ('complexId' in data && data.complexId != null && hasComplexAccess(data.complexId)) ||
-        ('complejoId' in data && data.complejoId != null && hasComplexAccess(data.complejoId))
-      );
+      let cId = getDocComplexId(data);
+      return cId != null && hasComplexAccess(cId);
+    }
+
+    // Resolves complex ID for users/clients collection
+    function getUserDocComplexId(data) {
+      return ('originComplejoId' in data && data.originComplejoId != null) ? data.originComplejoId :
+             (('originComplexId' in data && data.originComplexId != null) ? data.originComplexId :
+             (('complexId' in data && data.complexId != null) ? data.complexId :
+             (('complejoId' in data && data.complejoId != null) ? data.complejoId : null)));
+    }
+
+    function canAccessUserDoc(data) {
+      let cId = getUserDocComplexId(data);
+      return cId != null && hasComplexAccess(cId);
+    }
+
+    // ------------------------------------------------------------------------
+    // Collaborator Profile Helpers (Claim Verification & Self-Update Control)
+    // ------------------------------------------------------------------------
+    function isLegitimateCollaboratorClaimCreate(userId) {
+      let token = request.resource.data.claimedInvitationToken;
+      let invitePath = /databases/$(database)/documents/saasInvitations/$(token);
+      return isSignedIn() &&
+        request.auth.uid == userId &&
+        'claimedInvitationToken' in request.resource.data &&
+        request.resource.data.claimedInvitationToken is string &&
+        exists(invitePath) &&
+        get(invitePath).data.status == 'pending' &&
+        (!('expiresAt' in get(invitePath).data) || !(get(invitePath).data.expiresAt is timestamp) || request.time < get(invitePath).data.expiresAt) &&
+        getAfter(invitePath).data.status == 'claimed' &&
+        getAfter(invitePath).data.claimedByUid == request.auth.uid &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.complexIds == [get(invitePath).data.complexId] &&
+        request.resource.data.activeComplexId == get(invitePath).data.complexId;
+    }
+
+    function isCollaboratorSelfUpdate(userId) {
+      return isSignedIn() &&
+        request.auth.uid == userId &&
+        request.resource.data.uid == resource.data.uid &&
+        // Memberships and complexIds cannot be altered on self-update:
+        request.resource.data.complexIds == resource.data.complexIds &&
+        request.resource.data.memberships == resource.data.memberships &&
+        // If activeComplexId / activeComplejoId is present, it must be in authorized complexIds:
+        (
+          !('activeComplexId' in request.resource.data) ||
+          request.resource.data.activeComplexId in resource.data.complexIds
+        ) &&
+        (
+          !('activeComplejoId' in request.resource.data) ||
+          request.resource.data.activeComplejoId in resource.data.complexIds
+        );
+    }
+
+    function isLegitimateCollaboratorClaimUpdate(userId) {
+      let token = request.resource.data.claimedInvitationToken;
+      let invitePath = /databases/$(database)/documents/saasInvitations/$(token);
+      return isSignedIn() &&
+        request.auth.uid == userId &&
+        'claimedInvitationToken' in request.resource.data &&
+        request.resource.data.claimedInvitationToken is string &&
+        exists(invitePath) &&
+        get(invitePath).data.status == 'pending' &&
+        (!('expiresAt' in get(invitePath).data) || !(get(invitePath).data.expiresAt is timestamp) || request.time < get(invitePath).data.expiresAt) &&
+        getAfter(invitePath).data.status == 'claimed' &&
+        getAfter(invitePath).data.claimedByUid == request.auth.uid &&
+        request.resource.data.uid == resource.data.uid &&
+        get(invitePath).data.complexId in request.resource.data.complexIds &&
+        request.resource.data.complexIds.hasAll(resource.data.complexIds) &&
+        request.resource.data.activeComplexId == get(invitePath).data.complexId;
+    }
+
+    // ------------------------------------------------------------------------
+    // Complex Update Helpers (Operational vs Claim Updates)
+    // ------------------------------------------------------------------------
+    function isCollaboratorOperationalUpdate(complexId) {
+      return isCollaboratorOf(complexId) &&
+        isComplexCommerciallyActive(complexId) &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny([
+          'clientStatus',
+          'trialStartedAt',
+          'trialEndsAt',
+          'trialStartDate',
+          'trialEndDate',
+          'ownerUid',
+          'ownerEmail',
+          'id'
+        ]);
+    }
+
+    function isLegitimateComplexClaimUpdate(complexId) {
+      let token = request.resource.data.claimedInvitationToken;
+      let invitePath = /databases/$(database)/documents/saasInvitations/$(token);
+      return 'claimedInvitationToken' in request.resource.data &&
+        request.resource.data.claimedInvitationToken is string &&
+        exists(invitePath) &&
+        get(invitePath).data.complexId == complexId &&
+        get(invitePath).data.status == 'pending' &&
+        (!('expiresAt' in get(invitePath).data) || !(get(invitePath).data.expiresAt is timestamp) || request.time < get(invitePath).data.expiresAt) &&
+        getAfter(invitePath).data.status == 'claimed' &&
+        getAfter(invitePath).data.claimedByUid == request.auth.uid &&
+        // Ownership assignment rule:
+        (
+          (!('ownerUid' in request.resource.data) && !('ownerUid' in resource.data)) ||
+          (request.resource.data.ownerUid == resource.data.ownerUid) ||
+          ((!('ownerUid' in resource.data) || resource.data.ownerUid == null || resource.data.ownerUid == '') &&
+           request.resource.data.ownerUid == request.auth.uid)
+        ) &&
+        // Commercial status rule:
+        (
+          // Status not modified:
+          (!('clientStatus' in request.resource.data) && !('clientStatus' in resource.data)) ||
+          (request.resource.data.clientStatus == resource.data.clientStatus) ||
+          // Or first trial from inactive (only if never had prior trial history):
+          (
+            (!('clientStatus' in resource.data) || resource.data.clientStatus == 'inactive' || resource.data.clientStatus == null) &&
+            request.resource.data.clientStatus == 'trial' &&
+            !('trialStartedAt' in resource.data) &&
+            !('trialEndsAt' in resource.data) &&
+            !('trialStartDate' in resource.data) &&
+            !('trialEndDate' in resource.data) &&
+            'trialStartedAt' in request.resource.data &&
+            'trialEndsAt' in request.resource.data &&
+            request.resource.data.trialEndsAt is timestamp &&
+            request.resource.data.trialEndsAt > request.time
+          )
+        ) &&
+        // Forbid setting status to active or paused from client claim:
+        (
+          !request.resource.data.diff(resource.data).affectedKeys().hasAny(['clientStatus']) ||
+          (request.resource.data.clientStatus != 'active' && request.resource.data.clientStatus != 'paused')
+        );
     }
 
     // Test connection doc
@@ -94,40 +224,52 @@ service cloud.firestore {
       allow read: if true;
     }
 
-    // Admins collection
+    // ------------------------------------------------------------------------
+    // Admins Collection & Subcollections (ERP Management)
+    // ------------------------------------------------------------------------
     match /admins/{adminId} {
       allow read: if isSignedIn() && (request.auth.uid == adminId || isSuperAdmin());
       allow write: if isSuperAdmin();
+
+      match /{document=**} {
+        allow read, write: if isSuperAdmin();
+      }
     }
 
     // ------------------------------------------------------------------------
     // Collaborators Collection (User Profiles & Memberships)
     // ------------------------------------------------------------------------
-    // A user can read only their own collaborator profile
     match /collaborators/{userId} {
       allow read: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
-      allow create, update: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
+      allow create: if isSuperAdmin() || isLegitimateCollaboratorClaimCreate(userId);
+      allow update: if isSuperAdmin() || isCollaboratorSelfUpdate(userId) || isLegitimateCollaboratorClaimUpdate(userId);
       allow delete: if isSuperAdmin();
     }
 
     // ------------------------------------------------------------------------
     // SaaS Invitations Collection (One-Time Invite Links)
     // ------------------------------------------------------------------------
-    // Single invitation lookup by token is public so an invited user can open /invite/:token
-    // Collection listing is strictly restricted to superadmins to prevent enumeration
     match /saasInvitations/{token} {
       allow get: if true;
       allow list: if isSuperAdmin() || (
         isSignedIn() &&
         request.query.limit == 1
       );
-      allow create: if isSuperAdmin() || isSignedIn();
+      allow create: if isSignedIn() && (
+        isSuperAdmin() ||
+        hasComplexAccess(request.resource.data.complexId)
+      );
       allow update: if isSignedIn() && (
         isSuperAdmin() ||
         (
           resource.data.status == 'pending' &&
           request.resource.data.status == 'claimed' &&
-          request.resource.data.claimedByUid == request.auth.uid
+          request.resource.data.claimedByUid == request.auth.uid &&
+          request.resource.data.complexId == resource.data.complexId &&
+          request.resource.data.role == resource.data.role &&
+          request.resource.data.token == resource.data.token &&
+          request.resource.data.expiresAt == resource.data.expiresAt &&
+          (!('expiresAt' in resource.data) || !(resource.data.expiresAt is timestamp) || request.time < resource.data.expiresAt)
         )
       );
       allow delete: if isSuperAdmin();
@@ -139,15 +281,23 @@ service cloud.firestore {
     match /complejos/{complexId} {
       allow get: if true; // Public read of venue metadata for invitations and status checks
       allow list: if isSignedIn();
-      allow update: if isCollaboratorOf(complexId) || isSuperAdmin() || isSignedIn();
       allow create, delete: if isSuperAdmin();
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        isCollaboratorOperationalUpdate(complexId) ||
+        isLegitimateComplexClaimUpdate(complexId)
+      );
     }
 
     match /complexes/{complexId} {
       allow get: if true;
       allow list: if isSignedIn();
-      allow update: if isCollaboratorOf(complexId) || isSuperAdmin() || isSignedIn();
       allow create, delete: if isSuperAdmin();
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        isCollaboratorOperationalUpdate(complexId) ||
+        isLegitimateComplexClaimUpdate(complexId)
+      );
     }
 
     // ------------------------------------------------------------------------
@@ -156,40 +306,61 @@ service cloud.firestore {
     match /bookings/{bookingId} {
       allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
       allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
-      allow update, delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     // Matches / Turnos aliases
     match /matches/{matchId} {
-      allow read, write: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     match /turnos/{turnoId} {
-      allow read, write: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     // ------------------------------------------------------------------------
     // Users / Clientes Collection (Clients Isolated per Origin Complex)
     // ------------------------------------------------------------------------
     match /users/{userId} {
-      allow read: if isSignedIn() && (
+      allow read: if isSignedIn() && (canAccessUserDoc(resource.data) || isSuperAdmin());
+      allow create: if isSignedIn() && (canAccessUserDoc(request.resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
         isSuperAdmin() ||
-        canAccessDocComplex(resource.data) ||
-        ('originComplejoId' in resource.data && hasComplexAccess(resource.data.originComplejoId)) ||
-        ('originComplexId' in resource.data && hasComplexAccess(resource.data.originComplexId))
+        (
+          canAccessUserDoc(resource.data) &&
+          canAccessUserDoc(request.resource.data) &&
+          getUserDocComplexId(request.resource.data) == getUserDocComplexId(resource.data)
+        )
       );
-      allow create: if isSignedIn() && (
-        isSuperAdmin() ||
-        canAccessDocComplex(request.resource.data) ||
-        ('originComplejoId' in request.resource.data && hasComplexAccess(request.resource.data.originComplejoId)) ||
-        ('originComplexId' in request.resource.data && hasComplexAccess(request.resource.data.originComplexId))
-      );
-      allow update, delete: if isSignedIn() && (
-        isSuperAdmin() ||
-        canAccessDocComplex(resource.data) ||
-        ('originComplejoId' in resource.data && hasComplexAccess(resource.data.originComplejoId)) ||
-        ('originComplexId' in resource.data && hasComplexAccess(resource.data.originComplexId))
-      );
+      allow delete: if isSignedIn() && (canAccessUserDoc(resource.data) || isSuperAdmin());
     }
 
     // ------------------------------------------------------------------------
@@ -198,7 +369,15 @@ service cloud.firestore {
     match /products/{productId} {
       allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
       allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
-      allow update, delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     // ------------------------------------------------------------------------
@@ -207,24 +386,56 @@ service cloud.firestore {
     match /categories/{categoryId} {
       allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
       allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
-      allow update, delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     // ------------------------------------------------------------------------
-    // Inventory Movements Collection (Immutable Audit History per Complex)
+    // Inventory Movements Collection (Audit History per Complex)
     // ------------------------------------------------------------------------
     match /inventory_movements/{movementId} {
       allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
       allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
-      allow update, delete: if isSuperAdmin();
+      allow update: if isSuperAdmin();
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+    }
+
+    // ------------------------------------------------------------------------
+    // Batches Collection (PEPS Batches per Complex)
+    // ------------------------------------------------------------------------
+    match /batches/{batchId} {
+      allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     // ------------------------------------------------------------------------
     // Complex Counters Collection (Sequential numbering per Complex)
     // ------------------------------------------------------------------------
     match /complex_counters/{complexId} {
-      allow read: if isSignedIn() && (hasComplexAccess(complexId) || isSuperAdmin());
-      allow create, update: if isSignedIn() && (hasComplexAccess(complexId) || isSuperAdmin());
+      allow get: if isSignedIn() && (
+        resource == null ||
+        isSuperAdmin() ||
+        hasComplexAccess(complexId)
+      );
+      allow list: if isSuperAdmin();
+      allow create: if isSignedIn() && (isSuperAdmin() || hasComplexAccess(complexId));
+      allow update: if isSignedIn() && (isSuperAdmin() || hasComplexAccess(complexId));
       allow delete: if isSuperAdmin();
     }
 
@@ -239,8 +450,15 @@ service cloud.firestore {
       );
       allow list: if isSuperAdmin();
       allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
-      allow update: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
-      allow delete: if isSuperAdmin();
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     // ------------------------------------------------------------------------
@@ -249,7 +467,14 @@ service cloud.firestore {
     match /operations/{operationId} {
       allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
       allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
-      allow update: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
       allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
@@ -259,7 +484,15 @@ service cloud.firestore {
     match /financial_movements/{movementId} {
       allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
       allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
-      allow update, delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     // ------------------------------------------------------------------------
@@ -268,16 +501,37 @@ service cloud.firestore {
     match /transactions/{transactionId} {
       allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
       allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
-      allow update, delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     // ------------------------------------------------------------------------
     // Booking Locks Collection (Atomic Mutual Exclusion per Court & Date)
     // ------------------------------------------------------------------------
     match /booking_locks/{lockId} {
-      allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow get: if isSignedIn() && (
+        resource == null ||
+        isSuperAdmin() ||
+        canAccessDocComplex(resource.data)
+      );
+      allow list: if isSuperAdmin();
       allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
-      allow update, delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow update: if isSignedIn() && (
+        isSuperAdmin() ||
+        (
+          canAccessDocComplex(resource.data) &&
+          canAccessDocComplex(request.resource.data) &&
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+        )
+      );
+      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
     }
 
     // ------------------------------------------------------------------------
