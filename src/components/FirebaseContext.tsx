@@ -11,6 +11,8 @@ import { doc, setDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { auth, googleProvider, testConnection, db } from '../lib/firebase';
 import { parseTrialExpiration, isComplexCommerciallyAuthorized } from '../lib/invitations';
 import type { ComplexMembership, CollaboratorProfile, ComplexClientStatus } from '../types';
+import type { BillingConfig } from '../lib/weeklyBilling';
+import { DEFAULT_BILLING_CONFIG, subscribeBillingConfig } from '../lib/weeklyBilling';
 
 export interface AuthorizedComplexItem {
   complexId: string;
@@ -29,6 +31,7 @@ interface FirebaseContextType {
   activeComplejoName: string;
   activeComplex: any | null;
   collaboratorData: CollaboratorProfile | null;
+  billingConfig: BillingConfig;
   authError: string | null;
   clearAuthError: () => void;
   signInWithGoogle: () => Promise<FirebaseUser | null>;
@@ -47,6 +50,7 @@ const FirebaseContext = createContext<FirebaseContextType>({
   activeComplejoName: 'Complejo Deportivo',
   activeComplex: null,
   collaboratorData: null,
+  billingConfig: DEFAULT_BILLING_CONFIG,
   authError: null,
   clearAuthError: () => {},
   signInWithGoogle: async () => null,
@@ -71,11 +75,20 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [activeComplex, setActiveComplex] = useState<any | null>(null);
   const [collaboratorData, setCollaboratorData] = useState<CollaboratorProfile | null>(null);
   const [memberships, setMemberships] = useState<ComplexMembership[]>([]);
+  const [billingConfig, setBillingConfig] = useState<BillingConfig>(DEFAULT_BILLING_CONFIG);
   const [authError, setAuthError] = useState<string | null>(null);
   const expirationTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const clearAuthError = useCallback(() => {
     setAuthError(null);
+  }, []);
+
+  // Subscribe in real-time to ERP billing config (settings/billing_config)
+  useEffect(() => {
+    const unsubBilling = subscribeBillingConfig((config) => {
+      setBillingConfig(config);
+    });
+    return () => unsubBilling();
   }, []);
 
   // Configure explicit browserLocalPersistence
@@ -433,6 +446,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         activeComplejoName,
         activeComplex,
         collaboratorData,
+        billingConfig,
         authError,
         clearAuthError,
         signInWithGoogle, 

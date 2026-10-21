@@ -21,6 +21,15 @@ import { useFirebase } from './components/FirebaseContext';
 import { LandingAuthView } from './components/LandingAuthView';
 import { AccessDeniedView } from './components/AccessDeniedView';
 import { InviteView } from './components/InviteView';
+import { BillingNoticeModal } from './components/BillingNoticeModal';
+import { PayBalanceModal } from './components/PayBalanceModal';
+import { 
+  calculateWeeklyObligations, 
+  evaluateBillingNoticeState, 
+  syncPlayedBookings,
+  type WeeklyPaymentObligation,
+  type BillingNoticeState 
+} from './lib/weeklyBilling';
 import { createSaasInvitation } from './lib/invitations';
 import { calculateUserLifecycleMetrics, formatDDMMYY } from './lib/userMetrics';
 import { doc, getDoc, getDocs, collection, query, where, serverTimestamp, addDoc } from 'firebase/firestore';
@@ -8728,6 +8737,7 @@ export default function App() {
     activeComplejoName,
     activeComplex, 
     collaboratorData,
+    billingConfig,
     setActiveComplexId 
   } = useFirebase();
 
@@ -8803,12 +8813,14 @@ export default function App() {
 
   const [courts, setCourts] = useState<Court[]>([]);
   const [users, setUsers] = useState<User[]>([]);
+  const [activeBookings, setActiveBookings] = useState<Match[]>([]);
 
   // Sincronización en tiempo real estrictamente ligada al complejo asignado del operador autenticado
   useEffect(() => {
     if (!activeComplexId || !user) {
       setUsers([]);
       setCourts([]);
+      setActiveBookings([]);
       return;
     }
 
@@ -8820,11 +8832,58 @@ export default function App() {
       setCourts(firestoreCourts);
     });
 
+    const unsubBookings = subscribeToBookings(activeComplexId, (firestoreBookings) => {
+      setActiveBookings(Array.isArray(firestoreBookings) ? firestoreBookings : []);
+    });
+
     return () => {
       unsubUsers();
       unsubCourts();
+      unsubBookings();
     };
   }, [activeComplexId, user, refreshKey]);
+
+  // Cálculo y sincronización del ciclo de cobro semanal (10% sobre turnos jugados)
+  const weeklyObligations = useMemo(() => {
+    if (!activeComplexId || !activeComplex) return [];
+    return calculateWeeklyObligations(activeComplexId, activeComplex, activeBookings);
+  }, [activeComplexId, activeComplex, activeBookings]);
+
+  // Sincronización automática de estado 'jugado' en /bookings para reservas cuyo horario de fin ya pasó
+  useEffect(() => {
+    if (!activeComplexId || activeBookings.length === 0) return;
+    syncPlayedBookings(activeComplexId, activeBookings).catch((err) => {
+      console.warn('[WeeklyBilling] Error sincronizando reservas transcurridas a jugado:', err);
+    });
+  }, [activeComplexId, activeBookings]);
+
+  // Evaluar estado de aviso (Prueba, Lunes, Martes, Miércoles) y de bloqueo permanente (Jueves+)
+  const billingNoticeState = useMemo<BillingNoticeState>(() => {
+    if (!activeComplexId || !activeComplex) {
+      return {
+        type: null,
+        obligation: null,
+        trialDaysRemaining: null,
+        isBlockedByDebt: false,
+        blockingObligation: null
+      };
+    }
+    return evaluateBillingNoticeState(activeComplexId, activeComplex, weeklyObligations);
+  }, [activeComplexId, activeComplex, weeklyObligations]);
+
+  // Estados de control para modales de aviso y pago
+  const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
+  const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [payTargetObligation, setPayTargetObligation] = useState<WeeklyPaymentObligation | null>(null);
+
+  // Apertura reactiva del aviso correspondiente según regla de frecuencia
+  useEffect(() => {
+    if (billingNoticeState.type && !billingNoticeState.isBlockedByDebt) {
+      setIsNoticeModalOpen(true);
+    } else {
+      setIsNoticeModalOpen(false);
+    }
+  }, [billingNoticeState.type, billingNoticeState.obligation?.id, billingNoticeState.isBlockedByDebt]);
 
   const handleSidebarAction = (action: string) => {
     if (action === 'exposure') setShowExposureStats(true);
@@ -8998,6 +9057,33 @@ export default function App() {
       <AccessDeniedView
         isDarkMode={isDarkMode}
       />
+    );
+  }
+
+  // CASO E: Suspensión por deuda semanal vencida (Jueves en adelante con daysAfterDue >= 3 y saldo pendiente > 0)
+  if (billingNoticeState.isBlockedByDebt && billingNoticeState.blockingObligation) {
+    return (
+      <>
+        <AccessDeniedView
+          isDarkMode={isDarkMode}
+          blockingObligation={billingNoticeState.blockingObligation}
+          billingConfig={billingConfig}
+          complexName={activeComplejoName}
+          onOpenPayModal={() => {
+            setPayTargetObligation(billingNoticeState.blockingObligation);
+            setIsPayModalOpen(true);
+          }}
+        />
+        {isPayModalOpen && payTargetObligation && (
+          <PayBalanceModal
+            isOpen={isPayModalOpen}
+            onClose={() => setIsPayModalOpen(false)}
+            obligation={payTargetObligation}
+            billingConfig={billingConfig}
+            complexName={activeComplejoName}
+          />
+        )}
+      </>
     );
   }
 
@@ -9313,6 +9399,33 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+
+      {/* Modal de Aviso de Cobro Semanal / Fin de Prueba Gratuita */}
+      <BillingNoticeModal
+        isOpen={isNoticeModalOpen}
+        onClose={() => setIsNoticeModalOpen(false)}
+        noticeType={billingNoticeState.type}
+        obligation={billingNoticeState.obligation}
+        trialDaysRemaining={billingNoticeState.trialDaysRemaining}
+        billingConfig={billingConfig}
+        complexId={activeComplexId}
+        complexName={activeComplejoName}
+        onOpenPayModal={() => {
+          if (billingNoticeState.obligation) {
+            setPayTargetObligation(billingNoticeState.obligation);
+            setIsPayModalOpen(true);
+          }
+        }}
+      />
+
+      {/* Modal Regularizá tu saldo */}
+      <PayBalanceModal
+        isOpen={isPayModalOpen}
+        onClose={() => setIsPayModalOpen(false)}
+        obligation={payTargetObligation || billingNoticeState.obligation}
+        billingConfig={billingConfig}
+        complexName={activeComplejoName}
+      />
 
       {/* Mobile Bottom Navigation */}
       <BottomNav active={activeTab} onNavigate={handleNavigate} />

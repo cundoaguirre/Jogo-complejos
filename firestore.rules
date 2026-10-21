@@ -287,6 +287,16 @@ service cloud.firestore {
         isCollaboratorOperationalUpdate(complexId) ||
         isLegitimateComplexClaimUpdate(complexId)
       );
+
+      match /payment_obligations/{obligationId} {
+        allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
+        allow write: if isSuperAdmin();
+      }
+
+      match /payments/{paymentId} {
+        allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
+        allow write: if isSuperAdmin();
+      }
     }
 
     match /complexes/{complexId} {
@@ -298,6 +308,16 @@ service cloud.firestore {
         isCollaboratorOperationalUpdate(complexId) ||
         isLegitimateComplexClaimUpdate(complexId)
       );
+
+      match /payment_obligations/{obligationId} {
+        allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
+        allow write: if isSuperAdmin();
+      }
+
+      match /payments/{paymentId} {
+        allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
+        allow write: if isSuperAdmin();
+      }
     }
 
     // ------------------------------------------------------------------------
@@ -555,6 +575,27 @@ service cloud.firestore {
         (resource.data.createdByUid == request.auth.uid)
       );
       allow delete: if isSuperAdmin();
+    }
+
+    // ------------------------------------------------------------------------
+    // Settings Collection (Global Configuration from ERP)
+    // ------------------------------------------------------------------------
+    match /settings/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // ------------------------------------------------------------------------
+    // Payment Obligations Collection (Top-Level alias from ERP)
+    // ------------------------------------------------------------------------
+    match /payment_obligations/{obligationId} {
+      allow read: if isSignedIn() && (
+        isSuperAdmin() ||
+        canAccessDocComplex(resource.data) ||
+        ('complexId' in resource.data && isCollaboratorOf(resource.data.complexId)) ||
+        ('complejoId' in resource.data && isCollaboratorOf(resource.data.complejoId))
+      );
+      allow write: if isSuperAdmin();
     }
   }
 }
