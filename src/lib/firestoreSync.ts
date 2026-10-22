@@ -39,6 +39,12 @@ import {
 } from './financialMath';
 import { calculateCancellationFinancialPlan } from './cancellationPolicy';
 import { isBookingPlayed } from './userMetrics';
+import { 
+  normalizeUnifiedCourt, 
+  resolveUnifiedSchedule, 
+  hoursToWeeklySchedule, 
+  doesCrossMidnight 
+} from './complexProfileSync';
 
 export const COMPLEJOS_COLLECTION = 'complejos';
 export const BOOKINGS_COLLECTION = 'bookings';
@@ -363,18 +369,7 @@ export function subscribeToCourts(
       if (snap.exists()) {
         const data = snap.data();
         const courtsArray = Array.isArray(data.courts) ? data.courts : (Array.isArray(data.canchas) ? data.canchas : []);
-        const mappedCourts: Court[] = courtsArray.map((c: any, idx: number) => ({
-          id: c.id ? String(c.id) : `c_${idx + 1}`,
-          name: c.name || `Cancha ${idx + 1}`,
-          type: c.sport || c.type || 'fútbol 5',
-          sport: c.sport || c.type || 'fútbol 5',
-          surface: c.surface || 'sintético',
-          price_per_hour: Number(c.price ?? c.price_per_hour ?? 0),
-          price: Number(c.price ?? c.price_per_hour ?? 0),
-          status: c.status === 'activa' || c.status === 'available' ? 'available' : (c.status || 'available'),
-          is_roofed: Boolean(c.is_roofed),
-          blockedCourts: c.blockedCourts || []
-        }));
+        const mappedCourts: Court[] = courtsArray.map((c: any, idx: number) => normalizeUnifiedCourt(c, idx) as unknown as Court);
         onUpdate(mappedCourts);
       } else {
         onUpdate([]);
@@ -418,11 +413,14 @@ export async function saveCourtInFirestore(
     id: courtId,
     name: (court.name || 'Cancha').trim(),
     sport: court.sport || court.type || 'fútbol 5',
+    type: court.sport || court.type || 'fútbol 5',
     surface: court.surface || 'sintético',
     price: Number(court.price ?? court.price_per_hour ?? 0),
-    status: court.status === 'maintenance' ? 'mantenimiento' : (court.status === 'inactiva' ? 'inactiva' : 'activa'),
-    is_roofed: Boolean(court.is_roofed),
-    blockedCourts: (court as any).blockedCourts || []
+    price_per_hour: Number(court.price ?? court.price_per_hour ?? 0),
+    status: court.status === 'maintenance' || court.status === 'mantenimiento' ? 'mantenimiento' : (court.status === 'inactiva' ? 'inactiva' : 'activa'),
+    is_roofed: Boolean(court.is_roofed ?? (court as any).isCovered),
+    isCovered: Boolean(court.is_roofed ?? (court as any).isCovered),
+    blockedCourts: Array.isArray((court as any).blockedCourts) ? (court as any).blockedCourts : []
   };
 
   const idx = existingCourts.findIndex(c => String(c.id) === String(courtId));
@@ -475,17 +473,30 @@ export function subscribeToVenueProfile(
     const unsub = onSnapshot(compRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
+        const { hours, weeklySchedule, openTime, closeTime, crossesMidnight } = resolveUnifiedSchedule(data);
         const profile = {
           id: snap.id,
-          name: data.name || data.company || 'Colo loco',
-          company: data.company || data.name || 'Colo loco',
+          name: data.name || data.company || '',
+          company: data.company || data.name || '',
           phone: data.phone || '',
+          email: data.email || '',
           address: data.address || '',
           instagram: data.instagram || '',
           description: data.description || data.notes || '',
-          hours: Array.isArray(data.hours) ? data.hours : defaultComplexHours,
-          services: data.services || ['Estacionamiento', 'Vestuarios', 'Buffet', 'Césped Sintético'],
-          courts: data.courts || []
+          alias: data.alias || '',
+          ownerName: data.ownerName || '',
+          ownerPhone: data.ownerPhone || '',
+          managerName: data.managerName || '',
+          managerPhone: data.managerPhone || '',
+          contactChannel: data.contactChannel || 'WhatsApp',
+          hours,
+          weeklySchedule,
+          openTime,
+          closeTime,
+          crossesMidnight,
+          services: data.services || {},
+          photos: Array.isArray(data.photos) ? data.photos : [],
+          courts: Array.isArray(data.courts) ? data.courts.map(normalizeUnifiedCourt) : []
         };
         onUpdate(profile);
       }
@@ -509,16 +520,34 @@ export async function saveVenueProfileInFirestore(
 ): Promise<void> {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const compRef = doc(db, COMPLEJOS_COLLECTION, targetId);
-  const hoursToSave = Array.isArray(profile.hours) ? profile.hours : defaultComplexHours;
+  const rawHours = Array.isArray(profile.hours) ? profile.hours : defaultComplexHours;
+  const weeklySchedule = hoursToWeeklySchedule(rawHours);
+  const openDays = rawHours.filter((h: any) => h.open !== false);
+  const openTime = openDays[0]?.start || '14:00';
+  const closeTime = openDays[0]?.end || '00:00';
+  const crossesMidnight = openDays.some((h: any) => doesCrossMidnight(h.start, h.end));
+
   await setDoc(compRef, {
     name: profile.name || '',
     company: profile.name || profile.company || '',
     phone: profile.phone || '',
+    email: profile.email || '',
     address: profile.address || '',
     instagram: profile.instagram || '',
     description: profile.description || '',
-    hours: hoursToSave,
-    services: profile.services || [],
+    alias: profile.alias || '',
+    ownerName: profile.ownerName || '',
+    ownerPhone: profile.ownerPhone || '',
+    managerName: profile.managerName || '',
+    managerPhone: profile.managerPhone || '',
+    hours: rawHours,
+    weeklySchedule,
+    openTime,
+    closeTime,
+    crossesMidnight,
+    services: profile.services || {},
+    photos: Array.isArray(profile.photos) ? profile.photos : [],
+    hoursUpdatedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString()
   }, { merge: true });
 }

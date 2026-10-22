@@ -6,7 +6,7 @@ import {
   ArrowLeft, ArrowRight, Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
   Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, BarChart2, MoreVertical, FileText, Download,
   MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle, AlertTriangle,
-  Coins, Receipt, CheckCircle2
+  Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard
 } from 'lucide-react';
 import { format, differenceInDays, isSameDay, isSameWeek, isSameMonth, parseISO, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -6181,17 +6181,35 @@ const FinanceView = ({
     const CANCELLED_STATUSES = ['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded'];
 
     // Dimensión Económica: Operaciones comerciales (Ventas + Reservas vs Gastos + Compras)
+    let reservasIncome = 0;
+    let mostradorIncome = 0;
+
     const economicIncome = combinedOperations
       .filter(op => !op.isExpense)
       .reduce((sum, op) => {
+        let opAmt = 0;
         if (CANCELLED_STATUSES.includes(op.paymentStatus)) {
-          return sum + Math.max(0, Number(op.originalDoc?.retainedAmount ?? op.originalDoc?.netCollected ?? 0));
+          opAmt = Math.max(0, Number(op.originalDoc?.retainedAmount ?? op.originalDoc?.netCollected ?? 0));
+        } else if (op.paymentStatus !== 'cancelled') {
+          opAmt = op.contractualAmount;
         }
-        if (op.paymentStatus === 'cancelled') {
-          return sum;
+
+        const isReserva = op.originalDoc?.operationType === 'court_booking' || 
+                          op.originalDoc?.operationType === 'booking' || 
+                          Boolean(op.originalDoc?.bookingId) || 
+                          String(op.id).endsWith('-booking');
+
+        if (isReserva) {
+          reservasIncome += opAmt;
+        } else {
+          mostradorIncome += opAmt;
         }
-        return sum + op.contractualAmount;
+
+        return sum + opAmt;
       }, 0);
+
+    const reservasIncomePct = economicIncome > 0 ? Math.round((reservasIncome / economicIncome) * 100) : 0;
+    const mostradorIncomePct = economicIncome > 0 ? Math.max(0, 100 - reservasIncomePct) : 0;
 
     const economicExpense = combinedOperations
       .filter(op => Boolean(op.isExpense))
@@ -6233,6 +6251,10 @@ const FinanceView = ({
 
     return {
       economicIncome,
+      reservasIncome,
+      mostradorIncome,
+      reservasIncomePct,
+      mostradorIncomePct,
       economicExpense,
       netResult,
       totalCollectedFromClients,
@@ -6285,9 +6307,46 @@ const FinanceView = ({
                   Ventas y reservas
                 </span>
               </div>
-              <span className="text-xl sm:text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono mt-2 block">
-                +${financialSummary.economicIncome.toLocaleString()}
-              </span>
+              <div>
+                <span className="text-xl sm:text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono mt-2 block">
+                  +${financialSummary.economicIncome.toLocaleString()}
+                </span>
+
+                {/* Barra horizontal bicolor de progreso */}
+                <div className="w-full h-2 rounded-full overflow-hidden bg-emerald-100/80 dark:bg-slate-800 flex mt-2.5">
+                  <div 
+                    className="bg-emerald-600 transition-all duration-300"
+                    style={{ width: `${financialSummary.reservasIncomePct}%` }}
+                  />
+                  <div 
+                    className="bg-sky-500 transition-all duration-300"
+                    style={{ width: `${financialSummary.mostradorIncomePct}%` }}
+                  />
+                </div>
+
+                {/* Desglose en 2 filas compactas */}
+                <div className="mt-2 space-y-1 text-[10px] font-mono">
+                  <div className="flex items-center justify-between text-gray-700 dark:text-slate-300">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="w-2 h-2 rounded-full bg-emerald-600 shrink-0" />
+                      <span className="truncate">Reservas ({financialSummary.reservasIncomePct}%)</span>
+                    </div>
+                    <span className="font-bold text-gray-900 dark:text-white shrink-0">
+                      ${financialSummary.reservasIncome.toLocaleString()}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center justify-between text-gray-700 dark:text-slate-300">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />
+                      <span className="truncate">Mostrador ({financialSummary.mostradorIncomePct}%)</span>
+                    </div>
+                    <span className="font-bold text-gray-900 dark:text-white shrink-0">
+                      ${financialSummary.mostradorIncome.toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* 2. Egresos Económicos */}
@@ -7280,13 +7339,21 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
   ];
 
   const initialProfile = {
-    name: activeComplex?.name || 'Colo loco',
-    address: activeComplex?.address || 'Av. Corrientes 1234, CABA',
-    phone: activeComplex?.phone || '+54 9 11 5555-5555',
-    instagram: activeComplex?.instagram || '@cololoco',
-    description: activeComplex?.description || 'Complejo deportivo líder.',
+    name: activeComplex?.name || activeComplex?.company || '',
+    company: activeComplex?.company || activeComplex?.name || '',
+    address: activeComplex?.address || '',
+    phone: activeComplex?.phone || '',
+    email: activeComplex?.email || '',
+    instagram: activeComplex?.instagram || '',
+    description: activeComplex?.description || activeComplex?.notes || '',
+    alias: activeComplex?.alias || '',
+    ownerName: activeComplex?.ownerName || '',
+    ownerPhone: activeComplex?.ownerPhone || '',
+    managerName: activeComplex?.managerName || '',
+    managerPhone: activeComplex?.managerPhone || '',
     hours: Array.isArray(activeComplex?.hours) ? activeComplex.hours : defaultHours,
-    services: activeComplex?.services || ['Estacionamiento', 'Vestuarios', 'Buffet', 'Césped Sintético']
+    services: activeComplex?.services || {},
+    photos: Array.isArray(activeComplex?.photos) ? activeComplex.photos : []
   };
 
   const [profile, setProfile] = useState<any>(initialProfile);
@@ -7298,11 +7365,93 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
   const [editSection, setEditSection] = useState<'info' | 'hours' | 'court' | null>(null);
   const [editingCourt, setEditingCourt] = useState<Court | null>(null);
   const [editingHourIndex, setEditingHourIndex] = useState<number | null>(null);
-  const [photos, setPhotos] = useState<Array<{ id: string; url: string }>>([]);
+  const [photos, setPhotos] = useState<Array<{ id: string; url: string }>>(() => {
+    if (Array.isArray(activeComplex?.photos)) {
+      return activeComplex.photos.map((p: any, idx: number) => 
+        typeof p === 'string' ? { id: `p_${idx}`, url: p } : { id: p.id || `p_${idx}`, url: p.url || '' }
+      );
+    }
+    return [];
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [createdInviteUrl, setCreatedInviteUrl] = useState<string | null>(null);
   const [isGeneratingInvite, setIsGeneratingInvite] = useState(false);
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [aliasCopied, setAliasCopied] = useState(false);
+
+  const handleCopyAlias = () => {
+    if (!profile?.alias) return;
+    try {
+      navigator.clipboard.writeText(profile.alias);
+      setAliasCopied(true);
+      setTimeout(() => setAliasCopied(false), 2000);
+    } catch (e) {
+      console.warn('Error copying alias:', e);
+    }
+  };
+
+  const compressImage = (file: File, maxWidth: number = 720, quality: number = 0.75): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = (event) => {
+        const img = new Image();
+        img.src = event.target?.result as string;
+        img.onload = () => {
+          let width = img.width;
+          let height = img.height;
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(event.target?.result as string);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, width, height);
+          const dataUrl = canvas.toDataURL('image/jpeg', quality);
+          resolve(dataUrl);
+        };
+        img.onerror = (err) => reject(err);
+      };
+      reader.onerror = (err) => reject(err);
+    });
+  };
+
+  const handleUploadPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      try {
+        const compressedDataUrl = await compressImage(file, 720, 0.75);
+        const newPhoto = { id: `photo_${Date.now()}`, url: compressedDataUrl };
+        const updatedPhotos = [...photos, newPhoto];
+        setPhotos(updatedPhotos);
+        const updatedProfile = { ...profile, photos: updatedPhotos };
+        setProfile(updatedProfile);
+        await saveVenueProfileInFirestore(complexId, updatedProfile);
+      } catch (err) {
+        console.error('Error compressing or saving photo:', err);
+      } finally {
+        if (e.target) e.target.value = '';
+      }
+    }
+  };
+
+  const handleDeletePhoto = async (photoId: string) => {
+    const updatedPhotos = photos.filter(p => p.id !== photoId);
+    setPhotos(updatedPhotos);
+    const updatedProfile = { ...profile, photos: updatedPhotos };
+    setProfile(updatedProfile);
+    try {
+      await saveVenueProfileInFirestore(complexId, updatedProfile);
+    } catch (err) {
+      console.error('Error deleting photo:', err);
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -7399,6 +7548,11 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
           ...vData,
           hours: Array.isArray(vData.hours) ? vData.hours : (Array.isArray(prev?.hours) ? prev.hours : defaultHours)
         }));
+        if (Array.isArray(vData.photos)) {
+          setPhotos(vData.photos.map((p: any, idx: number) => 
+            typeof p === 'string' ? { id: `p_${idx}`, url: p } : { id: p.id || `p_${idx}`, url: p.url || '' }
+          ));
+        }
       }
     });
     const unsubCourts = subscribeToCourts(complexId, (cList) => {
@@ -7459,7 +7613,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
 
   const handleSaveProfile = async () => {
     setIsSaving(true);
-    const profileToSave = { ...profile, hours: safeHours };
+    const profileToSave = { ...profile, hours: safeHours, photos };
     try {
       await saveVenueProfileInFirestore(complexId, profileToSave);
     } catch (e) {
@@ -7675,41 +7829,114 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="p-4 border-b border-gray-100 flex justify-between items-center">
             <h3 className="font-bold text-gray-900">Información General</h3>
-            <button type="button" onClick={() => setEditSection('info')} className="text-emerald-600 font-bold text-xs">Editar</button>
+            <button type="button" onClick={() => setEditSection('info')} className="text-emerald-600 font-bold text-xs cursor-pointer">Editar</button>
           </div>
-          <div className="p-4 space-y-3">
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="flex items-start gap-3">
-              <Store className="text-gray-400 mt-1" size={18} />
-              <div>
-                <div className="text-sm font-bold text-gray-900">Nombre</div>
-                <div className="text-sm text-gray-500">{profile.name}</div>
+              <Store className="text-gray-400 mt-1 shrink-0" size={18} />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Nombre</div>
+                <div className="text-sm font-semibold text-gray-900 truncate">{profile.name || 'Sin nombre'}</div>
               </div>
             </div>
+
             <div className="flex items-start gap-3">
-              <MapPin className="text-gray-400 mt-1" size={18} />
-              <div>
-                <div className="text-sm font-bold text-gray-900">Dirección</div>
-                <div className="text-sm text-gray-500">{profile.address}</div>
+              <MapPin className="text-gray-400 mt-1 shrink-0" size={18} />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Dirección</div>
+                <div className="text-sm font-semibold text-gray-900 truncate">{profile.address || 'Sin dirección'}</div>
               </div>
             </div>
+
             <div className="flex items-start gap-3">
-              <Phone className="text-gray-400 mt-1" size={18} />
-              <div>
-                <div className="text-sm font-bold text-gray-900">Teléfono</div>
-                <div className="text-sm text-gray-500">{profile.phone}</div>
+              <Phone className="text-gray-400 mt-1 shrink-0" size={18} />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Teléfono general</div>
+                <div className="text-sm font-semibold text-gray-900 truncate">{profile.phone || 'No registrado'}</div>
               </div>
             </div>
+
             <div className="flex items-start gap-3">
-              <Instagram className="text-gray-400 mt-1" size={18} />
-              <div>
-                <div className="text-sm font-bold text-gray-900">Instagram</div>
-                <div className="text-sm text-gray-500">{profile.instagram}</div>
+              <Mail className="text-gray-400 mt-1 shrink-0" size={18} />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Correo electrónico</div>
+                <div className="text-sm font-semibold text-gray-900 truncate">{profile.email || 'No registrado'}</div>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <Instagram className="text-gray-400 mt-1 shrink-0" size={18} />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Instagram</div>
+                <div className="text-sm font-semibold text-gray-900 truncate">{profile.instagram || 'No registrado'}</div>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3">
+              <CreditCard className="text-gray-400 mt-1 shrink-0" size={18} />
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Alias bancario del complejo</div>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-sm font-bold text-gray-900 font-mono truncate">
+                    {profile.alias || 'Sin alias configurado'}
+                  </span>
+                  {profile.alias && (
+                    <button
+                      type="button"
+                      onClick={handleCopyAlias}
+                      className="px-2 py-0.5 rounded-lg bg-gray-100 hover:bg-emerald-50 text-gray-600 hover:text-emerald-700 text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1 shrink-0"
+                      title="Copiar alias"
+                    >
+                      {aliasCopied ? (
+                        <>
+                          <Check size={12} className="text-emerald-600" />
+                          <span className="text-emerald-600">¡Copiado!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy size={12} />
+                          <span>Copiar</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3 md:col-span-2">
+              <FileText className="text-gray-400 mt-1 shrink-0" size={18} />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Descripción</div>
+                <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{profile.description || 'Sin descripción'}</div>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3 pt-2 border-t border-gray-100">
+              <UserIcon className="text-gray-400 mt-1 shrink-0" size={18} />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Dueño</div>
+                <div className="text-sm font-semibold text-gray-900">{profile.ownerName || 'No especificado'}</div>
+                {profile.ownerPhone && (
+                  <div className="text-xs text-gray-500 font-mono mt-0.5">{profile.ownerPhone}</div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-start gap-3 pt-2 border-t border-gray-100">
+              <ShieldCheck className="text-gray-400 mt-1 shrink-0" size={18} />
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Encargado</div>
+                <div className="text-sm font-semibold text-gray-900">{profile.managerName || 'No especificado'}</div>
+                {profile.managerPhone && (
+                  <div className="text-xs text-gray-500 font-mono mt-0.5">{profile.managerPhone}</div>
+                )}
               </div>
             </div>
           </div>
         </div>
 
-        {/* 3. Fotos */}
+        {/* 3. Fotos del Complejo */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
           <div className="p-4 border-b border-gray-100 flex justify-between items-center">
             <h3 className="font-bold text-gray-900">Fotos del Complejo</h3>
@@ -7718,14 +7945,9 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
               ref={fileInputRef} 
               className="hidden" 
               accept="image/*"
-              onChange={(e) => {
-                if (e.target.files && e.target.files[0]) {
-                  const url = URL.createObjectURL(e.target.files[0]);
-                  setPhotos([...photos, { id: Math.random().toString(), url }]);
-                }
-              }} 
+              onChange={handleUploadPhoto} 
             />
-            <button type="button" onClick={() => fileInputRef.current?.click()} className="text-emerald-600 font-bold text-xs flex items-center gap-1">
+            <button type="button" onClick={() => fileInputRef.current?.click()} className="text-emerald-600 font-bold text-xs flex items-center gap-1 cursor-pointer">
               <Plus size={14} /> Agregar
             </button>
           </div>
@@ -7736,11 +7958,11 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                   key={`venue-photo-${photo.id || pIdx}-${pIdx}`} 
                   className="w-32 h-24 rounded-lg bg-gray-100 flex-shrink-0 overflow-hidden border border-gray-200 relative group"
                 >
-                  <img src={photo.url} className="w-full h-full object-cover" alt="Cancha" />
+                  <img src={photo.url} className="w-full h-full object-cover" alt="Foto del complejo" />
                   <button type="button" 
                     onClick={(e) => {
                       e.stopPropagation();
-                      setPhotos(photos.filter(p => p.id !== photo.id));
+                      handleDeletePhoto(photo.id);
                     }}
                     className="absolute top-1 right-1 bg-black/60 hover:bg-red-600 text-white p-1.5 rounded-full transition-all cursor-pointer shadow-sm"
                     title="Eliminar foto"
@@ -8173,35 +8395,107 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
               <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">Nombre</label>
                 <input 
-                  value={profile.name} 
+                  value={profile.name || ''} 
                   onChange={e => setProfile({...profile, name: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Descripción</label>
-                <textarea 
-                  value={profile.description} 
-                  onChange={e => setProfile({...profile, description: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500"
-                  rows={3}
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Teléfono</label>
-                <input 
-                  value={profile.phone} 
-                  onChange={e => setProfile({...profile, phone: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  placeholder="Ej: Complejo Jogo"
                 />
               </div>
               <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">Dirección</label>
                 <input 
-                  value={profile.address} 
+                  value={profile.address || ''} 
                   onChange={e => setProfile({...profile, address: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  placeholder="Ej: Av. San Martín 1234"
                 />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">Teléfono general</label>
+                <input 
+                  value={profile.phone || ''} 
+                  onChange={e => setProfile({...profile, phone: e.target.value})}
+                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  placeholder="Ej: +54 9 11 1234-5678"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">Correo electrónico</label>
+                <input 
+                  type="email"
+                  value={profile.email || ''} 
+                  onChange={e => setProfile({...profile, email: e.target.value})}
+                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  placeholder="Ej: contacto@complejo.com"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">Instagram</label>
+                <input 
+                  value={profile.instagram || ''} 
+                  onChange={e => setProfile({...profile, instagram: e.target.value})}
+                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  placeholder="Ej: @complejojogo"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">Descripción</label>
+                <textarea 
+                  value={profile.description || ''} 
+                  onChange={e => setProfile({...profile, description: e.target.value})}
+                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  rows={3}
+                  placeholder="Descripción del complejo y sus instalaciones..."
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-gray-500 mb-1">Alias bancario del complejo</label>
+                <input 
+                  value={profile.alias || ''} 
+                  onChange={e => setProfile({...profile, alias: e.target.value})}
+                  className="w-full p-3 bg-gray-50 rounded-xl font-mono font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  placeholder="Ej: complejo.canchas.mp"
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-100">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Nombre del dueño</label>
+                  <input 
+                    value={profile.ownerName || ''} 
+                    onChange={e => setProfile({...profile, ownerName: e.target.value})}
+                    className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                    placeholder="Nombre y apellido"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Teléfono del dueño</label>
+                  <input 
+                    value={profile.ownerPhone || ''} 
+                    onChange={e => setProfile({...profile, ownerPhone: e.target.value})}
+                    className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                    placeholder="Teléfono directo"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-100">
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Nombre del encargado</label>
+                  <input 
+                    value={profile.managerName || ''} 
+                    onChange={e => setProfile({...profile, managerName: e.target.value})}
+                    className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                    placeholder="Nombre y apellido"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 mb-1">Teléfono del encargado</label>
+                  <input 
+                    value={profile.managerPhone || ''} 
+                    onChange={e => setProfile({...profile, managerPhone: e.target.value})}
+                    className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                    placeholder="Teléfono de contacto"
+                  />
+                </div>
               </div>
               <button 
                 type="button" 
