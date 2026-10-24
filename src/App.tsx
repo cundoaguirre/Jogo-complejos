@@ -32,6 +32,7 @@ import {
 } from './lib/weeklyBilling';
 import { createSaasInvitation } from './lib/invitations';
 import { calculateUserLifecycleMetrics, formatDDMMYY } from './lib/userMetrics';
+import { buildCrmActivityIndex, normalizePhoneNumber } from './lib/crmActivityIndex';
 import { doc, getDoc, getDocs, collection, query, where, serverTimestamp, addDoc } from 'firebase/firestore';
 import { db, auth } from './lib/firebase';
 import { 
@@ -482,6 +483,11 @@ const UserDetailModal = ({ user, onClose, onDelete }: { user: User | null, onClo
           <div className="mb-6">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-2xl font-bold text-gray-900">{user.name}</h2>
+              {user.isDerived && (
+                <span className="text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded capitalize">
+                  Invitado
+                </span>
+              )}
               {user.category && (
                 <span className="text-xs font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded capitalize">
                   {user.category}
@@ -4822,7 +4828,7 @@ const NewUserModal = ({ isOpen, onClose, onSave }: { isOpen: boolean; onClose: (
   );
 };
 
-const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complejo_central' }: { onUserClick: (id: number | string) => void, refreshKey?: number, onDataChange?: () => void, complexId?: string }) => {
+const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complejo_central' }: { onUserClick: (id: number | string, user?: User) => void, refreshKey?: number, onDataChange?: () => void, complexId?: string }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [bookings, setBookings] = useState<Match[]>([]);
   const parentRef = useRef<HTMLDivElement>(null);
@@ -4860,62 +4866,10 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
     };
   }, [complexId, refreshKey]);
 
-  // Indexar reservas por userId y por userPhone para lookup O(1) de B_u
-  const bookingsByUser = useMemo(() => {
-    const byId: Record<string, Match[]> = {};
-    const byPhone: Record<string, Match[]> = {};
-
-    for (const b of bookings) {
-      if (b.userId && String(b.userId) !== '0') {
-        const uId = String(b.userId);
-        if (!byId[uId]) byId[uId] = [];
-        byId[uId].push(b);
-      }
-      const rawPhone = b.userPhone || (b as any).clientPhone;
-      if (rawPhone) {
-        const p = String(rawPhone).trim();
-        if (p) {
-          if (!byPhone[p]) byPhone[p] = [];
-          byPhone[p].push(b);
-        }
-      }
-    }
-    return { byId, byPhone };
-  }, [bookings]);
-
-  // Mapa de métricas analíticas de ciclo de vida calculadas al vuelo en la UI
-  const userMetricsMap = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof calculateUserLifecycleMetrics>>();
-    const now = new Date();
-
-    for (const user of users) {
-      const uId = String(user.id);
-      const uPhone = user.phone ? String(user.phone).trim() : '';
-
-      // B_u = { b in bookings | b.userId == u.id || b.userPhone == u.phone }
-      const associatedList: Match[] = [];
-      const seenIds = new Set<string>();
-
-      const addBooking = (b: Match) => {
-        const bId = String(b.id || `${b.date}_${b.startTime}_${b.courtId}`);
-        if (!seenIds.has(bId)) {
-          seenIds.add(bId);
-          associatedList.push(b);
-        }
-      };
-
-      if (bookingsByUser.byId[uId]) {
-        bookingsByUser.byId[uId].forEach(addBooking);
-      }
-      if (uPhone && bookingsByUser.byPhone[uPhone]) {
-        bookingsByUser.byPhone[uPhone].forEach(addBooking);
-      }
-
-      const metrics = calculateUserLifecycleMetrics(user, associatedList, now);
-      map.set(uId, metrics);
-    }
-    return map;
-  }, [users, bookingsByUser]);
+  // Construir el índice de actividad unificado del CRM con organizadores, participantes y clientes registrados
+  const { crmUsers, userMetricsMap } = useMemo(() => {
+    return buildCrmActivityIndex(users, bookings, complexId, new Date());
+  }, [users, bookings, complexId]);
 
   const handleCreateUser = async (userData: any) => {
     try {
@@ -4927,7 +4881,7 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
     }
   };
 
-  const filteredUsers = (Array.isArray(users) ? users : []).filter(user => {
+  const filteredUsers = (Array.isArray(crmUsers) ? crmUsers : []).filter(user => {
     if (!user) return false;
     const metrics = userMetricsMap.get(String(user.id));
     if (!metrics) return false;
@@ -5119,7 +5073,7 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      onUserClick(user.id);
+                      onUserClick(user.id, user);
                     }}
                   >
                     {/* 1. Jugador */}
@@ -5129,7 +5083,14 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
                           {user.name?.charAt(0).toUpperCase() || '?'}
                         </div>
                         <div className="min-w-0 max-w-[130px]">
-                          <div className="font-bold text-gray-900 dark:text-slate-100 truncate">{user.name}</div>
+                          <div className="font-bold text-gray-900 dark:text-slate-100 truncate flex items-center gap-1.5">
+                            <span>{user.name}</span>
+                            {user.isDerived && (
+                              <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/60 shrink-0">
+                                Invitado
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[9px] text-gray-500 dark:text-slate-400 truncate">{user.phone || (user.email?.includes('sin-correo.com') ? 'Sin teléfono' : user.email)}</div>
                         </div>
                       </div>
@@ -5213,6 +5174,8 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
     </div>
   );
 };
+
+export const ClientsView = UsersView;
 
 const AnalyticsView = ({ complexId = 'complejo_central' }: { complexId?: string }) => {
   const [users, setUsers] = useState<User[]>([]);
@@ -9188,13 +9151,21 @@ export default function App() {
     if (action === 'support') setShowGlobalSupportModal(true);
   };
 
-  const handleUserClick = (id: number | string) => {
+  const handleUserClick = (id: number | string, userObj?: User) => {
+    if (userObj) {
+      setSelectedUser(userObj);
+      return;
+    }
     const found = users.find(u => String(u.id) === String(id));
     if (found) setSelectedUser(found);
   };
 
   const handleDeleteUser = async (id: number | string) => {
     try {
+      if (String(id).startsWith('derived_')) {
+        setSelectedUser(null);
+        return;
+      }
       await deleteClientInFirestore(id);
       setSelectedUser(null);
       setRefreshKey(prev => prev + 1);

@@ -1528,7 +1528,9 @@ export async function updateSupportTicketStatusInFirestore(ticketId: string, sta
 // =========================================================================
 
 /**
- * Escucha clientes en la colección canónica 'users' filtrando por originComplejoId
+ * Escucha clientes en la colección canónica 'users' filtrando por asociación estricta al complejo activo:
+ * originComplejoId, originComplexId, complejoId, complexId y associatedComplexIds.
+ * Fusiona los resultados en un mapa deduplicado por ID y garantiza el aislamiento multi-tenant.
  */
 export function subscribeToClients(
   complexId: string, 
@@ -1537,23 +1539,78 @@ export function subscribeToClients(
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   try {
     const colRef = collection(db, USERS_COLLECTION);
-    const q = query(colRef, where('originComplejoId', '==', targetId));
+    
+    // Consultas acotadas exclusivamente al complejo objetivo
+    const qOrigin = query(colRef, where('originComplejoId', '==', targetId));
+    const qAltOrigin = query(colRef, where('originComplexId', '==', targetId));
+    const qComplejo = query(colRef, where('complejoId', '==', targetId));
+    const qComplex = query(colRef, where('complexId', '==', targetId));
+    const qAssociated = query(colRef, where('associatedComplexIds', 'array-contains', targetId));
 
-    return onSnapshot(q, (snapshot) => {
-      const list = snapshot.docs.map(d => ({
-        id: d.id,
-        ...d.data()
-      } as unknown as User));
-      onUpdate(list);
-    }, () => {
-      // Fallback a leer toda la colección de users
-      return onSnapshot(colRef, (snap) => {
-        const list = snap.docs
-          .map(d => ({ id: d.id, ...d.data() as any }))
-          .filter(u => !targetId || u.originComplejoId === targetId || !u.originComplejoId);
-        onUpdate(list as unknown as User[]);
-      });
+    const mapOrigin = new Map<string, User>();
+    const mapAltOrigin = new Map<string, User>();
+    const mapComplejo = new Map<string, User>();
+    const mapComplex = new Map<string, User>();
+    const mapAssociated = new Map<string, User>();
+
+    const emitMerged = () => {
+      const merged = new Map<string, User>([
+        ...mapOrigin,
+        ...mapAltOrigin,
+        ...mapComplejo,
+        ...mapComplex,
+        ...mapAssociated
+      ]);
+      onUpdate(Array.from(merged.values()));
+    };
+
+    const unsubOrigin = onSnapshot(qOrigin, (snap) => {
+      mapOrigin.clear();
+      snap.forEach(d => mapOrigin.set(d.id, { id: d.id, ...d.data() } as unknown as User));
+      emitMerged();
+    }, (err) => {
+      console.warn('[Firestore] Escucha users (originComplejoId):', err);
     });
+
+    const unsubAltOrigin = onSnapshot(qAltOrigin, (snap) => {
+      mapAltOrigin.clear();
+      snap.forEach(d => mapAltOrigin.set(d.id, { id: d.id, ...d.data() } as unknown as User));
+      emitMerged();
+    }, (err) => {
+      // Ignorar si la regla o índice no aplica
+    });
+
+    const unsubComplejo = onSnapshot(qComplejo, (snap) => {
+      mapComplejo.clear();
+      snap.forEach(d => mapComplejo.set(d.id, { id: d.id, ...d.data() } as unknown as User));
+      emitMerged();
+    }, (err) => {
+      // Ignorar
+    });
+
+    const unsubComplex = onSnapshot(qComplex, (snap) => {
+      mapComplex.clear();
+      snap.forEach(d => mapComplex.set(d.id, { id: d.id, ...d.data() } as unknown as User));
+      emitMerged();
+    }, (err) => {
+      // Ignorar
+    });
+
+    const unsubAssociated = onSnapshot(qAssociated, (snap) => {
+      mapAssociated.clear();
+      snap.forEach(d => mapAssociated.set(d.id, { id: d.id, ...d.data() } as unknown as User));
+      emitMerged();
+    }, (err) => {
+      // Si associatedComplexIds no existe o no tiene permiso, no interrumpe el resto
+    });
+
+    return () => {
+      unsubOrigin();
+      unsubAltOrigin();
+      unsubComplejo();
+      unsubComplex();
+      unsubAssociated();
+    };
   } catch (e) {
     console.error('[Firestore] Error subscribing to clients:', e);
     onUpdate([]);

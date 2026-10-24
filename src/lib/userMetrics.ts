@@ -202,12 +202,17 @@ export function isBookingPlayed(b: RawBooking, now: Date = new Date()): boolean 
 export function calculateUserLifecycleMetrics(
   user: any,
   associatedBookings: RawBooking[] = [],
-  systemDate: Date = new Date()
+  systemDate: Date = new Date(),
+  organizedBookings?: RawBooking[]
 ): UserLifecycleMetrics {
   const todayYMD = parseYMD(systemDate)!;
 
-  // Todas las reservas realizadas (incluye activas, jugadas y canceladas)
-  const allValidBookings = associatedBookings.filter(b => Boolean(b && (b.date || b.startTime || b.start_time)));
+  // Reservas organizadas por el usuario (respetando la definición de reservas propias vs invitaciones)
+  const targetOrganized = organizedBookings !== undefined
+    ? organizedBookings
+    : associatedBookings.filter(b => (b as any).isOrganizer !== false);
+
+  const allValidBookings = targetOrganized.filter(b => Boolean(b && (b.date || b.startTime || b.start_time)));
   const reservas = allValidBookings.length;
 
   // Filtrar reservas no canceladas

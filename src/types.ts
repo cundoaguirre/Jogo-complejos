@@ -155,6 +155,8 @@ export interface User {
   adminId?: string;
   createdAt?: string;
   updatedAt?: string;
+  isDerived?: boolean;
+  associatedComplexIds?: string[];
 }
 
 export interface ProductBatch {
