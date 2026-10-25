@@ -45,6 +45,7 @@ import {
   hoursToWeeklySchedule, 
   doesCrossMidnight 
 } from './complexProfileSync';
+import { findMatchingLocalUser } from './crmActivityIndex';
 
 export const COMPLEJOS_COLLECTION = 'complejos';
 export const BOOKINGS_COLLECTION = 'bookings';
@@ -127,6 +128,31 @@ export function resolveClientName(
   linkedDocOrBooking?: any
 ): string {
   if (!docOrRecord && !linkedDocOrBooking) return 'NN';
+
+  // 0. Si se provee la lista de usuarios del complejo, la ficha local tiene prioridad absoluta para mostrar el nombre
+  if (Array.isArray(users) && users.length > 0) {
+    const rawId = docOrRecord?.userId || docOrRecord?.clientId || docOrRecord?.host_id || docOrRecord?.user_id ||
+                  linkedDocOrBooking?.userId || linkedDocOrBooking?.clientId || linkedDocOrBooking?.host_id;
+    const rawCanon = docOrRecord?.canonicalId || docOrRecord?.canonicalUserId || linkedDocOrBooking?.canonicalId || linkedDocOrBooking?.canonicalUserId;
+    const rawHist = docOrRecord?.historicalId || linkedDocOrBooking?.historicalId;
+    const rawHistList = docOrRecord?.historicalIds || linkedDocOrBooking?.historicalIds;
+    const rawPhone = docOrRecord?.userPhone || docOrRecord?.clientPhone || docOrRecord?.host_phone || docOrRecord?.phone ||
+                     linkedDocOrBooking?.userPhone || linkedDocOrBooking?.clientPhone || linkedDocOrBooking?.phone;
+    const rawEmail = docOrRecord?.userEmail || docOrRecord?.clientEmail || docOrRecord?.email ||
+                     linkedDocOrBooking?.userEmail || linkedDocOrBooking?.clientEmail || linkedDocOrBooking?.email;
+
+    const matchedUser = findMatchingLocalUser(users as User[], {
+      id: rawId,
+      canonicalId: rawCanon,
+      historicalId: rawHist,
+      historicalIds: rawHistList,
+      phone: rawPhone,
+      email: rawEmail
+    });
+    if (matchedUser && matchedUser.name && !isGenericClientPlaceholder(matchedUser.name)) {
+      return matchedUser.name.trim();
+    }
+  }
 
   // 1. Nombre explícito en el documento principal
   const directFields = [
@@ -332,6 +358,13 @@ export function formatBookingToMatch(b: any, users?: User[]): Match {
     notes: b.notes || '',
     ownerId: b.ownerId || '',
     adminId: b.adminId || '',
+    canonicalId: b.canonicalId || b.canonicalUserId || b.personId || b.erpUserId || undefined,
+    canonicalUserId: b.canonicalUserId || b.canonicalId || b.personId || b.erpUserId || undefined,
+    canonicalName: b.canonicalName || undefined,
+    personId: b.personId || b.canonicalId || undefined,
+    erpUserId: b.erpUserId || b.canonicalUserId || undefined,
+    historicalId: b.historicalId || b.historicalUserId || undefined,
+    historicalIds: Array.isArray(b.historicalIds) ? b.historicalIds : (b.historicalId ? [String(b.historicalId)] : undefined),
     is_open: false,
     mode: b.mode || 'complete',
     max_players: b.max_players || 10,
@@ -880,6 +913,11 @@ export async function createBookingInFirestore(data: {
     userEmail: (data.userEmail || data.clientEmail || '').trim(),
     clientEmail: (data.userEmail || data.clientEmail || '').trim(),
     notes: data.notes || '',
+    canonicalId: data.canonicalId || (data as any).canonicalUserId || (data as any).personId || undefined,
+    canonicalUserId: (data as any).canonicalUserId || data.canonicalId || (data as any).personId || undefined,
+    canonicalName: (data as any).canonicalName || undefined,
+    historicalId: (data as any).historicalId || undefined,
+    historicalIds: (data as any).historicalIds || undefined,
     ownerId: auth.currentUser?.uid || data.ownerId || '',
     adminId: data.adminId || '',
     createdAt: new Date().toISOString(),
@@ -1631,16 +1669,17 @@ export async function saveClientInFirestore(
   const dateStr = now.toISOString().split('T')[0];
   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
-  // Preservar originComplejoId histórico si ya existía en client o en el documento
+  // Preservar originComplejoId histórico y metadatos canónicos si ya existían en client o en el documento
   let resolvedOriginId = client.originComplejoId;
   let resolvedOriginName = client.originComplejoName;
-  if (!resolvedOriginId && client.id) {
+  let existingData: any = null;
+  if (client.id) {
     try {
       const existingDoc = await getDoc(doc(db, USERS_COLLECTION, clientId));
       if (existingDoc.exists()) {
-        const existingData = existingDoc.data();
-        resolvedOriginId = existingData.originComplejoId || existingData.originComplexId;
-        resolvedOriginName = existingData.originComplejoName || existingData.complexName;
+        existingData = existingDoc.data();
+        resolvedOriginId = resolvedOriginId || existingData.originComplejoId || existingData.originComplexId;
+        resolvedOriginName = resolvedOriginName || existingData.originComplejoName || existingData.complexName;
       }
     } catch (e) {
       // Ignorar si no existe o no tiene permiso previo
@@ -1649,6 +1688,11 @@ export async function saveClientInFirestore(
   if (!resolvedOriginId) {
     resolvedOriginId = targetId;
   }
+
+  const resolvedCanonId = client.canonicalId || (client as any).canonicalUserId || existingData?.canonicalId || existingData?.canonicalUserId;
+  const resolvedCanonUserId = (client as any).canonicalUserId || client.canonicalId || existingData?.canonicalUserId || existingData?.canonicalId;
+  const resolvedCanonName = (client as any).canonicalName || existingData?.canonicalName;
+  const resolvedHistoricalIds = (client as any).historicalIds || existingData?.historicalIds;
 
   const payload: any = {
     id: clientId,
@@ -1676,7 +1720,11 @@ export async function saveClientInFirestore(
     ownerId: auth.currentUser?.uid || client.ownerId || '',
     adminId: client.adminId || '',
     createdAt: client.createdAt || new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+    updatedAt: new Date().toISOString(),
+    ...(resolvedCanonId ? { canonicalId: resolvedCanonId } : {}),
+    ...(resolvedCanonUserId ? { canonicalUserId: resolvedCanonUserId } : {}),
+    ...(resolvedCanonName ? { canonicalName: resolvedCanonName } : {}),
+    ...(resolvedHistoricalIds ? { historicalIds: resolvedHistoricalIds } : {})
   };
 
   await setDoc(doc(db, USERS_COLLECTION, clientId), payload, { merge: true });

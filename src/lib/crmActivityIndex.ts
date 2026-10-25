@@ -46,12 +46,23 @@ export function normalizePhoneNumber(phone?: string | null): string {
     digits = digits.slice(1);
   }
 
-  // Si tiene formato de 11 dígitos con '15' (ej: 11 15 xxxx xxxx), remover el '15'
-  if (digits.length === 11 && (digits.startsWith('1115') || digits.startsWith('15'))) {
+  // Si tiene formato con prefijo '15' de móvil en Argentina (ej: 11 15 xxxx xxxx, 351 15 xxx xxxx, 2966 15 xx xxxx)
+  // El número móvil argentino estándar tiene exactamente 10 dígitos (código de área + número sin 15)
+  if (digits.length === 11) {
     if (digits.startsWith('1115')) {
       digits = '11' + digits.slice(4);
     } else if (digits.startsWith('15')) {
       digits = digits.slice(2);
+    }
+  } else if (digits.length === 12) {
+    // Código de área de 3 dígitos (ej: 351, 223, 261, 341) seguido de 15
+    if (digits.slice(3, 5) === '15') {
+      digits = digits.slice(0, 3) + digits.slice(5);
+    } else if (digits.slice(2, 4) === '15') {
+      digits = digits.slice(0, 2) + digits.slice(4);
+    } else if (digits.slice(4, 6) === '15') {
+      // Código de área de 4 dígitos (ej: 2966, 3874) seguido de 15
+      digits = digits.slice(0, 4) + digits.slice(6);
     }
   }
 
@@ -123,6 +134,10 @@ export function isSameComplex(idA?: string | null, idB?: string | null): boolean
 
 export interface ExtractedParticipant {
   rawId?: string;
+  canonicalId?: string;
+  canonicalName?: string;
+  historicalId?: string;
+  historicalIds?: string[];
   name?: string;
   rawPhone?: string;
   normPhone?: string;
@@ -146,18 +161,41 @@ export function extractBookingParticipants(booking: Match | any): ExtractedParti
     ? orgCleanId
     : undefined;
 
-  const orgRawPhone = booking.userPhone ?? booking.clientPhone ?? booking.host_phone ?? booking.phone ?? booking.user_phone ?? booking.client_phone ?? booking.hostPhone;
+  const orgCanon = booking.canonicalId ?? booking.canonicalUserId ?? booking.personId ?? booking.erpUserId ?? booking.canonicalPersonId ?? booking.erpPersonId;
+  const orgCleanCanon = orgCanon !== undefined && orgCanon !== null ? String(orgCanon).trim() : '';
+  const validOrgCanon = orgCleanCanon !== '' && orgCleanCanon !== '0' && orgCleanCanon !== 'null' && orgCleanCanon !== 'undefined'
+    ? orgCleanCanon
+    : undefined;
+
+  const orgCanonName = booking.canonicalName ? String(booking.canonicalName).trim() : undefined;
+
+  const orgHist = booking.historicalId ?? booking.historicalUserId;
+  const orgCleanHist = orgHist !== undefined && orgHist !== null ? String(orgHist).trim() : '';
+
+  let orgHistList: string[] = [];
+  if (Array.isArray(booking.historicalIds)) {
+    orgHistList = booking.historicalIds.map((h: any) => String(h).trim()).filter(Boolean);
+  }
+  if (orgCleanHist && !orgHistList.includes(orgCleanHist)) {
+    orgHistList.push(orgCleanHist);
+  }
+
+  const orgRawPhone = booking.userPhone ?? booking.clientPhone ?? booking.host_phone ?? booking.phone ?? booking.user_phone ?? booking.client_phone ?? booking.hostPhone ?? booking.contactPhone ?? booking.telephone ?? booking.canonicalPhone;
   const orgNormPhone = normalizePhoneNumber(orgRawPhone);
 
   const orgRawName = booking.userName ?? booking.clientName ?? booking.host_name ?? booking.user_name ?? booking.client_name ?? booking.hostName ?? booking.customerName ?? booking.responsibleName ?? booking.name ?? '';
   const orgName = typeof orgRawName === 'string' && !isGenericPlaceholderName(orgRawName) ? orgRawName.trim() : undefined;
 
-  const orgEmail = booking.userEmail ?? booking.clientEmail ?? booking.email ?? booking.user_email;
+  const orgEmail = booking.userEmail ?? booking.clientEmail ?? booking.email ?? booking.user_email ?? booking.canonicalEmail;
 
   // Si el organizador tiene alguna identificación válida, lo incorporamos
-  if (validOrgId || orgNormPhone || orgName) {
+  if (validOrgId || validOrgCanon || orgNormPhone || orgName) {
     participants.push({
       rawId: validOrgId,
+      canonicalId: validOrgCanon,
+      canonicalName: orgCanonName,
+      historicalId: orgCleanHist || undefined,
+      historicalIds: orgHistList.length > 0 ? orgHistList : undefined,
       name: orgName,
       rawPhone: orgRawPhone ? String(orgRawPhone).trim() : undefined,
       normPhone: orgNormPhone || undefined,
@@ -207,7 +245,23 @@ export function extractBookingParticipants(booking: Match | any): ExtractedParti
         ? pCleanId
         : undefined;
 
-      const pRawPhone = p.phone ?? p.userPhone ?? p.clientPhone ?? p.user_phone ?? p.client_phone ?? p.playerPhone ?? p.player_phone;
+      const pCanon = p.canonicalId ?? p.canonicalUserId ?? p.personId ?? p.erpUserId;
+      const pCleanCanon = pCanon !== undefined && pCanon !== null ? String(pCanon).trim() : '';
+      const validPCanon = pCleanCanon !== '' && pCleanCanon !== '0' && pCleanCanon !== 'null'
+        ? pCleanCanon
+        : undefined;
+
+      const pCanonName = p.canonicalName ? String(p.canonicalName).trim() : undefined;
+
+      let pHistoricalIds: string[] = [];
+      if (Array.isArray(p.historicalIds)) {
+        pHistoricalIds = p.historicalIds.map((h: any) => String(h).trim()).filter(Boolean);
+      }
+      if (p.historicalId && !pHistoricalIds.includes(String(p.historicalId).trim())) {
+        pHistoricalIds.push(String(p.historicalId).trim());
+      }
+
+      const pRawPhone = p.phone ?? p.userPhone ?? p.clientPhone ?? p.user_phone ?? p.client_phone ?? p.playerPhone ?? p.player_phone ?? p.telephone ?? p.contactPhone;
       const pNormPhone = normalizePhoneNumber(pRawPhone);
 
       const pRawName = p.name ?? p.userName ?? p.clientName ?? p.player_name ?? p.user_name ?? p.client_name ?? p.playerName ?? '';
@@ -215,12 +269,17 @@ export function extractBookingParticipants(booking: Match | any): ExtractedParti
 
       const pEmail = p.email ?? p.userEmail ?? p.user_email ?? p.clientEmail;
 
-      if (validPId || pNormPhone || pName) {
+      if (validPId || validPCanon || pNormPhone || pName) {
         // Verificar si es exactamente el mismo host/organizador ya registrado en esta reserva
         const isHost = (validOrgId && validPId && validOrgId === validPId) ||
+                       (validOrgCanon && validPCanon && validOrgCanon === validPCanon) ||
                        (orgNormPhone && pNormPhone && orgNormPhone === pNormPhone);
         participants.push({
           rawId: validPId,
+          canonicalId: validPCanon,
+          canonicalName: pCanonName,
+          historicalId: p.historicalId ? String(p.historicalId).trim() : undefined,
+          historicalIds: pHistoricalIds.length > 0 ? pHistoricalIds : undefined,
           name: pName,
           rawPhone: pRawPhone ? String(pRawPhone).trim() : undefined,
           normPhone: pNormPhone || undefined,
@@ -234,6 +293,115 @@ export function extractBookingParticipants(booking: Match | any): ExtractedParti
   return participants;
 }
 
+/**
+ * Resuelve la correspondencia inequívoca entre los identificadores de un participante/reserva
+ * y las fichas de usuarios locales del complejo.
+ * 
+ * Jerarquía de resolución:
+ * 1. UID local del complejo (/users).
+ * 2. Identidad canónica del ERP (canonicalId / canonicalUserId / personId / erpUserId).
+ * 3. Registros históricos asociados (historicalIds / legacyUserIds).
+ * 4. Teléfono normalizado inequívoco (7+ dígitos sin prefijos).
+ * 5. Email verificado (distinto a placeholders).
+ */
+export function findMatchingLocalUser(
+  users?: User[] | null,
+  criteria?: {
+    id?: string | number | null;
+    canonicalId?: string | null;
+    canonicalUserId?: string | null;
+    historicalId?: string | null;
+    historicalIds?: string[] | null;
+    phone?: string | null;
+    email?: string | null;
+  }
+): User | null {
+  if (!users || users.length === 0 || !criteria) return null;
+
+  const rawId = criteria.id !== undefined && criteria.id !== null ? String(criteria.id).trim() : '';
+  const validId = rawId !== '' && rawId !== '0' && rawId !== 'anon' && rawId !== 'null' && rawId !== 'undefined' ? rawId : '';
+
+  const rawCanon = criteria.canonicalId || criteria.canonicalUserId || '';
+  const validCanon = rawCanon ? String(rawCanon).trim() : '';
+
+  const rawHist = criteria.historicalId ? String(criteria.historicalId).trim() : '';
+  const histList = (Array.isArray(criteria.historicalIds) ? criteria.historicalIds : [])
+    .map(h => String(h).trim())
+    .filter(Boolean);
+  if (rawHist && !histList.includes(rawHist)) histList.push(rawHist);
+
+  const normPhone = normalizePhoneNumber(criteria.phone);
+
+  const cleanEmail = criteria.email ? criteria.email.trim().toLowerCase() : '';
+  const validEmail = cleanEmail && !cleanEmail.includes('@sin-correo.com') && cleanEmail.includes('@') ? cleanEmail : '';
+
+  // 1. Coincidencia por ID local exacto
+  if (validId) {
+    const byId = users.find(u => String(u.id).trim() === validId);
+    if (byId) return byId;
+  }
+
+  // 2. Coincidencia por Identidad Canónica del ERP
+  if (validCanon) {
+    const byCanon = users.find(u => {
+      const uCanon = u.canonicalId || u.canonicalUserId || (u as any).personId || (u as any).erpUserId;
+      if (uCanon && String(uCanon).trim() === validCanon) return true;
+      if (String(u.id).trim() === validCanon) return true;
+      return false;
+    });
+    if (byCanon) return byCanon;
+  }
+
+  // Si el ID del criterio coincide con el canonicalId de un usuario local
+  if (validId) {
+    const byIdAsCanon = users.find(u => {
+      const uCanon = u.canonicalId || u.canonicalUserId || (u as any).personId || (u as any).erpUserId;
+      return Boolean(uCanon && String(uCanon).trim() === validId);
+    });
+    if (byIdAsCanon) return byIdAsCanon;
+  }
+
+  // 3. Coincidencia por Registros Históricos (historicalIds / legacyUserIds)
+  if (validId) {
+    const byHistId = users.find(u => {
+      const uHists = Array.isArray(u.historicalIds) ? u.historicalIds : ((u as any).historicalId ? [String((u as any).historicalId)] : []);
+      const uLegacy = Array.isArray((u as any).legacyUserIds) ? (u as any).legacyUserIds : [];
+      return uHists.some((h: any) => String(h).trim() === validId) || uLegacy.some((h: any) => String(h).trim() === validId);
+    });
+    if (byHistId) return byHistId;
+  }
+
+  if (histList.length > 0) {
+    const byHistList = users.find(u => {
+      const uIdStr = String(u.id).trim();
+      if (histList.includes(uIdStr)) return true;
+      const uHists = Array.isArray(u.historicalIds) ? u.historicalIds : ((u as any).historicalId ? [String((u as any).historicalId)] : []);
+      return uHists.some((h: any) => histList.includes(String(h).trim()));
+    });
+    if (byHistList) return byHistList;
+  }
+
+  // 4. Coincidencia por Teléfono normalizado inequívoco (Argentina 7+ dígitos)
+  if (normPhone) {
+    const byPhone = users.find(u => {
+      const uPhone = u.phone || (u as any).userPhone || (u as any).clientPhone;
+      return normalizePhoneNumber(uPhone) === normPhone;
+    });
+    if (byPhone) return byPhone;
+  }
+
+  // 5. Coincidencia por Email unívoco
+  if (validEmail) {
+    const byEmail = users.find(u => {
+      const uMail = (u.email || '').trim().toLowerCase();
+      return uMail && !uMail.includes('@sin-correo.com') && uMail === validEmail;
+    });
+    if (byEmail) return byEmail;
+  }
+
+  return null;
+}
+
 export interface CrmActivityIndexResult {
   crmUsers: User[];
   userMetricsMap: Map<string, UserLifecycleMetrics>;
@@ -244,11 +412,12 @@ export interface CrmActivityIndexResult {
 /**
  * Construye el índice de actividad unificado del CRM:
  * - Vincula cada reserva con sus organizadores y participantes.
- * - Deduplica rigurosamente según jerarquía: UID -> Teléfono normalizado.
+ * - Deduplica rigurosamente según jerarquía: UID -> Identidad Canónica ERP -> Teléfono normalizado.
  * - La ficha local del complejo TIENE PRIORIDAD: si el complejo registró localmente
- *   a un cliente con un nombre (ej. "Arrogue") y una reserva de ERP entra con otro nombre
- *   (ej. "Demichelis") bajo el mismo teléfono, el complejo conserva su nombre local y acumula la actividad.
- * - Crea clientes en memoria (isDerived: true) para participantes no registrados.
+ *   a un cliente con un nombre (ej. "Arrogue" o "Federico Gutiérrez") y una reserva de ERP entra con otro nombre
+ *   (ej. "Demichelis" o "Pájaro Gutiérrez"), el complejo conserva su nombre local y acumula la actividad.
+ * - Nunca sobrescribe el nombre local con el nombre canónico del ERP ni propaga cambios a otros complejos.
+ * - Crea clientes en memoria (isDerived: true) exclusivamente para participantes no registrados en el complejo.
  * - Calcula las métricas del ciclo de vida respetando:
  *   - 'reservas': estrictamente organizadas por el usuario.
  *   - 'juegos': partidos efectivamente jugados/completados (como organizador o invitado).
@@ -261,29 +430,13 @@ export function buildCrmActivityIndex(
 ): CrmActivityIndexResult {
   const normComplexId = (!activeComplexId || activeComplexId === 'complejo_central') ? 'B' : activeComplexId;
 
-  // 1. Mapeo de usuarios registrados de Firestore del complejo activo
-  const registeredById = new Map<string, User>();
-  const registeredByPhone = new Map<string, User>();
-
-  for (const u of registeredUsers) {
-    if (!u) continue;
-    const uId = String(u.id).trim();
-    if (uId) {
-      registeredById.set(uId, u);
-    }
-    const userPhoneRaw = u.phone || (u as any).userPhone || (u as any).clientPhone;
-    const normPhone = normalizePhoneNumber(userPhoneRaw);
-    if (normPhone) {
-      registeredByPhone.set(normPhone, u);
-    }
-  }
-
-  // 2. Contenedores de participantes derivados (en memoria)
+  // 1. Contenedores de participantes derivados (en memoria) para participantes sin ficha local
+  const derivedByCanon = new Map<string, User>();
   const derivedByPhone = new Map<string, User>();
   const derivedById = new Map<string, User>();
   const derivedByName = new Map<string, User>();
 
-  // 3. Mapas de reservas asociadas y organizadas por ID de usuario
+  // 2. Mapas de reservas asociadas y organizadas por ID de usuario
   const associatedBookingsMap = new Map<string, Match[]>();
   const organizedBookingsMap = new Map<string, Match[]>();
   const userBookingsSeen = new Map<string, Set<string>>();
@@ -320,103 +473,112 @@ export function buildCrmActivityIndex(
 
   // Función de resolución de usuario para un participante respetando la prioridad de la ficha local
   const resolveUserForParticipant = (p: ExtractedParticipant, bookingDate?: string): User => {
-    // Prioridad 1: Coincidencia por UID con usuario registrado en el complejo
-    if (p.rawId && registeredById.has(p.rawId)) {
-      const reg = registeredById.get(p.rawId)!;
-      // La ficha local tiene prioridad: solo si su nombre es un placeholder genérico, se enriquece
-      if (isGenericPlaceholderName(reg.name) && p.name && !isGenericPlaceholderName(p.name)) {
-        reg.name = p.name;
+    // 1. Buscar correspondencia inequívoca con las fichas locales registradas en este complejo
+    const localMatch = findMatchingLocalUser(registeredUsers, {
+      id: p.rawId,
+      canonicalId: p.canonicalId,
+      canonicalUserId: p.canonicalId,
+      historicalId: p.historicalId,
+      historicalIds: p.historicalIds,
+      phone: p.rawPhone || p.normPhone,
+      email: p.email
+    });
+
+    if (localMatch) {
+      // Prioridad de ficha local: NUNCA sobrescribir el nombre local del complejo
+      // con el nombre canónico del ERP ni con otro nombre histórico.
+      // Solo si el nombre local es un placeholder genérico (NN, Cliente, etc.), se enriquece.
+      if (isGenericPlaceholderName(localMatch.name) && p.name && !isGenericPlaceholderName(p.name)) {
+        localMatch.name = p.name;
       }
-      return reg;
+      // Vincular metadatos canónicos en memoria si aún no los tenía (sin alterar su nombre local)
+      if (!localMatch.canonicalId && p.canonicalId) {
+        localMatch.canonicalId = p.canonicalId;
+      }
+      if (!localMatch.canonicalUserId && p.canonicalId) {
+        localMatch.canonicalUserId = p.canonicalId;
+      }
+      if (!(localMatch as any).canonicalName && p.canonicalName) {
+        (localMatch as any).canonicalName = p.canonicalName;
+      }
+      if (p.normPhone && (!localMatch.phone || isGenericPlaceholderName(localMatch.phone))) {
+        localMatch.phone = p.rawPhone || p.normPhone;
+      }
+      if (p.email && (!localMatch.email || localMatch.email.includes('@sin-correo.com'))) {
+        localMatch.email = p.email;
+      }
+      return localMatch;
     }
 
-    // Prioridad 2: Coincidencia por Teléfono normalizado con usuario registrado en el complejo
-    if (p.normPhone && registeredByPhone.has(p.normPhone)) {
-      const reg = registeredByPhone.get(p.normPhone)!;
-      // Prioridad de ficha local: conserva su nombre local (ej: "Arrogue" o "Pepe")
-      // aún si la reserva de ERP vino con otro nombre (ej: "Demichelis")
-      if (isGenericPlaceholderName(reg.name) && p.name && !isGenericPlaceholderName(p.name)) {
-        reg.name = p.name;
+    // 2. Si no existe ficha local, buscar si ya existe un derivado en memoria para esta misma identidad:
+    // a) Por Identidad Canónica del ERP
+    if (p.canonicalId && derivedByCanon.has(p.canonicalId)) {
+      const existing = derivedByCanon.get(p.canonicalId)!;
+      if (isGenericPlaceholderName(existing.name) && p.name && !isGenericPlaceholderName(p.name)) {
+        existing.name = p.name;
       }
-      return reg;
+      return existing;
     }
 
-    // Si no está registrado en Firestore, buscar o crear en derivados en memoria:
-    // a) Por teléfono normalizado
-    if (p.normPhone) {
-      if (derivedByPhone.has(p.normPhone)) {
-        const existing = derivedByPhone.get(p.normPhone)!;
-        // Si el usuario derivado ya tenía un nombre no genérico, lo conserva de forma estable
-        if (isGenericPlaceholderName(existing.name) && p.name && !isGenericPlaceholderName(p.name)) {
-          existing.name = p.name;
-        }
-        if (!existing.email && p.email) {
-          existing.email = p.email;
-        }
-        return existing;
+    // b) Por Teléfono normalizado
+    if (p.normPhone && derivedByPhone.has(p.normPhone)) {
+      const existing = derivedByPhone.get(p.normPhone)!;
+      if (isGenericPlaceholderName(existing.name) && p.name && !isGenericPlaceholderName(p.name)) {
+        existing.name = p.name;
       }
-
-      const derivedUser: User = {
-        id: `derived_phone_${p.normPhone}`,
-        name: (p.name && !isGenericPlaceholderName(p.name)) ? p.name : `Cliente (${p.rawPhone || p.normPhone})`,
-        phone: p.rawPhone || p.normPhone,
-        email: p.email || `${p.normPhone}@sin-correo.com`,
-        originComplejoId: normComplexId,
-        acquisitionDate: bookingDate || systemDate.toISOString().split('T')[0],
-        acquisitionChannel: 'reserva',
-        isDerived: true,
-        isActivated: true
-      };
-      derivedByPhone.set(p.normPhone, derivedUser);
-      return derivedUser;
+      if (!existing.email && p.email) existing.email = p.email;
+      if (!existing.canonicalId && p.canonicalId) existing.canonicalId = p.canonicalId;
+      return existing;
     }
 
-    // b) Por UID (si tiene UID pero no existe en Firestore)
-    if (p.rawId) {
-      if (derivedById.has(p.rawId)) {
-        const existing = derivedById.get(p.rawId)!;
-        if (isGenericPlaceholderName(existing.name) && p.name && !isGenericPlaceholderName(p.name)) {
-          existing.name = p.name;
-        }
-        return existing;
+    // c) Por UID
+    if (p.rawId && derivedById.has(p.rawId)) {
+      const existing = derivedById.get(p.rawId)!;
+      if (isGenericPlaceholderName(existing.name) && p.name && !isGenericPlaceholderName(p.name)) {
+        existing.name = p.name;
       }
-
-      const derivedUser: User = {
-        id: `derived_uid_${p.rawId}`,
-        name: (p.name && !isGenericPlaceholderName(p.name)) ? p.name : `Usuario ${p.rawId.slice(0, 6)}`,
-        phone: p.rawPhone || '',
-        email: p.email || `${p.rawId}@sin-correo.com`,
-        originComplejoId: normComplexId,
-        acquisitionDate: bookingDate || systemDate.toISOString().split('T')[0],
-        acquisitionChannel: 'app',
-        isDerived: true,
-        isActivated: true
-      };
-      derivedById.set(p.rawId, derivedUser);
-      return derivedUser;
+      if (!existing.canonicalId && p.canonicalId) existing.canonicalId = p.canonicalId;
+      return existing;
     }
 
-    // c) Por Nombre no ambiguo (si no hay teléfono ni UID)
+    // d) Por Nombre no ambiguo (si no hay teléfono ni UID ni canonicalId)
     const nameKey = (p.name || '').trim().toLowerCase();
-    if (nameKey && derivedByName.has(nameKey)) {
+    if (!p.canonicalId && !p.normPhone && !p.rawId && nameKey && derivedByName.has(nameKey)) {
       return derivedByName.get(nameKey)!;
     }
 
-    const uniqueSuffix = Math.random().toString(36).substring(2, 7);
+    // 3. Crear nueva representación del jugador utilizando la identidad recibida del ERP
+    const assignedId = p.canonicalId
+      ? `derived_canon_${p.canonicalId}`
+      : (p.normPhone ? `derived_phone_${p.normPhone}` : (p.rawId ? `derived_uid_${p.rawId}` : `derived_player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`));
+
+    const effectiveName = (p.name && !isGenericPlaceholderName(p.name))
+      ? p.name
+      : (p.canonicalName && !isGenericPlaceholderName(p.canonicalName)
+          ? p.canonicalName
+          : (p.rawPhone ? `Cliente (${p.rawPhone})` : 'Invitado'));
+
     const derivedUser: User = {
-      id: `derived_name_${nameKey ? encodeURIComponent(nameKey) : uniqueSuffix}_${uniqueSuffix}`,
-      name: p.name || 'Invitado',
-      phone: '',
-      email: `${uniqueSuffix}@sin-correo.com`,
+      id: assignedId,
+      name: effectiveName,
+      phone: p.rawPhone || p.normPhone || '',
+      email: p.email || (p.normPhone ? `${p.normPhone}@sin-correo.com` : ''),
+      canonicalId: p.canonicalId,
+      canonicalUserId: p.canonicalId,
+      canonicalName: p.canonicalName,
+      historicalIds: p.historicalIds,
       originComplejoId: normComplexId,
       acquisitionDate: bookingDate || systemDate.toISOString().split('T')[0],
-      acquisitionChannel: 'invitado',
+      acquisitionChannel: 'reserva',
       isDerived: true,
       isActivated: true
     };
-    if (nameKey) {
-      derivedByName.set(nameKey, derivedUser);
-    }
+
+    if (p.canonicalId) derivedByCanon.set(p.canonicalId, derivedUser);
+    if (p.normPhone) derivedByPhone.set(p.normPhone, derivedUser);
+    if (p.rawId) derivedById.set(p.rawId, derivedUser);
+    if (nameKey) derivedByName.set(nameKey, derivedUser);
+
     return derivedUser;
   };
 
@@ -441,6 +603,7 @@ export function buildCrmActivityIndex(
 
   // 5. Lista consolidada de clientes (Registrados + Derivados únicos)
   const allDerivedUsers = [
+    ...Array.from(derivedByCanon.values()),
     ...Array.from(derivedByPhone.values()),
     ...Array.from(derivedById.values()),
     ...Array.from(derivedByName.values())

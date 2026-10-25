@@ -32,7 +32,7 @@ import {
 } from './lib/weeklyBilling';
 import { createSaasInvitation } from './lib/invitations';
 import { calculateUserLifecycleMetrics, formatDDMMYY, type UserLifecycleMetrics } from './lib/userMetrics';
-import { buildCrmActivityIndex, normalizePhoneNumber, isGenericPlaceholderName } from './lib/crmActivityIndex';
+import { buildCrmActivityIndex, normalizePhoneNumber, isGenericPlaceholderName, findMatchingLocalUser } from './lib/crmActivityIndex';
 import { doc, getDoc, getDocs, collection, query, where, serverTimestamp, addDoc } from 'firebase/firestore';
 import { db, auth } from './lib/firebase';
 import { 
@@ -869,11 +869,17 @@ const MatchDetailModal = ({
                 const hostPhone = match.userPhone || match.clientPhone || match.host_phone || '';
                 const hostNormPhone = normalizePhoneNumber(hostPhone);
 
-                const resolvedHostUser = users && users.length > 0 ? users.find(u => {
-                  if (hostId && String(hostId) !== '0' && String(u.id) === String(hostId)) return true;
-                  if (hostNormPhone && normalizePhoneNumber(u.phone) === hostNormPhone) return true;
-                  return false;
-                }) : null;
+                const hostCriteria = {
+                  id: match.userId || match.host_id,
+                  canonicalId: match.canonicalId || match.canonicalUserId,
+                  canonicalUserId: match.canonicalUserId || match.canonicalId,
+                  historicalId: match.historicalId,
+                  historicalIds: match.historicalIds,
+                  phone: hostPhone,
+                  email: match.userEmail || match.clientEmail
+                };
+
+                const resolvedHostUser = users && users.length > 0 ? findMatchingLocalUser(users, hostCriteria) : null;
 
                 const displayHostName = resolvedHostUser?.name || match.host_name || match.userName || match.clientName || 'Cliente';
                 const displayHostPhone = resolvedHostUser?.phone || hostPhone;
@@ -885,11 +891,14 @@ const MatchDetailModal = ({
                       if (onUserClick) { 
                         const hostCandidate: Partial<User> = resolvedHostUser || {
                           id: hostId,
+                          canonicalId: match.canonicalId,
+                          canonicalUserId: match.canonicalUserId,
+                          historicalIds: match.historicalIds,
                           name: displayHostName,
                           phone: displayHostPhone,
                           email: match.userEmail || match.clientEmail
                         };
-                        onUserClick(hostId || hostNormPhone || match.id, hostCandidate as User); 
+                        onUserClick(resolvedHostUser?.id || hostId || hostNormPhone || match.id, hostCandidate as User); 
                         onClose(); 
                       } 
                     }}
@@ -952,11 +961,17 @@ const MatchDetailModal = ({
                   const pNormPhone = normalizePhoneNumber(pRawPhone || (typeof player === 'string' ? player : ''));
                   if (pNormPhone && !pRawPhone) pRawPhone = pNormPhone;
 
-                  const resolvedPlayerUser = users && users.length > 0 ? users.find(u => {
-                    if (pRawId && String(pRawId) !== '0' && String(u.id) === String(pRawId)) return true;
-                    if (pNormPhone && normalizePhoneNumber(u.phone) === pNormPhone) return true;
-                    return false;
-                  }) : null;
+                  const playerCriteria = {
+                    id: pRawId,
+                    canonicalId: typeof player === 'object' ? (player.canonicalId || player.canonicalUserId) : undefined,
+                    canonicalUserId: typeof player === 'object' ? (player.canonicalUserId || player.canonicalId) : undefined,
+                    historicalId: typeof player === 'object' ? player.historicalId : undefined,
+                    historicalIds: typeof player === 'object' ? player.historicalIds : undefined,
+                    phone: pRawPhone || pNormPhone,
+                    email: typeof player === 'object' ? (player.email || player.userEmail) : undefined
+                  };
+
+                  const resolvedPlayerUser = users && users.length > 0 ? findMatchingLocalUser(users, playerCriteria) : null;
 
                   const displayPlayerName = resolvedPlayerUser?.name || (pRawName && !isGenericPlaceholderName(pRawName) ? pRawName.trim() : `Jugador ${pIdx + 1}`);
                   const displayPlayerPhone = resolvedPlayerUser?.phone || (pRawPhone ? String(pRawPhone).trim() : '');
@@ -1722,6 +1737,10 @@ const CreateMatchModal = ({
     try {
       await onCreate({
         ...data,
+        canonicalId: selectedHost?.canonicalId || data.canonicalId,
+        canonicalName: selectedHost?.canonicalName || data.canonicalName,
+        historicalId: selectedHost?.historicalId || data.historicalId,
+        historicalIds: selectedHost?.historicalIds || data.historicalIds,
         courtId: data.court_id,
         courtName,
         clientName,
@@ -1802,7 +1821,15 @@ const CreateMatchModal = ({
   };
 
   const selectedUserName = users.find(u => String(u.id) === String(data.host_id))?.name || data.clientName;
-  const filteredUsers = users.filter(u => userSearch === '' || u.name.toLowerCase().includes(userSearch.toLowerCase()) || (u.phone && u.phone.includes(userSearch)));
+  const filteredUsers = users.filter(u => {
+    if (!userSearch) return true;
+    const term = userSearch.toLowerCase();
+    return (
+      u.name.toLowerCase().includes(term) ||
+      (u.canonicalName && u.canonicalName.toLowerCase().includes(term)) ||
+      (u.phone && u.phone.includes(term))
+    );
+  });
 
   return (
     <>
@@ -1943,7 +1970,11 @@ const CreateMatchModal = ({
                                 host_id: u.id,
                                 clientName: u.name,
                                 clientPhone: u.phone || '',
-                                clientEmail: u.email || ''
+                                clientEmail: u.email || '',
+                                canonicalId: u.canonicalId,
+                                canonicalName: u.canonicalName,
+                                historicalId: u.historicalId,
+                                historicalIds: u.historicalIds
                               }));
                               setIsSelectUserOpen(false);
                               setUserSearch('');
@@ -3871,15 +3902,17 @@ const ScheduleView = ({
 
   const getMatchHostDisplayName = useCallback((m: Match) => {
     if (users && users.length > 0) {
-      const uid = m.userId || m.host_id;
-      if (uid && String(uid) !== '0') {
-        const byId = users.find(u => String(u.id) === String(uid));
-        if (byId && byId.name && !isGenericPlaceholderName(byId.name)) return byId.name;
-      }
-      const normPhone = normalizePhoneNumber(m.host_phone || m.userPhone || m.clientPhone);
-      if (normPhone) {
-        const byPhone = users.find(u => normalizePhoneNumber(u.phone) === normPhone);
-        if (byPhone && byPhone.name && !isGenericPlaceholderName(byPhone.name)) return byPhone.name;
+      const matched = findMatchingLocalUser(users, {
+        id: m.userId || m.host_id,
+        canonicalId: m.canonicalId || m.canonicalUserId,
+        canonicalUserId: m.canonicalUserId || m.canonicalId,
+        historicalId: m.historicalId,
+        historicalIds: m.historicalIds,
+        phone: m.host_phone || m.userPhone || m.clientPhone,
+        email: m.userEmail || m.clientEmail
+      });
+      if (matched && matched.name && !isGenericPlaceholderName(matched.name)) {
+        return matched.name;
       }
     }
     return m.host_name || m.userName || m.clientName || 'Cliente';
@@ -5038,11 +5071,13 @@ const UsersView = ({
     // Search Filter
     const searchLower = (search || '').toLowerCase();
     const userName = (user.name || '').toLowerCase();
+    const userCanonical = (user.canonicalName || '').toLowerCase();
     const userPhone = String(user.phone || '');
     const userAddress = (user.address || (user as any).city || '').toLowerCase();
 
     const matchesSearch = 
       userName.includes(searchLower) ||
+      userCanonical.includes(searchLower) ||
       userPhone.includes(searchLower) ||
       userAddress.includes(searchLower);
 
@@ -9306,53 +9341,44 @@ export default function App() {
   };
 
   const handleUserClick = (idOrIdentifier?: number | string | null, candidateObj?: Partial<User> | any) => {
-    // 1. Si candidateObj ya es un usuario completo de la lista unificada
-    if (candidateObj && candidateObj.id && candidateObj.name && !candidateObj.userName && candidateObj.originComplejoId) {
-      setSelectedUser(candidateObj as User);
+    const strId = idOrIdentifier !== undefined && idOrIdentifier !== null ? String(idOrIdentifier).trim() : '';
+
+    // 1. Si candidateObj ya pertenece explícitamente a la lista unificada local de la sede activa
+    if (candidateObj && candidateObj.id && candidateObj.originComplejoId === activeComplexId) {
+      const exactInList = unifiedCrmUsers.find(u => String(u.id) === String(candidateObj.id));
+      if (exactInList) {
+        setSelectedUser(exactInList);
+        return;
+      }
+    }
+
+    const rawPhone = candidateObj?.phone || candidateObj?.userPhone || candidateObj?.clientPhone || candidateObj?.host_phone || (strId.startsWith('phone_') ? strId.slice(6) : strId);
+    const rawEmail = candidateObj?.email || candidateObj?.userEmail || candidateObj?.clientEmail;
+    const normPhone = normalizePhoneNumber(rawPhone);
+
+    // 2. Prioridad absoluta: resolver contra la ficha local de la sede activa mediante findMatchingLocalUser
+    // (Local UID -> Canonical ERP ID -> Historical IDs -> Normalized Phone -> Clean Email)
+    const matchedLocal = findMatchingLocalUser(unifiedCrmUsers, {
+      id: strId || (candidateObj?.id ? String(candidateObj.id) : undefined),
+      canonicalId: candidateObj?.canonicalId || candidateObj?.canonicalUserId || candidateObj?.personId || candidateObj?.erpUserId,
+      historicalId: candidateObj?.historicalId,
+      historicalIds: candidateObj?.historicalIds,
+      phone: rawPhone,
+      email: rawEmail,
+    });
+
+    if (matchedLocal) {
+      setSelectedUser(matchedLocal);
       return;
     }
 
-    const strId = idOrIdentifier !== undefined && idOrIdentifier !== null ? String(idOrIdentifier).trim() : '';
-
-    // 2. Prioridad 1: Buscar por ID exacto en unifiedCrmUsers
-    if (strId && strId !== '0' && strId !== 'anon' && strId !== 'null' && strId !== 'undefined') {
-      const foundById = unifiedCrmUsers.find(u => String(u.id).trim() === strId);
-      if (foundById) {
-        setSelectedUser(foundById);
-        return;
-      }
-    }
-
-    // Si candidateObj tiene id, buscar también por ese id
-    if (candidateObj?.id) {
-      const candIdStr = String(candidateObj.id).trim();
-      if (candIdStr && candIdStr !== '0' && candIdStr !== 'anon') {
-        const foundByCandId = unifiedCrmUsers.find(u => String(u.id).trim() === candIdStr);
-        if (foundByCandId) {
-          setSelectedUser(foundByCandId);
-          return;
-        }
-      }
-    }
-
-    // 3. Prioridad 2: Buscar por teléfono normalizado unívoco en unifiedCrmUsers
-    const rawPhone = candidateObj?.phone || candidateObj?.userPhone || candidateObj?.clientPhone || candidateObj?.host_phone || (strId.startsWith('phone_') ? strId.slice(6) : strId);
-    const normPhone = normalizePhoneNumber(rawPhone);
-    if (normPhone) {
-      const foundByPhone = unifiedCrmUsers.find(u => normalizePhoneNumber(u.phone) === normPhone);
-      if (foundByPhone) {
-        setSelectedUser(foundByPhone);
-        return;
-      }
-    }
-
-    // 4. Si no existe ficha en el padrón, construir ficha derivada en memoria usando únicamente los datos disponibles
+    // 3. Si no existe ficha en el padrón, construir ficha derivada en memoria usando únicamente los datos disponibles
     const rawName = candidateObj?.name || candidateObj?.userName || candidateObj?.clientName || candidateObj?.host_name || (isGenericPlaceholderName(strId) ? '' : strId);
     const validName = (rawName && typeof rawName === 'string' && !isGenericPlaceholderName(rawName))
       ? rawName.trim()
       : (normPhone ? `Cliente (${rawPhone})` : 'Jugador');
     const validPhone = rawPhone && typeof rawPhone === 'string' && rawPhone !== validName && !rawPhone.startsWith('player_') ? rawPhone.trim() : '';
-    const validEmail = candidateObj?.email || candidateObj?.userEmail || candidateObj?.clientEmail || '';
+    const validEmail = rawEmail || '';
 
     // ID estable para la ficha derivada en memoria
     const derivedId = normPhone
@@ -9369,7 +9395,11 @@ export default function App() {
       isActivated: true,
       category: candidateObj?.category || 'invitado',
       skill_level: candidateObj?.skill_level || 'Amateur',
-      notes: 'Participante registrado en reservas del complejo'
+      notes: 'Participante registrado en reservas del complejo',
+      canonicalId: candidateObj?.canonicalId || candidateObj?.canonicalUserId || candidateObj?.personId || candidateObj?.erpUserId,
+      canonicalName: candidateObj?.canonicalName,
+      historicalId: candidateObj?.historicalId,
+      historicalIds: candidateObj?.historicalIds,
     };
 
     setSelectedUser(derivedUser);

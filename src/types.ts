@@ -57,6 +57,7 @@ export interface Match {
   end_time: string;
   startTime?: string;
   endTime?: string;
+  time?: string;
   date?: string;
   durationMinutes?: number;
   is_open: boolean;
@@ -82,6 +83,13 @@ export interface Match {
   notes?: string;
   ownerId?: string;
   adminId?: string;
+  canonicalId?: string;
+  canonicalUserId?: string;
+  canonicalName?: string;
+  personId?: string;
+  erpUserId?: string;
+  historicalId?: string;
+  historicalIds?: string[];
   player_count: number;
   players: any[];
 }
@@ -157,6 +165,13 @@ export interface User {
   updatedAt?: string;
   isDerived?: boolean;
   associatedComplexIds?: string[];
+  canonicalId?: string;
+  canonicalUserId?: string;
+  canonicalName?: string;
+  personId?: string;
+  erpUserId?: string;
+  historicalId?: string;
+  historicalIds?: string[];
 }
 
 export interface ProductBatch {
