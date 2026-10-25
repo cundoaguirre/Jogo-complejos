@@ -31,8 +31,8 @@ import {
   type BillingNoticeState 
 } from './lib/weeklyBilling';
 import { createSaasInvitation } from './lib/invitations';
-import { calculateUserLifecycleMetrics, formatDDMMYY } from './lib/userMetrics';
-import { buildCrmActivityIndex, normalizePhoneNumber } from './lib/crmActivityIndex';
+import { calculateUserLifecycleMetrics, formatDDMMYY, type UserLifecycleMetrics } from './lib/userMetrics';
+import { buildCrmActivityIndex, normalizePhoneNumber, isGenericPlaceholderName } from './lib/crmActivityIndex';
 import { doc, getDoc, getDocs, collection, query, where, serverTimestamp, addDoc } from 'firebase/firestore';
 import { db, auth } from './lib/firebase';
 import { 
@@ -632,16 +632,18 @@ const MatchDetailModal = ({
   onEdit, 
   onPaymentUpdate,
   onCancelBooking,
-  onDeleteBooking
+  onDeleteBooking,
+  users
 }: { 
   match: Match | null, 
   onClose: () => void, 
   onUpdateStatus?: (id: number | string, status: string) => void, 
-  onUserClick?: (id: number | string) => void, 
+  onUserClick?: (id: number | string, user?: User) => void, 
   onEdit?: () => void, 
   onPaymentUpdate?: () => void,
   onCancelBooking?: (booking: Match) => void,
-  onDeleteBooking?: (booking: Match) => void
+  onDeleteBooking?: (booking: Match) => void,
+  users?: User[]
 }) => {
   const [showManualPayment, setShowManualPayment] = useState(false);
   const [manualAmount, setManualAmount] = useState('');
@@ -862,40 +864,144 @@ const MatchDetailModal = ({
             </h3>
             <div className="space-y-3">
               {/* Host */}
-              <div className="flex items-center gap-4 p-3 bg-emerald-50/50 border border-emerald-100 rounded-xl cursor-pointer hover:bg-emerald-100 transition-colors relative" onClick={() => { if(onUserClick) { onUserClick(match.host_id); onClose(); } }}>
-                <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 font-bold">
-                  {match.host_name?.charAt(0)}
-                </div>
-                <div className="flex-1">
-                <div className="font-bold text-sm text-gray-900 flex items-center gap-2">
-                  {match.host_name} 
-                  <span className="text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-bold">Host</span>
-                </div>
-                <div className="text-xs text-gray-500">{match.host_phone}</div>
-              </div>
-              {((match.players || []).find(p => p.id === match.host_id) as any)?.has_paid || ((match.amount_paid || 0) > 0 && (match.players || []).length <= 1) ? (
-                <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded mt-2 text-center w-fit">Pagó</div>
-              ) : null}
-              <button type="button" className="p-2 text-emerald-600 hover:bg-emerald-100 rounded-full absolute right-3 top-3">
-                <Phone size={16} />
-              </button>
-            </div>
+              {(() => {
+                const hostId = match.userId || match.host_id;
+                const hostPhone = match.userPhone || match.clientPhone || match.host_phone || '';
+                const hostNormPhone = normalizePhoneNumber(hostPhone);
+
+                const resolvedHostUser = users && users.length > 0 ? users.find(u => {
+                  if (hostId && String(hostId) !== '0' && String(u.id) === String(hostId)) return true;
+                  if (hostNormPhone && normalizePhoneNumber(u.phone) === hostNormPhone) return true;
+                  return false;
+                }) : null;
+
+                const displayHostName = resolvedHostUser?.name || match.host_name || match.userName || match.clientName || 'Cliente';
+                const displayHostPhone = resolvedHostUser?.phone || hostPhone;
+
+                return (
+                  <div 
+                    className="flex items-center gap-4 p-3 bg-emerald-50/50 border border-emerald-100 rounded-xl cursor-pointer hover:bg-emerald-100 transition-colors relative" 
+                    onClick={() => { 
+                      if (onUserClick) { 
+                        const hostCandidate: Partial<User> = resolvedHostUser || {
+                          id: hostId,
+                          name: displayHostName,
+                          phone: displayHostPhone,
+                          email: match.userEmail || match.clientEmail
+                        };
+                        onUserClick(hostId || hostNormPhone || match.id, hostCandidate as User); 
+                        onClose(); 
+                      } 
+                    }}
+                  >
+                    <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-emerald-700 font-bold">
+                      {displayHostName?.charAt(0)?.toUpperCase() || '?'}
+                    </div>
+                    <div className="flex-1">
+                      <div className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                        <span>{displayHostName}</span>
+                        <span className="text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded font-bold">Host</span>
+                        {resolvedHostUser?.isDerived && (
+                          <span className="text-[9px] bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.2 rounded font-medium">
+                            Invitado
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs text-gray-500">{displayHostPhone}</div>
+                    </div>
+                    {((match.players || []).find(p => p.id === match.host_id) as any)?.has_paid || ((match.amount_paid || 0) > 0 && (match.players || []).length <= 1) ? (
+                      <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded mt-2 text-center w-fit">Pagó</div>
+                    ) : null}
+                    <button type="button" className="p-2 text-emerald-600 hover:bg-emerald-100 rounded-full absolute right-3 top-3">
+                      <Phone size={16} />
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* Other Players */}
-              {(match.players || []).filter(p => p.id !== match.host_id).map((player, pIdx) => (
-                <div key={`player-${player.id || pIdx}-${pIdx}`} className="flex items-center gap-4 p-3 hover:bg-gray-50 rounded-xl transition-colors cursor-pointer" onClick={() => { if(onUserClick) { onUserClick(player.id); onClose(); } }}>
-                  <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 font-bold">
-                    {player.name?.charAt(0)}
-                  </div>
-                  <div className="flex-1">
-                    <div className="font-bold text-sm text-gray-900">{player.name}</div>
-                    <div className="text-xs text-gray-500">{player.skill_level || 'Amateur'}</div>
-                  </div>
-                  {(player as any).has_paid ? (
-                    <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded">Pagó</div>
-                  ) : null}
-                </div>
-              ))}
+              {(() => {
+                const hostId = match.userId || match.host_id;
+                const hostPhone = match.userPhone || match.clientPhone || match.host_phone || '';
+                const hostNormPhone = normalizePhoneNumber(hostPhone);
+
+                const nonHostPlayers = (match.players || []).filter(p => {
+                  if (!p) return false;
+                  if (typeof p === 'string' || typeof p === 'number') {
+                    if (isGenericPlaceholderName(String(p))) return false;
+                    const pNorm = normalizePhoneNumber(String(p));
+                    if (pNorm && hostNormPhone && pNorm === hostNormPhone) return false;
+                    return true;
+                  }
+                  const pId = p.id ?? p.userId ?? p.uid ?? p.player_id ?? p.user_id;
+                  if (pId && hostId && String(pId) === String(hostId)) return false;
+                  const pPhone = p.phone ?? p.userPhone ?? p.clientPhone ?? p.user_phone;
+                  const pNorm = normalizePhoneNumber(pPhone);
+                  if (pNorm && hostNormPhone && pNorm === hostNormPhone) return false;
+                  const pName = p.name ?? p.userName ?? p.clientName;
+                  if (isGenericPlaceholderName(pName)) return false;
+                  return true;
+                });
+
+                return nonHostPlayers.map((player, pIdx) => {
+                  let pRawId = typeof player === 'object' ? (player.id ?? player.userId ?? player.uid ?? player.player_id ?? player.user_id) : undefined;
+                  let pRawPhone = typeof player === 'object' ? (player.phone ?? player.userPhone ?? player.clientPhone ?? player.user_phone) : undefined;
+                  let pRawName = typeof player === 'object' ? (player.name ?? player.userName ?? player.clientName ?? player.player_name) : String(player);
+                  let pSkill = typeof player === 'object' ? (player.skill_level || 'Amateur') : 'Amateur';
+
+                  const pNormPhone = normalizePhoneNumber(pRawPhone || (typeof player === 'string' ? player : ''));
+                  if (pNormPhone && !pRawPhone) pRawPhone = pNormPhone;
+
+                  const resolvedPlayerUser = users && users.length > 0 ? users.find(u => {
+                    if (pRawId && String(pRawId) !== '0' && String(u.id) === String(pRawId)) return true;
+                    if (pNormPhone && normalizePhoneNumber(u.phone) === pNormPhone) return true;
+                    return false;
+                  }) : null;
+
+                  const displayPlayerName = resolvedPlayerUser?.name || (pRawName && !isGenericPlaceholderName(pRawName) ? pRawName.trim() : `Jugador ${pIdx + 1}`);
+                  const displayPlayerPhone = resolvedPlayerUser?.phone || (pRawPhone ? String(pRawPhone).trim() : '');
+
+                  return (
+                    <div 
+                      key={`player-${pRawId || pIdx}-${pIdx}`} 
+                      className="flex items-center gap-4 p-3 hover:bg-gray-50 rounded-xl transition-colors cursor-pointer" 
+                      onClick={() => { 
+                        if (onUserClick) { 
+                          const playerCandidate: Partial<User> = resolvedPlayerUser || {
+                            id: pRawId,
+                            name: displayPlayerName,
+                            phone: displayPlayerPhone,
+                            email: typeof player === 'object' ? (player.email || player.userEmail) : '',
+                            skill_level: pSkill
+                          };
+                          onUserClick(pRawId || pNormPhone || `player_${match.id}_${pIdx}`, playerCandidate as User); 
+                          onClose(); 
+                        } 
+                      }}
+                    >
+                      <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 font-bold">
+                        {displayPlayerName?.charAt(0)?.toUpperCase() || '?'}
+                      </div>
+                      <div className="flex-1">
+                        <div className="font-bold text-sm text-gray-900 flex items-center gap-2">
+                          <span>{displayPlayerName}</span>
+                          {resolvedPlayerUser?.isDerived && (
+                            <span className="text-[9px] bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.2 rounded font-medium">
+                              Invitado
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500">
+                          {displayPlayerPhone ? displayPlayerPhone : pSkill}
+                        </div>
+                      </div>
+                      {(player as any)?.has_paid ? (
+                        <div className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2 py-1 rounded">Pagó</div>
+                      ) : null}
+                    </div>
+                  );
+                });
+              })()}
 
               {/* Empty Slots */}
               {Array.from({ length: Math.max(0, (match.max_players || 10) - ((match.players || []).length)) }).map((_, i) => (
@@ -3656,16 +3762,18 @@ const MatchListCard = ({
   match, 
   category, 
   courtsCount, 
-  onClick 
+  onClick,
+  displayClientName
 }: { 
   match: Match, 
   category: 'en_juego' | 'proximos' | 'jugados' | 'cancelados', 
   courtsCount: number, 
-  onClick: () => void 
+  onClick: () => void,
+  displayClientName?: string
 }) => {
   const deposit = Number(match.deposit ?? match.amount_paid ?? 0);
   const totalPrice = Number(match.price_total ?? match.price ?? 0);
-  const clientName = match.host_name || match.userName || (match as any).user_name || (match as any).clientName || 'Cliente';
+  const clientName = displayClientName || match.host_name || match.userName || (match as any).user_name || (match as any).clientName || 'Cliente';
   const courtName = match.courtName || match.court_name || 'Cancha';
   const showCourt = courtsCount > 1;
 
@@ -3747,17 +3855,35 @@ const ScheduleView = ({
   onUpdateStatus, 
   refreshKey,
   complexId = 'complejo_central',
-  onNavigate
+  onNavigate,
+  users
 }: { 
   onMatchClick: (match: Match) => void, 
   onNewBooking: (prefillData?: any) => void, 
   onUpdateStatus?: (id: number | string, status: string) => void, 
   refreshKey?: number,
   complexId?: string,
-  onNavigate?: (tab: NavTabId | string) => void
+  onNavigate?: (tab: NavTabId | string) => void,
+  users?: User[]
 }) => {
   // 1. Selector Dual de Vista: Calendario vs. Lista
   const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
+
+  const getMatchHostDisplayName = useCallback((m: Match) => {
+    if (users && users.length > 0) {
+      const uid = m.userId || m.host_id;
+      if (uid && String(uid) !== '0') {
+        const byId = users.find(u => String(u.id) === String(uid));
+        if (byId && byId.name && !isGenericPlaceholderName(byId.name)) return byId.name;
+      }
+      const normPhone = normalizePhoneNumber(m.host_phone || m.userPhone || m.clientPhone);
+      if (normPhone) {
+        const byPhone = users.find(u => normalizePhoneNumber(u.phone) === normPhone);
+        if (byPhone && byPhone.name && !isGenericPlaceholderName(byPhone.name)) return byPhone.name;
+      }
+    }
+    return m.host_name || m.userName || m.clientName || 'Cliente';
+  }, [users]);
 
   // 2. Navegación Temporal Semanal: Fecha seleccionada manejada estrictamente como string YYYY-MM-DD local
   const [selectedDateStr, setSelectedDateStr] = useState<string>(() => getTodayLocalYMD());
@@ -4391,7 +4517,7 @@ const ScheduleView = ({
                                 >
                                   <div className="flex items-center justify-between gap-1">
                                     <div className="font-bold text-xs truncate flex items-center gap-1 min-w-0">
-                                      <span className="truncate">{match.host_name || match.userName || 'Cliente'}</span>
+                                      <span className="truncate">{getMatchHostDisplayName(match)}</span>
                                     </div>
                                     <div className="text-[10px] font-mono font-bold shrink-0">
                                       ${Number(match.price_total ?? match.price ?? 0).toLocaleString()}
@@ -4488,6 +4614,7 @@ const ScheduleView = ({
                       match={m} 
                       category="en_juego" 
                       courtsCount={courts.length} 
+                      displayClientName={getMatchHostDisplayName(m)}
                       onClick={() => onMatchClick(m)} 
                     />
                   ))
@@ -4513,7 +4640,7 @@ const ScheduleView = ({
             </button>
 
             {!collapsedSections.proximos && (
-              <div className="border-t border-gray-100 dark:border-slate-800 divide-y divide-gray-100 dark:divide-slate-800">
+              <div className="border-t border-gray-100 dark:border-slate-800 divide-y divide-gray-100 dark:border-slate-800">
                 {proximos.length === 0 ? (
                   <p className="text-xs text-gray-400 dark:text-slate-500 py-3 text-center italic">
                     No hay próximos partidos programados.
@@ -4525,6 +4652,7 @@ const ScheduleView = ({
                       match={m} 
                       category="proximos" 
                       courtsCount={courts.length} 
+                      displayClientName={getMatchHostDisplayName(m)}
                       onClick={() => onMatchClick(m)} 
                     />
                   ))
@@ -4562,6 +4690,7 @@ const ScheduleView = ({
                       match={m} 
                       category="jugados" 
                       courtsCount={courts.length} 
+                      displayClientName={getMatchHostDisplayName(m)}
                       onClick={() => onMatchClick(m)} 
                     />
                   ))
@@ -4599,6 +4728,7 @@ const ScheduleView = ({
                       match={m} 
                       category="cancelados" 
                       courtsCount={courts.length} 
+                      displayClientName={getMatchHostDisplayName(m)}
                       onClick={() => onMatchClick(m)} 
                     />
                   ))
@@ -4828,7 +4958,21 @@ const NewUserModal = ({ isOpen, onClose, onSave }: { isOpen: boolean; onClose: (
   );
 };
 
-const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complejo_central' }: { onUserClick: (id: number | string, user?: User) => void, refreshKey?: number, onDataChange?: () => void, complexId?: string }) => {
+const UsersView = ({ 
+  onUserClick, 
+  refreshKey, 
+  onDataChange, 
+  complexId = 'complejo_central',
+  unifiedUsers,
+  userMetrics
+}: { 
+  onUserClick: (id: number | string, user?: User) => void, 
+  refreshKey?: number, 
+  onDataChange?: () => void, 
+  complexId?: string,
+  unifiedUsers?: User[],
+  userMetrics?: Map<string, UserLifecycleMetrics>
+}) => {
   const [users, setUsers] = useState<User[]>([]);
   const [bookings, setBookings] = useState<Match[]>([]);
   const parentRef = useRef<HTMLDivElement>(null);
@@ -4843,7 +4987,7 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
 
   useEffect(() => {
     let isMounted = true;
-    if (!complexId) return;
+    if (!complexId || (unifiedUsers && unifiedUsers.length > 0)) return;
 
     // Real-time Firestore sync for users
     const unsubUsers = subscribeToClients(complexId, (clientsList) => {
@@ -4864,12 +5008,17 @@ const UsersView = ({ onUserClick, refreshKey, onDataChange, complexId = 'complej
       unsubUsers();
       unsubBookings();
     };
-  }, [complexId, refreshKey]);
+  }, [complexId, refreshKey, unifiedUsers]);
 
   // Construir el índice de actividad unificado del CRM con organizadores, participantes y clientes registrados
-  const { crmUsers, userMetricsMap } = useMemo(() => {
+  const computedIndex = useMemo(() => {
+    if (unifiedUsers && userMetrics) {
+      return { crmUsers: unifiedUsers, userMetricsMap: userMetrics };
+    }
     return buildCrmActivityIndex(users, bookings, complexId, new Date());
-  }, [users, bookings, complexId]);
+  }, [users, bookings, complexId, unifiedUsers, userMetrics]);
+
+  const { crmUsers, userMetricsMap } = computedIndex;
 
   const handleCreateUser = async (userData: any) => {
     try {
@@ -9100,6 +9249,11 @@ export default function App() {
     };
   }, [activeComplexId, user, refreshKey]);
 
+  // Índice de actividad unificado de jugadores del complejo activo (registrados + organizadores y participantes de reservas)
+  const { crmUsers: unifiedCrmUsers, userMetricsMap: unifiedUserMetricsMap } = useMemo(() => {
+    return buildCrmActivityIndex(users, activeBookings, activeComplexId, new Date());
+  }, [users, activeBookings, activeComplexId]);
+
   // Cálculo y sincronización del ciclo de cobro semanal (10% sobre turnos jugados)
   const weeklyObligations = useMemo(() => {
     if (!activeComplexId || !activeComplex) return [];
@@ -9151,13 +9305,74 @@ export default function App() {
     if (action === 'support') setShowGlobalSupportModal(true);
   };
 
-  const handleUserClick = (id: number | string, userObj?: User) => {
-    if (userObj) {
-      setSelectedUser(userObj);
+  const handleUserClick = (idOrIdentifier?: number | string | null, candidateObj?: Partial<User> | any) => {
+    // 1. Si candidateObj ya es un usuario completo de la lista unificada
+    if (candidateObj && candidateObj.id && candidateObj.name && !candidateObj.userName && candidateObj.originComplejoId) {
+      setSelectedUser(candidateObj as User);
       return;
     }
-    const found = users.find(u => String(u.id) === String(id));
-    if (found) setSelectedUser(found);
+
+    const strId = idOrIdentifier !== undefined && idOrIdentifier !== null ? String(idOrIdentifier).trim() : '';
+
+    // 2. Prioridad 1: Buscar por ID exacto en unifiedCrmUsers
+    if (strId && strId !== '0' && strId !== 'anon' && strId !== 'null' && strId !== 'undefined') {
+      const foundById = unifiedCrmUsers.find(u => String(u.id).trim() === strId);
+      if (foundById) {
+        setSelectedUser(foundById);
+        return;
+      }
+    }
+
+    // Si candidateObj tiene id, buscar también por ese id
+    if (candidateObj?.id) {
+      const candIdStr = String(candidateObj.id).trim();
+      if (candIdStr && candIdStr !== '0' && candIdStr !== 'anon') {
+        const foundByCandId = unifiedCrmUsers.find(u => String(u.id).trim() === candIdStr);
+        if (foundByCandId) {
+          setSelectedUser(foundByCandId);
+          return;
+        }
+      }
+    }
+
+    // 3. Prioridad 2: Buscar por teléfono normalizado unívoco en unifiedCrmUsers
+    const rawPhone = candidateObj?.phone || candidateObj?.userPhone || candidateObj?.clientPhone || candidateObj?.host_phone || (strId.startsWith('phone_') ? strId.slice(6) : strId);
+    const normPhone = normalizePhoneNumber(rawPhone);
+    if (normPhone) {
+      const foundByPhone = unifiedCrmUsers.find(u => normalizePhoneNumber(u.phone) === normPhone);
+      if (foundByPhone) {
+        setSelectedUser(foundByPhone);
+        return;
+      }
+    }
+
+    // 4. Si no existe ficha en el padrón, construir ficha derivada en memoria usando únicamente los datos disponibles
+    const rawName = candidateObj?.name || candidateObj?.userName || candidateObj?.clientName || candidateObj?.host_name || (isGenericPlaceholderName(strId) ? '' : strId);
+    const validName = (rawName && typeof rawName === 'string' && !isGenericPlaceholderName(rawName))
+      ? rawName.trim()
+      : (normPhone ? `Cliente (${rawPhone})` : 'Jugador');
+    const validPhone = rawPhone && typeof rawPhone === 'string' && rawPhone !== validName && !rawPhone.startsWith('player_') ? rawPhone.trim() : '';
+    const validEmail = candidateObj?.email || candidateObj?.userEmail || candidateObj?.clientEmail || '';
+
+    // ID estable para la ficha derivada en memoria
+    const derivedId = normPhone
+      ? `derived_phone_${normPhone}`
+      : (strId && strId.startsWith('derived_') ? strId : `derived_player_${Date.now()}`);
+
+    const derivedUser: User = {
+      id: derivedId,
+      name: validName,
+      phone: validPhone,
+      email: validEmail || (normPhone ? `${normPhone}@sin-correo.com` : ''),
+      originComplejoId: activeComplexId,
+      isDerived: true,
+      isActivated: true,
+      category: candidateObj?.category || 'invitado',
+      skill_level: candidateObj?.skill_level || 'Amateur',
+      notes: 'Participante registrado en reservas del complejo'
+    };
+
+    setSelectedUser(derivedUser);
   };
 
   const handleDeleteUser = async (id: number | string) => {
@@ -9417,7 +9632,7 @@ export default function App() {
             {activeTab === 'users' && (
               <div className="flex items-center gap-1.5 text-white font-bold text-xl md:text-2xl mr-1">
                 <UserIcon size={24} strokeWidth={2.5} />
-                <span>{users.length}</span>
+                <span>{unifiedCrmUsers.length}</span>
               </div>
             )}
             
@@ -9501,6 +9716,7 @@ export default function App() {
                 <ScheduleView 
                   key="view-schedule"
                   complexId={activeComplexId}
+                  users={unifiedCrmUsers}
                   onMatchClick={setSelectedMatch} 
                   onNewBooking={(prefillData?: any) => {
                     const isEvent = prefillData && (
@@ -9525,6 +9741,8 @@ export default function App() {
                 <UsersView 
                   key="view-users"
                   complexId={activeComplexId}
+                  unifiedUsers={unifiedCrmUsers}
+                  userMetrics={unifiedUserMetricsMap}
                   onUserClick={handleUserClick} 
                   refreshKey={refreshKey}
                   onDataChange={() => setRefreshKey(prev => prev + 1)}
@@ -9561,6 +9779,7 @@ export default function App() {
           <MatchDetailModal 
             key="modal-match-detail"
             match={isCreateMatchOpen ? null : selectedMatch} 
+            users={unifiedCrmUsers}
             onClose={() => setSelectedMatch(null)} 
             onUpdateStatus={handleUpdateStatus}
             onUserClick={handleUserClick}
@@ -9584,7 +9803,7 @@ export default function App() {
             isOpen={isCreateMatchOpen} 
             onClose={() => { setCreateMatchOpen(false); setSelectedMatch(null); }} 
             courts={courts}
-            users={users}
+            users={unifiedCrmUsers}
             complexId={activeComplexId}
             initialData={selectedMatch}
             onNavigate={handleNavigate}

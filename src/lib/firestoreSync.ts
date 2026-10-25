@@ -1631,7 +1631,26 @@ export async function saveClientInFirestore(
   const dateStr = now.toISOString().split('T')[0];
   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
-  const payload = {
+  // Preservar originComplejoId histórico si ya existía en client o en el documento
+  let resolvedOriginId = client.originComplejoId;
+  let resolvedOriginName = client.originComplejoName;
+  if (!resolvedOriginId && client.id) {
+    try {
+      const existingDoc = await getDoc(doc(db, USERS_COLLECTION, clientId));
+      if (existingDoc.exists()) {
+        const existingData = existingDoc.data();
+        resolvedOriginId = existingData.originComplejoId || existingData.originComplexId;
+        resolvedOriginName = existingData.originComplejoName || existingData.complexName;
+      }
+    } catch (e) {
+      // Ignorar si no existe o no tiene permiso previo
+    }
+  }
+  if (!resolvedOriginId) {
+    resolvedOriginId = targetId;
+  }
+
+  const payload: any = {
     id: clientId,
     name: (client.name || 'Cliente').trim(),
     phone: (client.phone || '').trim(),
@@ -1646,8 +1665,8 @@ export async function saveClientInFirestore(
     acquisitionTime: client.acquisitionTime || timeStr,
     activationDate: client.activationDate || null,
     activationTime: client.activationTime || null,
-    originComplejoId: targetId,
-    originComplejoName: client.originComplejoName || 'Colo loco',
+    originComplejoId: resolvedOriginId,
+    originComplejoName: resolvedOriginName || client.originComplejoName || (targetId === 'B' ? 'Colo loco' : ''),
     totalBookings: Number(client.totalBookings ?? 0),
     totalMatchesPlayed: Number(client.totalMatchesPlayed ?? client.matches_played ?? 0),
     participatedMatches: Number(client.participatedMatches ?? 0),
