@@ -105,16 +105,20 @@ export const LandingAuthView: React.FC<LandingAuthViewProps> = ({
             </button>
 
             {/* Error Notification */}
-            {authError && authError !== 'popup-closed' && (
+            {authError && (
               <div className="p-3.5 rounded-2xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 text-xs flex items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
                   <AlertCircle size={15} className="shrink-0" />
-                  <span>{authError}</span>
+                  <span>
+                    {authError === 'popup-closed' 
+                      ? 'La ventana de autenticación fue cerrada antes de completar el inicio de sesión (auth/popup-closed-by-user).' 
+                      : authError}
+                  </span>
                 </div>
                 <button
                   type="button"
                   onClick={clearAuthError}
-                  className="text-[10px] text-red-500 hover:text-red-700 underline cursor-pointer"
+                  className="text-[10px] text-red-500 hover:text-red-700 underline cursor-pointer shrink-0"
                 >
                   Descartar
                 </button>

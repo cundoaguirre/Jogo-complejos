@@ -11,6 +11,8 @@ interface PayBalanceModalProps {
   isOpen: boolean;
   onClose: () => void;
   obligation: WeeklyPaymentObligation | null;
+  unpaidObligations?: WeeklyPaymentObligation[];
+  totalDebt?: number;
   billingConfig: BillingConfig;
   complexName: string;
 }
@@ -19,12 +21,23 @@ export const PayBalanceModal: React.FC<PayBalanceModalProps> = ({
   isOpen,
   onClose,
   obligation,
+  unpaidObligations = [],
+  totalDebt,
   billingConfig,
   complexName,
 }) => {
   const [copiedField, setCopiedField] = useState<'alias' | 'cvu' | null>(null);
 
-  if (!isOpen || !obligation) return null;
+  const activeItems = unpaidObligations.length > 0
+    ? unpaidObligations.filter(o => o && o.remainingBalance > 0)
+    : (obligation && obligation.remainingBalance > 0 ? [obligation] : (obligation ? [obligation] : []));
+
+  if (!isOpen || activeItems.length === 0) return null;
+
+  const primaryObligation = activeItems[0];
+  const finalAmount = totalDebt !== undefined && totalDebt > 0
+    ? totalDebt
+    : activeItems.reduce((sum, o) => sum + (o?.remainingBalance || 0), 0);
 
   const handleCopy = (text: string, field: 'alias' | 'cvu') => {
     if (!text || text === 'Pendiente de configurar en administración') return;
@@ -50,12 +63,14 @@ export const PayBalanceModal: React.FC<PayBalanceModalProps> = ({
   const alias = billingConfig.alias?.trim() || 'Pendiente de configurar en administración';
   const cvu = billingConfig.cvu?.trim() || 'Pendiente de configurar en administración';
 
-  const waUrl = getPaymentWhatsAppUrl(billingConfig, obligation, complexName);
+  const waUrl = getPaymentWhatsAppUrl(billingConfig, primaryObligation, complexName, activeItems, finalAmount);
 
-  const startFormatted = formatDDMM(obligation.startDateStr);
-  const endFormatted = formatDDMM(obligation.endDateStr);
-  const amountFormatted = formatCurrencyARS(obligation.remainingBalance);
-  const gmvFormatted = formatCurrencyARS(obligation.gmv);
+  const startFormatted = formatDDMM(primaryObligation.startDateStr);
+  const endFormatted = formatDDMM(primaryObligation.endDateStr);
+  const amountFormatted = formatCurrencyARS(finalAmount);
+  const totalGmv = activeItems.reduce((sum, o) => sum + (o.gmv || 0), 0);
+  const gmvFormatted = formatCurrencyARS(totalGmv);
+  const totalBookingsCount = activeItems.reduce((sum, o) => sum + (o.playedBookings?.length || 0), 0);
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn">
@@ -70,7 +85,9 @@ export const PayBalanceModal: React.FC<PayBalanceModalProps> = ({
               Regularizá tu saldo
             </h3>
             <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-              Liquidación semanal · {startFormatted}–{endFormatted}
+              {activeItems.length > 1
+                ? `Deuda total acumulada · ${activeItems.length} semanas pendientes`
+                : `Liquidación semanal · ${startFormatted}–${endFormatted}`}
             </p>
           </div>
           <button
@@ -94,11 +111,45 @@ export const PayBalanceModal: React.FC<PayBalanceModalProps> = ({
               {amountFormatted}
             </div>
             <div className="text-[11px] sm:text-xs font-medium text-slate-600 dark:text-slate-300 pt-1 border-t border-emerald-200/40 dark:border-emerald-800/40">
-              GMV jugado: <span className="font-semibold text-slate-900 dark:text-white">{gmvFormatted}</span> ·{' '}
-              <span className="font-semibold text-slate-900 dark:text-white">{obligation.playedBookings.length}</span> reservas jugadas ·{' '}
-              Comisión 10%
+              {activeItems.length > 1 ? (
+                <span>
+                  Suma de <span className="font-semibold text-slate-900 dark:text-white">{activeItems.length} semanas</span> ·{' '}
+                  <span className="font-semibold text-slate-900 dark:text-white">{totalBookingsCount}</span> reservas · Comisión 10%
+                </span>
+              ) : (
+                <span>
+                  GMV jugado: <span className="font-semibold text-slate-900 dark:text-white">{gmvFormatted}</span> ·{' '}
+                  <span className="font-semibold text-slate-900 dark:text-white">{primaryObligation.playedBookings?.length || 0}</span> reservas · Comisión 10%
+                </span>
+              )}
             </div>
           </div>
+
+          {/* Desglose de semanas si hay más de una */}
+          {activeItems.length > 1 && (
+            <div className="space-y-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
+                Detalle por semana ({activeItems.length}):
+              </span>
+              <div className="divide-y divide-slate-100 dark:divide-slate-800 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50">
+                {activeItems.map((item) => (
+                  <div key={item.id} className="p-2.5 px-3 flex items-center justify-between text-xs">
+                    <div>
+                      <span className="font-bold text-slate-800 dark:text-slate-200">
+                        {formatDDMM(item.startDateStr)}–{formatDDMM(item.endDateStr)}
+                      </span>
+                      <span className="text-[11px] text-slate-400 ml-2">
+                        Venc: {formatDDMM(item.dueDateStr)}
+                      </span>
+                    </div>
+                    <div className="font-mono font-bold text-slate-900 dark:text-white">
+                      {formatCurrencyARS(item.remainingBalance)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Datos bancarios del ERP */}
           <div className="space-y-3">

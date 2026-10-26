@@ -72,6 +72,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [hasAccess, setHasAccess] = useState(false);
   const [authorizedComplexes, setAuthorizedComplexes] = useState<AuthorizedComplexItem[]>([]);
   const [activeComplexId, setActiveComplexIdState] = useState<string | null>(null);
+  const activeComplexIdRef = useRef<string | null>(null);
   const [activeComplex, setActiveComplex] = useState<any | null>(null);
   const [collaboratorData, setCollaboratorData] = useState<CollaboratorProfile | null>(null);
   const [memberships, setMemberships] = useState<ComplexMembership[]>([]);
@@ -279,30 +280,29 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setHasAccess(true);
 
         // Select or retain activeComplexId strictly among authorized complexes
-        setActiveComplexIdState((prevId) => {
-          let chosenId = authorized[0].complexId;
-          let savedPref: string | null = null;
-          try {
-            savedPref = localStorage.getItem('activeComplexId');
-          } catch (e) {}
+        let chosenId = authorized[0].complexId;
+        let savedPref: string | null = null;
+        try {
+          savedPref = localStorage.getItem('activeComplexId');
+        } catch (e) {}
 
-          const candidate = prevId || collaboratorData?.activeComplexId || savedPref;
-          if (candidate && authorized.some(c => c.complexId === candidate)) {
-            chosenId = candidate;
-          }
+        const candidate = activeComplexIdRef.current || collaboratorData?.activeComplexId || savedPref;
+        if (candidate && authorized.some(c => c.complexId === candidate)) {
+          chosenId = candidate;
+        }
 
-          try {
-            localStorage.setItem('activeComplexId', chosenId);
-          } catch (e) {}
+        try {
+          localStorage.setItem('activeComplexId', chosenId);
+        } catch (e) {}
 
-          // Update activeComplex metadata directly from real-time snapshot
-          const currentDoc = liveComplexMap[chosenId];
-          if (currentDoc) {
-            setActiveComplex({ id: chosenId, ...currentDoc });
-          }
+        activeComplexIdRef.current = chosenId;
+        setActiveComplexIdState(chosenId);
 
-          return chosenId;
-        });
+        // Update activeComplex metadata directly from real-time snapshot
+        const currentDoc = liveComplexMap[chosenId];
+        if (currentDoc) {
+          setActiveComplex({ id: chosenId, ...currentDoc });
+        }
 
         // Targeted expiration timer: flips state the exact moment the trial expires
         if (upcomingExpirations.length > 0) {
@@ -359,6 +359,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       return;
     }
 
+    activeComplexIdRef.current = newId;
     setActiveComplexIdState(newId);
     try {
       localStorage.setItem('activeComplexId', newId);
@@ -384,15 +385,22 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setUser(result.user);
       return result.user;
     } catch (error: any) {
-      const errorCode = error?.code || '';
-      const errorMessage = error?.message || '';
+      const errorCode = error?.code || 'auth/unknown';
+      const errorMessage = error?.message || 'Error desconocido';
+
+      // Registro diagnóstico del error real de Firebase sin datos sensibles (sin tokens ni credenciales)
+      console.error('[Auth Diagnostic] Fallo en signInWithGoogle:', {
+        code: errorCode,
+        message: errorMessage,
+        name: error?.name,
+        origin: typeof window !== 'undefined' ? window.location.origin : null,
+        hostname: typeof window !== 'undefined' ? window.location.hostname : null
+      });
 
       if (errorCode === 'auth/popup-closed-by-user') {
-        console.warn('[Auth] Google sign-in popup closed by user.');
-        setAuthError('popup-closed');
+        setAuthError('La ventana de autenticación fue cerrada antes de completar el inicio de sesión (auth/popup-closed-by-user).');
       } else {
-        console.warn('[Auth] Google Sign-in warning:', errorMessage);
-        setAuthError(errorMessage || 'Error al iniciar sesión con Google.');
+        setAuthError(errorMessage ? `${errorMessage} (${errorCode})` : `Error al iniciar sesión con Google (${errorCode}).`);
       }
       setLoading(false);
       return null;

@@ -314,9 +314,21 @@ export function findMatchingLocalUser(
     historicalIds?: string[] | null;
     phone?: string | null;
     email?: string | null;
-  }
+  },
+  complexId?: string | null
 ): User | null {
   if (!users || users.length === 0 || !criteria) return null;
+
+  // Filtrar candidatos si complexId está especificado: nunca asociar usuarios con originComplejoId de otro complejo
+  const candidateUsers = complexId
+    ? users.filter(u => {
+        const uOrigin = u.originComplejoId || (u as any).originComplexId || (u as any).complejoId || (u as any).complexId;
+        if (!uOrigin) return true;
+        return isSameComplex(uOrigin, complexId);
+      })
+    : users;
+
+  if (candidateUsers.length === 0) return null;
 
   const rawId = criteria.id !== undefined && criteria.id !== null ? String(criteria.id).trim() : '';
   const validId = rawId !== '' && rawId !== '0' && rawId !== 'anon' && rawId !== 'null' && rawId !== 'undefined' ? rawId : '';
@@ -337,13 +349,13 @@ export function findMatchingLocalUser(
 
   // 1. Coincidencia por ID local exacto
   if (validId) {
-    const byId = users.find(u => String(u.id).trim() === validId);
+    const byId = candidateUsers.find(u => String(u.id).trim() === validId);
     if (byId) return byId;
   }
 
   // 2. Coincidencia por Identidad Canónica del ERP
   if (validCanon) {
-    const byCanon = users.find(u => {
+    const byCanon = candidateUsers.find(u => {
       const uCanon = u.canonicalId || u.canonicalUserId || (u as any).personId || (u as any).erpUserId;
       if (uCanon && String(uCanon).trim() === validCanon) return true;
       if (String(u.id).trim() === validCanon) return true;
@@ -354,7 +366,7 @@ export function findMatchingLocalUser(
 
   // Si el ID del criterio coincide con el canonicalId de un usuario local
   if (validId) {
-    const byIdAsCanon = users.find(u => {
+    const byIdAsCanon = candidateUsers.find(u => {
       const uCanon = u.canonicalId || u.canonicalUserId || (u as any).personId || (u as any).erpUserId;
       return Boolean(uCanon && String(uCanon).trim() === validId);
     });
@@ -363,7 +375,7 @@ export function findMatchingLocalUser(
 
   // 3. Coincidencia por Registros Históricos (historicalIds / legacyUserIds)
   if (validId) {
-    const byHistId = users.find(u => {
+    const byHistId = candidateUsers.find(u => {
       const uHists = Array.isArray(u.historicalIds) ? u.historicalIds : ((u as any).historicalId ? [String((u as any).historicalId)] : []);
       const uLegacy = Array.isArray((u as any).legacyUserIds) ? (u as any).legacyUserIds : [];
       return uHists.some((h: any) => String(h).trim() === validId) || uLegacy.some((h: any) => String(h).trim() === validId);
@@ -372,7 +384,7 @@ export function findMatchingLocalUser(
   }
 
   if (histList.length > 0) {
-    const byHistList = users.find(u => {
+    const byHistList = candidateUsers.find(u => {
       const uIdStr = String(u.id).trim();
       if (histList.includes(uIdStr)) return true;
       const uHists = Array.isArray(u.historicalIds) ? u.historicalIds : ((u as any).historicalId ? [String((u as any).historicalId)] : []);
@@ -383,7 +395,7 @@ export function findMatchingLocalUser(
 
   // 4. Coincidencia por Teléfono normalizado inequívoco (Argentina 7+ dígitos)
   if (normPhone) {
-    const byPhone = users.find(u => {
+    const byPhone = candidateUsers.find(u => {
       const uPhone = u.phone || (u as any).userPhone || (u as any).clientPhone;
       return normalizePhoneNumber(uPhone) === normPhone;
     });
@@ -392,7 +404,7 @@ export function findMatchingLocalUser(
 
   // 5. Coincidencia por Email unívoco
   if (validEmail) {
-    const byEmail = users.find(u => {
+    const byEmail = candidateUsers.find(u => {
       const uMail = (u.email || '').trim().toLowerCase();
       return uMail && !uMail.includes('@sin-correo.com') && uMail === validEmail;
     });
@@ -482,7 +494,7 @@ export function buildCrmActivityIndex(
       historicalIds: p.historicalIds,
       phone: p.rawPhone || p.normPhone,
       email: p.email
-    });
+    }, normComplexId);
 
     if (localMatch) {
       // Prioridad de ficha local: NUNCA sobrescribir el nombre local del complejo

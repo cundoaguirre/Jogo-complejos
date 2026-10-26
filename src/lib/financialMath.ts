@@ -318,3 +318,173 @@ export function parseTicketCode(
     sequence: parseInt(match[3], 10)
   };
 }
+
+export interface ComplexFinancialSummary {
+  economicIncome: number;
+  reservasIncome: number;
+  mostradorIncome: number;
+  reservasIncomePct: number;
+  mostradorIncomePct: number;
+  economicExpense: number;
+  economicExpenses: number;
+  netResult: number;
+  totalCollectedFromClients: number;
+  cashInflows: number;
+  cashOutflows: number;
+  cashAvailable: number;
+  cashBalance: number;
+  pendingToCollect: number;
+  pendingToPay: number;
+}
+
+export interface UnifiedFinancialOperationInput {
+  id: string;
+  complexId?: string | null;
+  complejoId?: string | null;
+  contractualAmount: number;
+  totalCollected: number;
+  amountPending: number;
+  paymentStatus: string;
+  isExpense?: boolean;
+  operationType?: string;
+  bookingId?: string | number | null;
+  retainedAmount?: number;
+  netCollected?: number;
+}
+
+export interface UnifiedFinancialMovementInput {
+  id: string;
+  complexId?: string | null;
+  complejoId?: string | null;
+  flow: 'income' | 'expense';
+  category?: string;
+  amount: number;
+  operationId?: string | null;
+  bookingId?: string | number | null;
+  status?: string;
+}
+
+/**
+ * Computa de forma determinista y pura el resumen financiero integral del complejo,
+ * respetando el aislamiento estricto multi-tenant y la separación entre dimensiones:
+ * 1. Dimensión Económica (devengamiento: ingresos por reservas/ventas y egresos por gastos/compras).
+ * 2. Dimensión de Caja (dinero efectivamente percibido o desembolsado).
+ * 3. Saldos pendientes (por cobrar a clientes y por pagar a proveedores).
+ * 4. Resultado neto (ingresos económicos - egresos económicos, sin duplicaciones).
+ */
+export function computeComplexFinancialSummary(params: {
+  targetComplexIds: string[];
+  operations: UnifiedFinancialOperationInput[];
+  movements: UnifiedFinancialMovementInput[];
+}): ComplexFinancialSummary {
+  const allowedIds = new Set(params.targetComplexIds.map(id => String(id).trim().toLowerCase()));
+  const CANCELLED_STATUSES = new Set(['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded', 'cancelled', 'cancelado']);
+
+  // Filtrado estricto por aislamiento de complejo
+  const complexOps = params.operations.filter(op => {
+    const c1 = op.complexId ? String(op.complexId).trim().toLowerCase() : null;
+    const c2 = op.complejoId ? String(op.complejoId).trim().toLowerCase() : null;
+    if (allowedIds.size === 0) return true;
+    return (c1 && allowedIds.has(c1)) || (c2 && allowedIds.has(c2));
+  });
+
+  const complexMovs = params.movements.filter(mov => {
+    const c1 = mov.complexId ? String(mov.complexId).trim().toLowerCase() : null;
+    const c2 = mov.complejoId ? String(mov.complejoId).trim().toLowerCase() : null;
+    if (allowedIds.size === 0) return true;
+    return (c1 && allowedIds.has(c1)) || (c2 && allowedIds.has(c2));
+  });
+
+  let economicIncome = 0;
+  let reservasIncome = 0;
+  let mostradorIncome = 0;
+  let economicExpense = 0;
+
+  let pendingToCollect = 0;
+  let pendingToPay = 0;
+
+  for (const op of complexOps) {
+    const isExp = Boolean(op.isExpense || op.operationType === 'expense' || op.operationType === 'purchase');
+    const isCancelled = CANCELLED_STATUSES.has(op.paymentStatus);
+
+    if (isExp) {
+      if (!isCancelled) {
+        economicExpense += op.contractualAmount;
+        if (op.amountPending > 0) {
+          pendingToPay += op.amountPending;
+        }
+      }
+    } else {
+      let opRevenue = 0;
+      if (isCancelled) {
+        opRevenue = Math.max(0, Number(op.retainedAmount ?? op.netCollected ?? 0));
+      } else {
+        opRevenue = op.contractualAmount;
+        if (op.amountPending > 0) {
+          pendingToCollect += op.amountPending;
+        }
+      }
+
+      economicIncome += opRevenue;
+
+      const isReserva = op.operationType === 'court_booking' || 
+                        op.operationType === 'booking' || 
+                        Boolean(op.bookingId) || 
+                        String(op.id).endsWith('-booking');
+
+      if (isReserva) {
+        reservasIncome += opRevenue;
+      } else {
+        mostradorIncome += opRevenue;
+      }
+    }
+  }
+
+  const reservasIncomePct = economicIncome > 0 ? Math.round((reservasIncome / economicIncome) * 100) : 0;
+  const mostradorIncomePct = economicIncome > 0 ? Math.max(0, 100 - reservasIncomePct) : 0;
+  const netResult = economicIncome - economicExpense;
+
+  // Dimensión de Caja
+  let cashInflows = 0;
+  let cashOutflows = 0;
+  let totalRefunds = 0;
+  let totalCollectedIncome = 0;
+
+  for (const mov of complexMovs) {
+    const amt = Math.max(0, Number(mov.amount) || 0);
+    const cat = String(mov.category || '').toLowerCase();
+    const isRefund = cat.includes('reintegro') || cat.includes('refund') || cat.includes('devolución') || cat.includes('devolucion');
+
+    if (mov.flow === 'income') {
+      cashInflows += amt;
+      totalCollectedIncome += amt;
+    } else if (mov.flow === 'expense') {
+      cashOutflows += amt;
+      if (isRefund) {
+        totalRefunds += amt;
+      }
+    }
+  }
+
+  const totalCollectedFromClients = Math.max(0, totalCollectedIncome - totalRefunds);
+  const cashAvailable = cashInflows - cashOutflows;
+
+  return {
+    economicIncome,
+    reservasIncome,
+    mostradorIncome,
+    reservasIncomePct,
+    mostradorIncomePct,
+    economicExpense,
+    economicExpenses: economicExpense,
+    netResult,
+    totalCollectedFromClients,
+    cashInflows,
+    cashOutflows,
+    cashAvailable,
+    cashBalance: cashAvailable,
+    pendingToCollect,
+    pendingToPay
+  };
+}
+

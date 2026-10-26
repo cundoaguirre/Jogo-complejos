@@ -45,7 +45,7 @@ import {
   hoursToWeeklySchedule, 
   doesCrossMidnight 
 } from './complexProfileSync';
-import { findMatchingLocalUser } from './crmActivityIndex';
+import { findMatchingLocalUser, isSameComplex, normalizePhoneNumber, isGenericPlaceholderName } from './crmActivityIndex';
 
 export const COMPLEJOS_COLLECTION = 'complejos';
 export const BOOKINGS_COLLECTION = 'bookings';
@@ -618,20 +618,18 @@ export function subscribeToBookings(
   selectedDate?: string
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
+
   try {
     const colRef = collection(db, BOOKINGS_COLLECTION);
-    const constraints1: any[] = [where('complexId', '==', targetId)];
-    const constraints2: any[] = [where('complejoId', '==', targetId)];
-    if (selectedDate) {
-      constraints1.push(where('date', '==', selectedDate));
-      constraints2.push(where('date', '==', selectedDate));
-    }
-
-    const map1 = new Map<string, Match>();
-    const map2 = new Map<string, Match>();
+    const maps = targetIds.flatMap(() => [new Map<string, Match>(), new Map<string, Match>()]);
+    const unsubs: Array<() => void> = [];
 
     const emitMerged = () => {
-      const merged = new Map<string, Match>([...map1, ...map2]);
+      const merged = new Map<string, Match>();
+      maps.forEach(m => {
+        m.forEach((val, key) => merged.set(key, val));
+      });
       let list = Array.from(merged.values());
       if (selectedDate) {
         list = list.filter(b => b.date === selectedDate || (b.startTime && String(b.startTime).startsWith(selectedDate)));
@@ -639,32 +637,47 @@ export function subscribeToBookings(
       onUpdate(list);
     };
 
-    const q1 = query(colRef, ...constraints1);
-    const q2 = query(colRef, ...constraints2);
+    let mapIdx = 0;
+    targetIds.forEach(tId => {
+      const idx1 = mapIdx++;
+      const constraints1: any[] = [where('complexId', '==', tId)];
+      if (selectedDate) {
+        constraints1.push(where('date', '==', selectedDate));
+      }
+      const q1 = query(colRef, ...constraints1);
+      unsubs.push(
+        onSnapshot(q1, (snap) => {
+          maps[idx1].clear();
+          snap.forEach(d => {
+            maps[idx1].set(d.id, formatBookingToMatch({ id: d.id, ...d.data() }));
+          });
+          emitMerged();
+        }, (err) => {
+          console.warn(`[Firestore] Error escuchando bookings (q1 complexId: ${tId}):`, err);
+        })
+      );
 
-    const unsub1 = onSnapshot(q1, (snap) => {
-      map1.clear();
-      snap.forEach(d => {
-        map1.set(d.id, formatBookingToMatch({ id: d.id, ...d.data() }));
-      });
-      emitMerged();
-    }, (err) => {
-      console.warn('[Firestore] Error escuchando bookings (q1 complexId):', err);
-    });
-
-    const unsub2 = onSnapshot(q2, (snap) => {
-      map2.clear();
-      snap.forEach(d => {
-        map2.set(d.id, formatBookingToMatch({ id: d.id, ...d.data() }));
-      });
-      emitMerged();
-    }, (err) => {
-      console.warn('[Firestore] Error escuchando bookings (q2 complejoId):', err);
+      const idx2 = mapIdx++;
+      const constraints2: any[] = [where('complejoId', '==', tId)];
+      if (selectedDate) {
+        constraints2.push(where('date', '==', selectedDate));
+      }
+      const q2 = query(colRef, ...constraints2);
+      unsubs.push(
+        onSnapshot(q2, (snap) => {
+          maps[idx2].clear();
+          snap.forEach(d => {
+            maps[idx2].set(d.id, formatBookingToMatch({ id: d.id, ...d.data() }));
+          });
+          emitMerged();
+        }, (err) => {
+          console.warn(`[Firestore] Error escuchando bookings (q2 complejoId: ${tId}):`, err);
+        })
+      );
     });
 
     return () => {
-      unsub1();
-      unsub2();
+      unsubs.forEach(u => u());
     };
   } catch (err) {
     console.error('[Firestore] Error subscribiendo a bookings:', err);
@@ -676,13 +689,41 @@ export function subscribeToBookings(
 /**
  * Sincroniza las métricas y estado del usuario en Firestore a partir de sus reservas reales
  */
-export async function syncUserMetricsWithBookings(userId: string | number, userPhone?: string): Promise<void> {
+export async function syncUserMetricsWithBookings(userId: string | number, userPhone?: string, complexId?: string): Promise<void> {
   const uId = String(userId || '');
   if ((!uId || uId === '0') && !userPhone) return;
 
   try {
     const colRef = collection(db, BOOKINGS_COLLECTION);
     let bookings: any[] = [];
+
+    // Buscar doc de usuario por ID
+    let targetDocRef = uId && uId !== '0' ? doc(db, USERS_COLLECTION, uId) : null;
+    let uSnap = targetDocRef ? await getDoc(targetDocRef) : null;
+
+    // Si no se encontró por ID pero hay userPhone, buscar por teléfono
+    if ((!uSnap || !uSnap.exists()) && userPhone) {
+      const usersCol = collection(db, USERS_COLLECTION);
+      const qUser = query(usersCol, where('phone', '==', String(userPhone).trim()));
+      const userSnap = await getDocs(qUser);
+      if (!userSnap.empty) {
+        let bestDoc = userSnap.docs[0];
+        if (complexId) {
+          const matched = userSnap.docs.find(d => {
+            const org = d.data().originComplejoId || d.data().complejoId;
+            return org && isSameComplex(org, complexId);
+          });
+          if (matched) bestDoc = matched;
+        }
+        targetDocRef = doc(db, USERS_COLLECTION, bestDoc.id);
+        uSnap = bestDoc;
+      }
+    }
+
+    if (!targetDocRef || !uSnap || !uSnap.exists()) return;
+
+    const uData = uSnap.data();
+    const effectiveComplexId = complexId || uData.originComplejoId || uData.originComplexId || uData.complejoId || uData.complexId;
 
     if (uId && uId !== '0') {
       const q = query(colRef, where('userId', '==', uId));
@@ -694,6 +735,14 @@ export async function syncUserMetricsWithBookings(userId: string | number, userP
       const qPhone = query(colRef, where('userPhone', '==', String(userPhone).trim()));
       const snapPhone = await getDocs(qPhone);
       bookings = snapPhone.docs.map(d => d.data());
+    }
+
+    // Filtrar estrictamente por complejo para aislar las métricas del jugador
+    if (effectiveComplexId) {
+      bookings = bookings.filter(b => {
+        const bComp = b.complejoId || b.complexId;
+        return isSameComplex(bComp, effectiveComplexId);
+      });
     }
 
     const totalBookings = bookings.length;
@@ -709,38 +758,20 @@ export async function syncUserMetricsWithBookings(userId: string | number, userP
     const firstDate = dates[0] || null;
     const lastDate = dates[dates.length - 1] || '';
 
-    // Buscar doc de usuario por ID
-    let targetDocRef = uId && uId !== '0' ? doc(db, USERS_COLLECTION, uId) : null;
-    let uSnap = targetDocRef ? await getDoc(targetDocRef) : null;
+    const existingActivationDate = uData.activationDate || null;
+    const activationDate = existingActivationDate || firstDate;
+    const lastGameDate = (!uData.lastGameDate || (lastDate && lastDate > uData.lastGameDate)) ? (lastDate || uData.lastGameDate || '') : uData.lastGameDate;
 
-    // Si no se encontró por ID pero hay userPhone, buscar por teléfono
-    if ((!uSnap || !uSnap.exists()) && userPhone) {
-      const usersCol = collection(db, USERS_COLLECTION);
-      const qUser = query(usersCol, where('phone', '==', String(userPhone).trim()));
-      const userSnap = await getDocs(qUser);
-      if (!userSnap.empty) {
-        targetDocRef = doc(db, USERS_COLLECTION, userSnap.docs[0].id);
-        uSnap = userSnap.docs[0];
-      }
-    }
-
-    if (targetDocRef && uSnap && uSnap.exists()) {
-      const uData = uSnap.data();
-      const existingActivationDate = uData.activationDate || null;
-      const activationDate = existingActivationDate || firstDate;
-      const lastGameDate = (!uData.lastGameDate || (lastDate && lastDate > uData.lastGameDate)) ? (lastDate || uData.lastGameDate || '') : uData.lastGameDate;
-
-      await updateDoc(targetDocRef, {
-        totalBookings,
-        totalMatchesPlayed: totalPlayed,
-        matches_played: totalPlayed,
-        isActivated: Boolean(activationDate),
-        activationDate,
-        lastGameDate,
-        updatedAt: new Date().toISOString()
-      });
-      console.log(`[Firestore] Métricas de ciclo de vida actualizadas para usuario ${uSnap.id}: ${totalBookings} reservas, ${totalPlayed} jugados`);
-    }
+    await updateDoc(targetDocRef, {
+      totalBookings,
+      totalMatchesPlayed: totalPlayed,
+      matches_played: totalPlayed,
+      isActivated: Boolean(activationDate),
+      activationDate,
+      lastGameDate,
+      updatedAt: new Date().toISOString()
+    });
+    console.log(`[Firestore] Métricas de ciclo de vida actualizadas para usuario ${uSnap.id}: ${totalBookings} reservas, ${totalPlayed} jugados`);
   } catch (err) {
     console.warn('[Firestore] Error sincronizando métricas de usuario:', err);
   }
@@ -1449,25 +1480,31 @@ export async function permanentlyDeleteBookingInFirestore(bookingId: string | nu
       // Verificar perfil en /users
       const userDocRef = doc(db, USERS_COLLECTION, strUserId);
       const userSnap = await getDoc(userDocRef);
-
       const isCurrentAuthUser = auth.currentUser?.uid === strUserId;
-      const isActivatedOrAdmin = userSnap.exists() && (
-        userSnap.data()?.category === 'admin' || 
-        userSnap.data()?.isActivated === true ||
-        userSnap.data()?.isOwner === true
+      const uData = userSnap.exists() ? userSnap.data() : null;
+      const isActivatedOrAdmin = uData && (
+        uData.category === 'admin' || 
+        uData.isActivated === true ||
+        uData.isOwner === true
+      );
+      const isPermanentOrForeignUser = uData && (
+        (uData.originComplejoId && !isSameComplex(uData.originComplejoId, targetComplexId)) ||
+        (Array.isArray(uData.associatedComplexIds) && uData.associatedComplexIds.length > 1) ||
+        Boolean(uData.canonicalId || uData.canonicalUserId || uData.personId) ||
+        (uData.phone && uData.name && !isGenericPlaceholderName(uData.name))
       );
 
-      if (remainingBookings.length === 0 && remainingOps.length === 0 && !isCurrentAuthUser && !isActivatedOrAdmin && userSnap.exists()) {
-        // Creado exclusivamente para esta reserva y sin otras relaciones: eliminar usuario
+      if (remainingBookings.length === 0 && remainingOps.length === 0 && !isCurrentAuthUser && !isActivatedOrAdmin && !isPermanentOrForeignUser && userSnap.exists()) {
+        // Creado exclusivamente para esta reserva como invitado efímero y sin otras relaciones: eliminar usuario
         await deleteDoc(userDocRef);
         deletedUserId = strUserId;
       } else {
-        // Conservar perfil y sincronizar métricas
-        syncUserMetricsWithBookings(strUserId);
+        // Conservar perfil y sincronizar métricas acotadas a este complejo
+        syncUserMetricsWithBookings(strUserId, undefined, targetComplexId);
       }
     } catch (err) {
       console.warn('[Firestore] Error checking/cleaning associated user:', err);
-      syncUserMetricsWithBookings(strUserId);
+      syncUserMetricsWithBookings(strUserId, undefined, targetComplexId);
     }
   }
 
@@ -1625,13 +1662,27 @@ export function subscribeToClients(
     const mapAssociated = new Map<string, User>();
 
     const emitMerged = () => {
-      const merged = new Map<string, User>([
-        ...mapOrigin,
-        ...mapAltOrigin,
-        ...mapComplejo,
-        ...mapComplex,
-        ...mapAssociated
-      ]);
+      const merged = new Map<string, User>();
+      
+      const checkAndAdd = (user: User) => {
+        const uOrigin = user.originComplejoId || (user as any).originComplexId || (user as any).complejoId || (user as any).complexId;
+        // Solo incorporar si pertenece legítimamente a la sede objetivo
+        if (uOrigin) {
+          if (isSameComplex(uOrigin, targetId)) {
+            merged.set(String(user.id), user);
+          }
+        } else if (Array.isArray(user.associatedComplexIds) && user.associatedComplexIds.includes(targetId)) {
+          // Documento heredado sin originComplejoId explícito
+          merged.set(String(user.id), user);
+        }
+      };
+
+      mapOrigin.forEach(checkAndAdd);
+      mapAltOrigin.forEach(checkAndAdd);
+      mapComplejo.forEach(checkAndAdd);
+      mapComplex.forEach(checkAndAdd);
+      mapAssociated.forEach(checkAndAdd);
+
       onUpdate(Array.from(merged.values()));
     };
 
@@ -1697,78 +1748,161 @@ export async function saveClientInFirestore(
   client: Partial<User>
 ): Promise<string> {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
-  const clientId = client.id ? String(client.id) : `user_${Date.now()}`;
   const now = new Date();
   const dateStr = now.toISOString().split('T')[0];
   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
-  // Preservar originComplejoId histórico y metadatos canónicos si ya existían en client o en el documento
-  let resolvedOriginId = client.originComplejoId;
-  let resolvedOriginName = client.originComplejoName;
+  // 1. Verificar si client.id apunta a un documento existente de ESTE complejo
   let existingData: any = null;
-  if (client.id) {
+  let isOwnDocument = false;
+  let resolvedDocId: string | null = null;
+
+  if (client.id && !String(client.id).startsWith('derived_')) {
     try {
-      const existingDoc = await getDoc(doc(db, USERS_COLLECTION, clientId));
+      const candidateDocRef = doc(db, USERS_COLLECTION, String(client.id));
+      const existingDoc = await getDoc(candidateDocRef);
       if (existingDoc.exists()) {
-        existingData = existingDoc.data();
-        resolvedOriginId = resolvedOriginId || existingData.originComplejoId || existingData.originComplexId;
-        resolvedOriginName = resolvedOriginName || existingData.originComplejoName || existingData.complexName;
+        const docData = existingDoc.data();
+        const docOrigin = docData.originComplejoId || docData.originComplexId || docData.complejoId || docData.complexId;
+        if (docOrigin ? isSameComplex(docOrigin, targetId) : (Array.isArray(docData.associatedComplexIds) && docData.associatedComplexIds.includes(targetId))) {
+          isOwnDocument = true;
+          resolvedDocId = String(client.id);
+          existingData = docData;
+        } else {
+          // El documento pertenece a OTRO complejo. Conservamos datos de persona para heredar si aplica, pero NUNCA lo sobrescribimos.
+          existingData = docData;
+        }
       }
     } catch (e) {
-      // Ignorar si no existe o no tiene permiso previo
+      // Ignorar si no existe o no tiene permiso de lectura previo
     }
   }
-  if (!resolvedOriginId) {
-    resolvedOriginId = targetId;
+
+  // 2. Si no es un documento propio (es de otro complejo o es derivado o nuevo):
+  // Comprobar si ya existe un documento local para este complejo que coincida con canonicalId o teléfono
+  if (!isOwnDocument) {
+    const normPhone = normalizePhoneNumber(client.phone || existingData?.phone);
+    const canonId = client.canonicalId || (client as any).canonicalUserId || existingData?.canonicalId || existingData?.canonicalUserId;
+
+    if (normPhone || canonId) {
+      try {
+        const usersCol = collection(db, USERS_COLLECTION);
+        const qOrigin = query(usersCol, where('originComplejoId', '==', targetId));
+        const snapOrigin = await getDocs(qOrigin);
+        
+        const localMatchDoc = snapOrigin.docs.find(d => {
+          const dData = d.data();
+          if (canonId && (dData.canonicalId === canonId || dData.canonicalUserId === canonId)) return true;
+          if (normPhone && normalizePhoneNumber(dData.phone) === normPhone) return true;
+          return false;
+        });
+
+        if (localMatchDoc) {
+          resolvedDocId = localMatchDoc.id;
+          existingData = localMatchDoc.data();
+          isOwnDocument = true;
+        }
+      } catch (err) {
+        console.warn('[Firestore] Error buscando ficha local existente:', err);
+      }
+    }
   }
 
+  // 3. Si aún no hay ID propio, generar un ID nuevo para la ficha local de este complejo
+  const finalClientId = (isOwnDocument && resolvedDocId) 
+    ? resolvedDocId 
+    : doc(collection(db, USERS_COLLECTION)).id;
+
+  // 4. Preservar metadatos canónicos e históricos
   const resolvedCanonId = client.canonicalId || (client as any).canonicalUserId || existingData?.canonicalId || existingData?.canonicalUserId;
   const resolvedCanonUserId = (client as any).canonicalUserId || client.canonicalId || existingData?.canonicalUserId || existingData?.canonicalId;
   const resolvedCanonName = (client as any).canonicalName || existingData?.canonicalName;
-  const resolvedHistoricalIds = (client as any).historicalIds || existingData?.historicalIds;
+
+  // Historial de IDs para mantener intacta la trazabilidad de reservas pasadas
+  const histSet = new Set<string>();
+  if (Array.isArray(existingData?.historicalIds)) existingData.historicalIds.forEach((h: any) => histSet.add(String(h)));
+  if (Array.isArray(client.historicalIds)) client.historicalIds.forEach((h: any) => histSet.add(String(h)));
+  if (client.historicalId) histSet.add(String(client.historicalId));
+  if (existingData?.historicalId) histSet.add(String(existingData.historicalId));
+  if (client.id && !String(client.id).startsWith('derived_') && String(client.id) !== finalClientId) {
+    histSet.add(String(client.id));
+  }
+  const resolvedHistoricalIds = Array.from(histSet);
+
+  // Deuda: aislada por complejo. NUNCA copiar debt de otra sede
+  let assignedDebt: number | undefined = undefined;
+  if (client.debt !== undefined) {
+    assignedDebt = Number(client.debt);
+  } else if (isOwnDocument && existingData?.debt !== undefined) {
+    assignedDebt = Number(existingData.debt);
+  } else {
+    assignedDebt = 0;
+  }
 
   const payload: any = {
-    id: clientId,
-    name: (client.name || 'Cliente').trim(),
-    phone: (client.phone || '').trim(),
-    email: (client.email || '').trim(),
-    gender: client.gender || '',
-    city: client.city || client.address || '',
-    category: client.category || 'jugador',
-    status: client.status || 'activo',
-    isActivated: client.isActivated ?? false,
-    acquisitionChannel: client.acquisitionChannel || 'WhatsApp',
-    acquisitionDate: client.acquisitionDate || client.created_at || dateStr,
-    acquisitionTime: client.acquisitionTime || timeStr,
-    activationDate: client.activationDate || null,
-    activationTime: client.activationTime || null,
-    originComplejoId: resolvedOriginId,
-    originComplejoName: resolvedOriginName || client.originComplejoName || (targetId === 'B' ? 'Colo loco' : ''),
-    totalBookings: Number(client.totalBookings ?? 0),
-    totalMatchesPlayed: Number(client.totalMatchesPlayed ?? client.matches_played ?? 0),
-    participatedMatches: Number(client.participatedMatches ?? 0),
-    lastGameDate: client.lastGameDate || '',
-    lastGameTime: client.lastGameTime || '',
-    notes: client.notes || '',
-    ownerId: auth.currentUser?.uid || client.ownerId || '',
-    adminId: client.adminId || '',
-    createdAt: client.createdAt || new Date().toISOString(),
+    id: finalClientId,
+    name: (client.name !== undefined ? client.name : (isOwnDocument ? existingData?.name : 'Cliente') || 'Cliente').trim(),
+    phone: (client.phone !== undefined ? client.phone : (existingData?.phone || '')).trim(),
+    email: (client.email !== undefined ? client.email : (existingData?.email || '')).trim(),
+    address: client.address !== undefined ? client.address : (existingData?.address || existingData?.city || ''),
+    city: client.city !== undefined ? client.city : (client.address !== undefined ? client.address : (existingData?.city || existingData?.address || '')),
+    preferredFoot: client.preferredFoot !== undefined ? client.preferredFoot : (existingData?.preferredFoot || ''),
+    birthDate: client.birthDate !== undefined ? client.birthDate : (existingData?.birthDate || ''),
+    gender: client.gender !== undefined ? client.gender : (existingData?.gender || ''),
+    category: client.category !== undefined ? client.category : (isOwnDocument ? existingData?.category : 'jugador') || 'jugador',
+    status: client.status !== undefined ? client.status : (isOwnDocument ? existingData?.status : 'activo') || 'activo',
+    isActivated: client.isActivated !== undefined ? client.isActivated : (isOwnDocument ? (existingData?.isActivated ?? false) : false),
+    acquisitionChannel: client.acquisitionChannel !== undefined ? client.acquisitionChannel : (isOwnDocument ? existingData?.acquisitionChannel : 'WhatsApp') || 'WhatsApp',
+    acquisitionDate: (isOwnDocument && existingData?.acquisitionDate) || client.acquisitionDate || client.created_at || dateStr,
+    acquisitionTime: (isOwnDocument && existingData?.acquisitionTime) || client.acquisitionTime || timeStr,
+    activationDate: client.activationDate !== undefined ? client.activationDate : (isOwnDocument ? (existingData?.activationDate || null) : null),
+    activationTime: client.activationTime !== undefined ? client.activationTime : (isOwnDocument ? (existingData?.activationTime || null) : null),
+    originComplejoId: targetId,
+    originComplejoName: client.originComplejoName || (targetId === 'B' ? 'Colo loco' : targetId),
+    complejoId: targetId,
+    complexId: targetId,
+    associatedComplexIds: [targetId],
+    totalBookings: isOwnDocument ? (client.totalBookings !== undefined ? Number(client.totalBookings) : Number(existingData?.totalBookings ?? 0)) : (client.totalBookings !== undefined ? Number(client.totalBookings) : 0),
+    totalMatchesPlayed: isOwnDocument ? (client.totalMatchesPlayed !== undefined ? Number(client.totalMatchesPlayed) : Number(existingData?.totalMatchesPlayed ?? existingData?.matches_played ?? 0)) : 0,
+    participatedMatches: isOwnDocument ? (client.participatedMatches !== undefined ? Number(client.participatedMatches) : Number(existingData?.participatedMatches ?? 0)) : 0,
+    lastGameDate: isOwnDocument ? (client.lastGameDate !== undefined ? client.lastGameDate : (existingData?.lastGameDate || '')) : (client.lastGameDate || ''),
+    lastGameTime: isOwnDocument ? (client.lastGameTime !== undefined ? client.lastGameTime : (existingData?.lastGameTime || '')) : (client.lastGameTime || ''),
+    debt: assignedDebt,
+    notes: client.notes !== undefined ? client.notes : (isOwnDocument ? (existingData?.notes || '') : ''),
+    ownerId: (isOwnDocument && existingData?.ownerId) || auth.currentUser?.uid || client.ownerId || '',
+    adminId: (isOwnDocument && existingData?.adminId) || client.adminId || '',
+    createdAt: (isOwnDocument && existingData?.createdAt) || client.createdAt || new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     ...(resolvedCanonId ? { canonicalId: resolvedCanonId } : {}),
     ...(resolvedCanonUserId ? { canonicalUserId: resolvedCanonUserId } : {}),
     ...(resolvedCanonName ? { canonicalName: resolvedCanonName } : {}),
-    ...(resolvedHistoricalIds ? { historicalIds: resolvedHistoricalIds } : {})
+    ...(resolvedHistoricalIds.length > 0 ? { historicalIds: resolvedHistoricalIds } : {})
   };
 
-  await setDoc(doc(db, USERS_COLLECTION, clientId), payload, { merge: true });
-  return clientId;
+  await setDoc(doc(db, USERS_COLLECTION, finalClientId), payload, { merge: true });
+  return finalClientId;
 }
 
 /**
- * Elimina un cliente de la colección canónica 'users'
+ * Elimina un cliente de la colección canónica 'users', asegurando que pertenezca a la sede
  */
-export async function deleteClientInFirestore(clientId: string | number): Promise<void> {
+export async function deleteClientInFirestore(clientId: string | number, complexId?: string): Promise<void> {
   const strId = String(clientId);
+  if (complexId) {
+    try {
+      const uRef = doc(db, USERS_COLLECTION, strId);
+      const uSnap = await getDoc(uRef);
+      if (uSnap.exists()) {
+        const uOrigin = uSnap.data().originComplejoId || uSnap.data().originComplexId || uSnap.data().complejoId || uSnap.data().complexId;
+        if (uOrigin && !isSameComplex(uOrigin, complexId)) {
+          console.warn(`[Firestore] Intento de eliminar ficha de otro complejo (${uOrigin}) bloqueado.`);
+          return;
+        }
+      }
+    } catch (e) {
+      console.warn('[Firestore] Error validando origen de ficha antes de eliminar:', e);
+    }
+  }
   await deleteDoc(doc(db, USERS_COLLECTION, strId));
 }
 
@@ -3351,15 +3485,22 @@ export async function settleFiadoTransaction(params: {
     settledAt: serverTimestamp()
   });
 
-  // Restar de la deuda del cliente
+  // Restar de la deuda del cliente si pertenece a la sede de la transacción
   const targetUserId = params.userId || txData.userId;
   if (targetUserId && params.fiadoAmount > 0) {
     try {
       const userRef = doc(db, USERS_COLLECTION, String(targetUserId));
-      await updateDoc(userRef, {
-        debt: increment(-Number(params.fiadoAmount)),
-        updatedAt: serverTimestamp()
-      });
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
+        const txComplex = txData.complexId || txData.complejoId;
+        if (!uOrigin || isSameComplex(uOrigin, txComplex)) {
+          await updateDoc(userRef, {
+            debt: increment(-Number(params.fiadoAmount)),
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
     } catch (err) {
       console.warn(`[Firestore] Error al restar deuda del usuario ${targetUserId}:`, err);
     }
@@ -3857,10 +3998,20 @@ export async function createOperationWithInitialPayment(
 
     // 3.5 Asignación de deuda en users/{userId}.debt
     if (currentAccountDebtAmount > 0 && userRef) {
-      t.set(userRef, {
-        debt: increment(currentAccountDebtAmount),
-        updatedAt: serverTimestamp()
-      }, { merge: true });
+      if (userSnap && userSnap.exists()) {
+        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
+        if (!uOrigin || isSameComplex(uOrigin, params.complexId)) {
+          t.set(userRef, {
+            debt: increment(currentAccountDebtAmount),
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        }
+      } else if (!userSnap) {
+        t.set(userRef, {
+          debt: increment(currentAccountDebtAmount),
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      }
     }
 
     // 3.6 Sincronizar documento de reserva si aplica
@@ -4046,10 +4197,20 @@ export async function registerOperationPayment(
 
     // 3.4 Reducir users/{userId}.debt exactamente por clearedDebt si aplica
     if (clearedDebt > 0 && userRef) {
-      t.set(userRef, {
-        debt: increment(-clearedDebt),
-        updatedAt: serverTimestamp()
-      }, { merge: true });
+      if (userSnap && userSnap.exists()) {
+        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
+        if (!uOrigin || isSameComplex(uOrigin, params.complexId)) {
+          t.set(userRef, {
+            debt: increment(-clearedDebt),
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        }
+      } else if (!userSnap) {
+        t.set(userRef, {
+          debt: increment(-clearedDebt),
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      }
     }
 
     // 3.5 Actualizar reserva asociada si existe
@@ -4341,10 +4502,20 @@ export async function cancelOperationWithSettlement(
 
     // 3.3 Si había deuda fiada sin cobrar, descontarla de users/{userId}.debt
     if (debtToExtinguish > 0 && userRef) {
-      t.set(userRef, {
-        debt: increment(-debtToExtinguish),
-        updatedAt: serverTimestamp()
-      }, { merge: true });
+      if (userSnap && userSnap.exists()) {
+        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
+        if (!uOrigin || isSameComplex(uOrigin, params.complexId)) {
+          t.set(userRef, {
+            debt: increment(-debtToExtinguish),
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        }
+      } else if (!userSnap) {
+        t.set(userRef, {
+          debt: increment(-debtToExtinguish),
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      }
     }
 
     // 3.4 Sincronizar estado de reserva
@@ -4656,10 +4827,18 @@ export async function permanentlyDeleteFinancialRecordInFirestore(params: {
     const userId = opDocData.userId || opDocData.clientId;
     if (debtAmt > 0 && userId) {
       try {
-        await updateDoc(doc(db, USERS_COLLECTION, String(userId)), {
-          debt: increment(-debtAmt),
-          updatedAt: serverTimestamp()
-        });
+        const userDocRef = doc(db, USERS_COLLECTION, String(userId));
+        const userDocSnap = await getDoc(userDocRef);
+        if (userDocSnap.exists()) {
+          const uOrigin = userDocSnap.data()?.originComplejoId || userDocSnap.data()?.originComplexId || userDocSnap.data()?.complejoId || userDocSnap.data()?.complexId;
+          const opComplex = opDocData.complexId || opDocData.complejoId;
+          if (!uOrigin || isSameComplex(uOrigin, opComplex)) {
+            await updateDoc(userDocRef, {
+              debt: increment(-debtAmt),
+              updatedAt: serverTimestamp()
+            });
+          }
+        }
       } catch (err) {
         console.warn('[Firestore] Error revirtiendo saldo deudor del cliente:', err);
       }
@@ -5105,14 +5284,21 @@ export async function settleLegacyOrVirtualDebt(params: {
     }
   }
 
-  // 4. Si el cliente tiene cuenta con deuda, reducir users/{userId}.debt
+  // 4. Si el cliente tiene cuenta con deuda, reducir users/{userId}.debt si pertenece a la sede
   if (params.userId) {
     try {
       const userRef = doc(db, USERS_COLLECTION, params.userId);
-      await updateDoc(userRef, {
-        debt: increment(-totalAmount),
-        updatedAt: serverTimestamp()
-      });
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
+        const effComplex = params.complexId;
+        if (!uOrigin || isSameComplex(uOrigin, effComplex)) {
+          await updateDoc(userRef, {
+            debt: increment(-totalAmount),
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
     } catch (uErr) {
       console.warn('[Firestore] Error actualizando deuda de usuario:', uErr);
     }

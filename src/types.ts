@@ -101,6 +101,9 @@ export interface CanonicalUser {
   email: string;
   gender: string;
   city: string;
+  address?: string;
+  preferredFoot?: string;
+  birthDate?: string;
   category: string;
   status: string;
   isActivated: boolean;
@@ -138,6 +141,8 @@ export interface User {
   last_visit?: string;
   last_played_anywhere?: string;
   address?: string;
+  preferredFoot?: string;
+  birthDate?: string;
   distance_km?: number;
   history?: { court_name: string; start_time: string }[];
   gender?: string;

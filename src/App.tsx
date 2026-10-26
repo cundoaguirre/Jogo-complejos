@@ -2,11 +2,11 @@ import React, { Component, useState, useEffect, useRef, useCallback, useMemo } f
 import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from 'motion/react';
 import { 
   LayoutDashboard, Users, Calendar, TrendingUp, TrendingDown, DollarSign, CalendarCheck, Percent, Clock, 
-  Search, Bell, Menu, X, Phone, MapPin, Star, ChevronLeft, ChevronRight, ChevronDown, List, Plus, Sparkles,
+  Search, Bell, Menu, X, Phone, MapPin, Star, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, List, Plus, Sparkles,
   ArrowLeft, ArrowRight, Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
-  Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, BarChart2, MoreVertical, FileText, Download,
+  Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, ShoppingBasket, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, UserCheck, BarChart2, MoreVertical, FileText, Download,
   MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle, AlertTriangle,
-  Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard
+  Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard, Info, Pencil, Footprints
 } from 'lucide-react';
 import { format, differenceInDays, isSameDay, isSameWeek, isSameMonth, parseISO, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -31,8 +31,9 @@ import {
   type BillingNoticeState 
 } from './lib/weeklyBilling';
 import { createSaasInvitation } from './lib/invitations';
-import { calculateUserLifecycleMetrics, formatDDMMYY, type UserLifecycleMetrics } from './lib/userMetrics';
+import { calculateUserLifecycleMetrics, formatDDMMYY, parseYMD, differenceInCalendarDays, isBookingPlayed, type UserLifecycleMetrics } from './lib/userMetrics';
 import { buildCrmActivityIndex, normalizePhoneNumber, isGenericPlaceholderName, findMatchingLocalUser } from './lib/crmActivityIndex';
+import { computeComplexFinancialSummary } from './lib/financialMath';
 import { doc, getDoc, getDocs, collection, query, where, serverTimestamp, addDoc } from 'firebase/firestore';
 import { db, auth } from './lib/firebase';
 import { 
@@ -418,143 +419,1574 @@ const StatCard = ({ title, value, trend, icon: Icon, color }: any) => (
   </div>
 );
 
-const UserDetailModal = ({ user, onClose, onDelete }: { user: User | null, onClose: () => void, onDelete: (id: any) => void }) => {
-  if (!user) return null;
+interface NewUserModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onSave: (user: any) => Promise<void> | void;
+  initialData?: User | null;
+  isEdit?: boolean;
+  existingUsers?: User[];
+}
+
+const NewUserModal = ({ 
+  isOpen, 
+  onClose, 
+  onSave, 
+  initialData = null, 
+  isEdit = false, 
+  existingUsers = [] 
+}: NewUserModalProps) => {
+  const [formData, setFormData] = useState({
+    name: '',
+    phone: '',
+    email: '',
+    address: '',
+    gender: '',
+    acquisitionChannel: '',
+    category: 'jugador',
+    preferredFoot: '',
+    birthDate: '',
+    notes: ''
+  });
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setFormData({
+        name: initialData?.name || '',
+        phone: initialData?.phone || '',
+        email: initialData?.email || '',
+        address: initialData?.address || initialData?.city || '',
+        gender: initialData?.gender || '',
+        acquisitionChannel: initialData?.acquisitionChannel || '',
+        category: initialData?.category || 'jugador',
+        preferredFoot: initialData?.preferredFoot || '',
+        birthDate: initialData?.birthDate || '',
+        notes: initialData?.notes || ''
+      });
+      setError(null);
+      setIsSubmitting(false);
+    }
+  }, [isOpen, initialData]);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+
+    const trimmedName = formData.name.trim();
+    const trimmedPhone = formData.phone.trim();
+
+    if (!trimmedName) {
+      setError('El nombre y apellido es obligatorio.');
+      return;
+    }
+    if (!trimmedPhone) {
+      setError('El teléfono es obligatorio.');
+      return;
+    }
+
+    // Comprobar colisión de teléfono dentro de la sede activa
+    const normPhone = normalizePhoneNumber(trimmedPhone);
+    if (normPhone && Array.isArray(existingUsers) && existingUsers.length > 0) {
+      const currentId = initialData?.id ? String(initialData.id) : null;
+      const initialNormPhone = initialData?.phone ? normalizePhoneNumber(initialData.phone) : null;
+      const duplicate = existingUsers.find(u => {
+        if (currentId && String(u.id) === currentId) return false;
+        if (u.isDerived || String(u.id).startsWith('derived_')) return false;
+        // Si el usuario que se edita ya tenía este mismo teléfono (ej. consolidando ficha derivada o tarjeta del jugador)
+        // y u.id coincide o es la ficha registrada local con ese teléfono, no es una colisión de cambio de número:
+        if (initialNormPhone && initialNormPhone === normPhone && (
+          (u.canonicalId && initialData?.canonicalId && u.canonicalId === initialData.canonicalId) || 
+          (Array.isArray(u.historicalIds) && currentId && u.historicalIds.includes(currentId)) ||
+          String(initialData?.id || '').startsWith('derived_')
+        )) {
+          return false;
+        }
+        return normalizePhoneNumber(u.phone) === normPhone;
+      });
+      if (duplicate) {
+        setError(`Ya existe otro jugador registrado con este número de teléfono (${duplicate.name || 'Ficha existente'}) en el complejo.`);
+        return;
+      }
+    }
+
+    try {
+      setIsSubmitting(true);
+      await onSave({
+        name: trimmedName,
+        phone: trimmedPhone,
+        email: formData.email.trim(),
+        address: formData.address.trim(),
+        city: formData.address.trim(), // Compatibilidad hacia atrás
+        gender: formData.gender,
+        acquisitionChannel: formData.acquisitionChannel || 'WhatsApp',
+        category: formData.category || 'jugador',
+        preferredFoot: formData.preferredFoot || '',
+        birthDate: formData.birthDate || '',
+        notes: formData.notes.trim()
+      });
+      onClose();
+    } catch (err: any) {
+      console.error('Error al guardar jugador:', err);
+      setError(err?.message || 'Error al guardar los datos del jugador. Por favor intente nuevamente.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
 
   return (
     <div 
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 pointer-events-auto"
+      className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4 pointer-events-auto"
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        onClose();
+        if (!isSubmitting) onClose();
       }}
     >
       <motion.div 
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         onClick={(e) => e.stopPropagation()}
-        className="bg-white w-full max-w-2xl rounded-3xl overflow-hidden shadow-2xl max-h-[90vh] overflow-y-auto pointer-events-auto"
+        className="bg-white rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh] md:max-h-[85vh] pointer-events-auto"
       >
-        <div className="relative h-28 bg-slate-900">
+        <div className="p-5 border-b border-gray-100 flex justify-between items-center shrink-0">
+          <div>
+            <h3 className="font-bold text-lg text-gray-900">{isEdit ? 'Editar perfil' : 'Nuevo Usuario'}</h3>
+            <p className="text-xs text-gray-500">{isEdit ? 'Modificar datos del jugador en la sede activa' : 'Alta de jugador o cliente para la sede activa'}</p>
+          </div>
           <button 
             type="button" 
             onClick={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              onClose();
+              if (!isSubmitting) onClose();
             }} 
-            className="absolute top-4 right-4 bg-black/20 text-white p-2 rounded-full hover:bg-black/40 transition-colors cursor-pointer"
+            className="text-gray-400 hover:text-gray-600 cursor-pointer p-1"
           >
             <X size={20} />
           </button>
         </div>
-        
-        <div className="px-8 pb-8">
-          <div className="relative -mt-12 mb-6 flex justify-between items-end">
-            <div className="w-24 h-24 rounded-full bg-white p-1 shadow-lg">
-              <div className="w-full h-full rounded-full bg-emerald-100 flex items-center justify-center text-3xl font-bold text-emerald-700">
-                {user.name?.charAt(0) || '?'}
-              </div>
+
+        <form id="new-user-form" onSubmit={handleSubmit} className="p-5 space-y-3.5 overflow-y-auto flex-1">
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
+              <AlertCircle size={16} className="shrink-0 text-red-600" />
+              <span>{error}</span>
             </div>
-            <div className="flex gap-2">
-              <button 
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onDelete(user.id);
-                }}
-                className="flex items-center gap-2 bg-red-50 text-red-600 px-4 py-2 rounded-xl font-bold text-sm hover:bg-red-100 cursor-pointer"
+          )}
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Nombre y Apellido *</label>
+              <input 
+                required
+                type="text" 
+                placeholder="Ej: Marcos Rojo"
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
+                value={formData.name}
+                onChange={e => setFormData({...formData, name: e.target.value})}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Teléfono *</label>
+              <input 
+                required
+                type="tel" 
+                placeholder="Ej: +54 9 11 9876-5432"
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
+                value={formData.phone}
+                onChange={e => setFormData({...formData, phone: e.target.value})}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Email <span className="text-gray-400 font-normal">(Opcional)</span></label>
+              <input 
+                type="email" 
+                placeholder="jugador@ejemplo.com"
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
+                value={formData.email}
+                onChange={e => setFormData({...formData, email: e.target.value})}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Dirección <span className="text-gray-400 font-normal">(Opcional)</span></label>
+              <input 
+                type="text" 
+                placeholder="Ej: Av. Mitre 1234, Quilmes"
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
+                value={formData.address}
+                onChange={e => setFormData({...formData, address: e.target.value})}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Género</label>
+              <select 
+                value={formData.gender}
+                onChange={e => setFormData({...formData, gender: e.target.value})}
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
               >
-                Eliminar
-              </button>
-              {user.phone && (
-                <a 
-                  href={`tel:${user.phone}`}
-                  className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-xl font-bold text-sm hover:bg-emerald-700 cursor-pointer"
-                >
-                  <Phone size={16} /> Contactar
-                </a>
-              )}
+                <option value="">Seleccionar género...</option>
+                <option value="masculino">Masculino</option>
+                <option value="femenino">Femenino</option>
+                <option value="mixto">Mixto</option>
+                <option value="otro">Otro</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Canal de Adquisición <span className="text-gray-400 font-normal">(Opcional)</span></label>
+              <select 
+                value={formData.acquisitionChannel}
+                onChange={e => setFormData({...formData, acquisitionChannel: e.target.value})}
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
+              >
+                <option value="">Seleccionar canal...</option>
+                <option value="WhatsApp">WhatsApp</option>
+                <option value="Referido">Referido</option>
+                <option value="Ig">Instagram (Ig)</option>
+                <option value="Fb">Facebook (Fb)</option>
+                <option value="Tiktok">TikTok</option>
+                <option value="inbound">Inbound</option>
+                <option value="outbound">Outbound</option>
+                <option value="Evento">Evento</option>
+                <option value="Cliente">Cliente Presencial</option>
+              </select>
             </div>
           </div>
 
-          <div className="mb-6">
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-2xl font-bold text-gray-900">{user.name}</h2>
-              {user.isDerived && (
-                <span className="text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded capitalize">
-                  Invitado
-                </span>
-              )}
-              {user.category && (
-                <span className="text-xs font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded capitalize">
-                  {user.category}
-                </span>
-              )}
-              {user.status && (
-                <span className="text-xs font-bold bg-slate-100 text-slate-700 px-2 py-0.5 rounded capitalize">
-                  {user.status}
-                </span>
-              )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Categoría</label>
+              <select 
+                value={formData.category}
+                onChange={e => setFormData({...formData, category: e.target.value})}
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
+              >
+                <option value="jugador">Jugador</option>
+                <option value="capitán">Capitán</option>
+              </select>
             </div>
-            {(user.city || user.address) && (
-              <p className="text-gray-500 flex items-center gap-2 text-sm mt-1">
-                <MapPin size={14} /> {user.city || user.address}
-              </p>
-            )}
-            <div className="text-xs text-gray-500 mt-1 flex gap-4">
-              {user.phone && <span>Tel: {user.phone}</span>}
-              {user.email && <span>Email: {user.email}</span>}
-              {user.gender && <span>Género: {user.gender}</span>}
-              {user.acquisitionChannel && <span>Canal: {user.acquisitionChannel}</span>}
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Pierna hábil</label>
+              <select 
+                value={formData.preferredFoot}
+                onChange={e => setFormData({...formData, preferredFoot: e.target.value})}
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
+              >
+                <option value="">Seleccionar pierna hábil...</option>
+                <option value="Diestro">Diestro</option>
+                <option value="Zurdo">Zurdo</option>
+                <option value="Ambidiestro">Ambidiestro</option>
+              </select>
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-6">
-            <div className="bg-gray-50 p-4 rounded-2xl text-center">
-              <div className="text-2xl font-bold text-gray-900">{user.totalMatchesPlayed ?? user.matches_played ?? 0}</div>
-              <div className="text-xs text-gray-500 font-medium mt-1">Partidos</div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Fecha de nacimiento <span className="text-gray-400 font-normal">(Opcional)</span></label>
+              <input 
+                type="date"
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium text-gray-800"
+                value={formData.birthDate}
+                onChange={e => setFormData({...formData, birthDate: e.target.value})}
+              />
             </div>
-            <div className="bg-gray-50 p-4 rounded-2xl text-center">
-              <div className="text-2xl font-bold text-gray-900">{user.totalBookings ?? 0}</div>
-              <div className="text-xs text-gray-500 font-medium mt-1">Reservas</div>
-            </div>
-            <div className="bg-gray-50 p-4 rounded-2xl text-center">
-              <div className="text-sm font-bold text-gray-900">{user.acquisitionDate || safeFormatDate(user.created_at, 'MMM yyyy', { locale: es }, 'N/A')}</div>
-              <div className="text-xs text-gray-500 font-medium mt-1">Alta</div>
-            </div>
-            <div className="bg-gray-50 p-4 rounded-2xl text-center">
-              <div className="text-sm font-bold text-gray-900">{user.lastGameDate || 'Sin partidos'}</div>
-              <div className="text-xs text-gray-500 font-medium mt-1">Último juego</div>
+            <div>
+              <label className="block text-xs font-bold text-gray-700 mb-1">Notas u Observaciones</label>
+              <input 
+                type="text"
+                placeholder="Notas operativas del jugador..."
+                value={formData.notes}
+                onChange={e => setFormData({...formData, notes: e.target.value})}
+                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
+              />
             </div>
           </div>
+        </form>
 
-          <div>
-            <h3 className="font-bold text-gray-900 mb-4">Historial Reciente</h3>
-            <div className="space-y-3">
-              {user.history?.map((h: any, i: number) => (
-                <div key={`user-history-${h.id || i}-${i}`} className="flex items-center justify-between p-3 border border-gray-100 rounded-xl">
-                  <div className="flex items-center gap-3">
-                    <div className="bg-emerald-50 p-2 rounded-lg text-emerald-600">
-                      <Calendar size={18} />
-                    </div>
-                    <div>
-                      <div className="font-bold text-sm">{h.court_name}</div>
-                      <div className="text-xs text-gray-500">{safeFormatDate(h.start_time, 'PPP p', { locale: es })}</div>
-                    </div>
-                  </div>
-                  <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-lg">Completado</span>
-                </div>
-              ))}
-            </div>
-          </div>
+        <div className="p-4 border-t border-gray-100 flex justify-end gap-3 shrink-0">
+          <button 
+            type="button" 
+            onClick={onClose} 
+            disabled={isSubmitting}
+            className="px-4 py-2 text-gray-600 hover:bg-gray-50 rounded-xl font-medium cursor-pointer disabled:opacity-50"
+          >
+            Cancelar
+          </button>
+          <button 
+            type="submit" 
+            form="new-user-form" 
+            disabled={!formData.name || !formData.phone || isSubmitting} 
+            className="px-5 py-2 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 disabled:opacity-50 cursor-pointer shadow-md shadow-emerald-900/10 flex items-center gap-2"
+          >
+            {isSubmitting ? 'Guardando...' : (isEdit ? 'Guardar cambios' : 'Guardar Usuario')}
+          </button>
         </div>
       </motion.div>
-
-      
     </div>
+  );
+};
+
+const TOOLTIP_DESCRIPTIONS: Record<string, string> = {
+  canal: 'Canal de adquisición a través del cual el jugador conoció o contactó al complejo.',
+  reservas: 'Cantidad total de reservas creadas por este jugador en el complejo.',
+  juegos: 'Partidos completados y efectivamente jugados por el usuario.',
+  cancelaciones: 'Número de turnos o reservas canceladas por el jugador.',
+  ultimoJuego: 'Fecha del partido jugado más recientemente en el complejo.',
+  diasSinJugar: 'Días transcurridos desde el último partido jugado hasta hoy.',
+  creado: 'Fecha en la que se dio de alta la ficha del jugador en el complejo.',
+  ttv: 'Días transcurridos desde el registro del jugador hasta jugar su primer partido.',
+  primerPartido: 'Fecha del primer partido completado en el complejo.',
+  semanaAct: 'Semana de cohorte en la que el usuario jugó su primer partido (S = Semana).',
+  antiguedad: 'Días transcurridos desde el registro del jugador hasta hoy.',
+  actividad: 'Período en días entre el primer partido y el último partido jugado.'
+};
+
+function formatSpanishDate(val: any): string {
+  const ymd = parseYMD(val);
+  if (!ymd) return '—';
+  const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  return `${ymd.day} ${months[ymd.month - 1]}, ${ymd.year}`;
+}
+
+function formatCurrencyAmount(amount: number): string {
+  const rounded = Math.round(Number(amount || 0));
+  return rounded.toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+}
+
+function formatPendingDate(dateVal: any, timeFallback?: string): string {
+  if (!dateVal) return timeFallback || '—';
+  let d: Date | null = null;
+  if (typeof dateVal?.toDate === 'function') d = dateVal.toDate();
+  else if (typeof dateVal?.toMillis === 'function') d = new Date(dateVal.toMillis());
+  else if (dateVal instanceof Date) d = dateVal;
+  else if (typeof dateVal === 'string') {
+    const ymd = parseYMD(dateVal);
+    if (ymd) {
+      const timeMatch = dateVal.match(/(\d{1,2}):(\d{2})/);
+      const h = timeMatch ? parseInt(timeMatch[1], 10) : (timeFallback ? parseInt(timeFallback.split(':')[0], 10) : 0);
+      const m = timeMatch ? parseInt(timeMatch[2], 10) : (timeFallback ? parseInt(timeFallback.split(':')[1], 10) : 0);
+      d = new Date(ymd.year, ymd.month - 1, ymd.day, h, m);
+    } else {
+      d = new Date(dateVal);
+    }
+  } else if (typeof dateVal === 'number') d = new Date(dateVal);
+
+  if (!d || isNaN(d.getTime())) return timeFallback || '—';
+  const fullMonths = ['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+  const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  return `${d.getDate()} de ${fullMonths[d.getMonth()]}, ${timeStr}`;
+}
+
+function formatTimelineDate(dateVal: any, timeFallback?: string): string {
+  if (!dateVal) return timeFallback || '—';
+  let d: Date | null = null;
+  if (typeof dateVal?.toDate === 'function') d = dateVal.toDate();
+  else if (typeof dateVal?.toMillis === 'function') d = new Date(dateVal.toMillis());
+  else if (dateVal instanceof Date) d = dateVal;
+  else if (typeof dateVal === 'string') {
+    const ymd = parseYMD(dateVal);
+    if (ymd) {
+      const timeMatch = dateVal.match(/(\d{1,2}):(\d{2})/);
+      const h = timeMatch ? parseInt(timeMatch[1], 10) : (timeFallback ? parseInt(timeFallback.split(':')[0], 10) : 0);
+      const m = timeMatch ? parseInt(timeMatch[2], 10) : (timeFallback ? parseInt(timeFallback.split(':')[1], 10) : 0);
+      d = new Date(ymd.year, ymd.month - 1, ymd.day, h, m);
+    } else {
+      d = new Date(dateVal);
+    }
+  } else if (typeof dateVal === 'number') d = new Date(dateVal);
+
+  if (!d || isNaN(d.getTime())) return timeFallback || '—';
+  const now = new Date();
+  const timeStr = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+  const isToday = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  if (isToday) return `Hoy, ${timeStr}`;
+
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  const isYesterday = d.getFullYear() === yesterday.getFullYear() && d.getMonth() === yesterday.getMonth() && d.getDate() === yesterday.getDate();
+  if (isYesterday) return `Ayer, ${timeStr}`;
+
+  const shortMonths = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sept', 'oct', 'nov', 'dic'];
+  return `${d.getDate()} de ${shortMonths[d.getMonth()]}, ${timeStr}`;
+}
+
+function cleanPhoneForWa(phone: string): string {
+  const digits = String(phone || '').replace(/\D/g, '');
+  if (digits.startsWith('549')) return digits;
+  if (digits.startsWith('54')) return `549${digits.slice(2)}`;
+  if (digits.length === 10) return `549${digits}`;
+  return digits;
+}
+
+function calculateAgeFromBirthDate(birthDateStr?: string): number | null {
+  if (!birthDateStr) return null;
+  const ymd = parseYMD(birthDateStr);
+  if (!ymd) return null;
+  const today = new Date();
+  let age = today.getFullYear() - ymd.year;
+  const m = today.getMonth() + 1 - ymd.month;
+  if (m < 0 || (m === 0 && today.getDate() < ymd.day)) {
+    age--;
+  }
+  return age >= 0 ? age : null;
+}
+
+const UserDetailModal = ({ 
+  user, 
+  onClose, 
+  onDelete,
+  onUserUpdated,
+  complexId = 'complejo_central',
+  existingUsers = [],
+  bookings = [],
+  onSelectBooking
+}: { 
+  user: User | null; 
+  onClose: () => void; 
+  onDelete?: (id: any) => void;
+  onUserUpdated?: (updatedUser: User) => void;
+  complexId?: string;
+  existingUsers?: User[];
+  bookings?: Match[];
+  onSelectBooking?: (booking: Match) => void;
+}) => {
+  const [activeSection, setActiveSection] = useState<'Datos' | 'Historial' | 'Información'>('Datos');
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState<User | null>(user);
+  const [operations, setOperations] = useState<OperationDocument[]>([]);
+  const [financialMovements, setFinancialMovements] = useState<FinancialMovementDocument[]>([]);
+  const [legacyTransactions, setLegacyTransactions] = useState<any[]>([]);
+  const [venueProfile, setVenueProfile] = useState<any>(null);
+  const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
+  const [pendingExpanded, setPendingExpanded] = useState(true);
+  const [recentExpanded, setRecentExpanded] = useState(true);
+
+  // States to open the exact same Operation Ticket / Settle modal as Finanzas
+  const [ticketModalOperation, setTicketModalOperation] = useState<OperationDocument | null>(null);
+  const [ticketModalMovements, setTicketModalMovements] = useState<FinancialMovementDocument[]>([]);
+  const [settleModalTarget, setSettleModalTarget] = useState<any | null>(null);
+
+  useEffect(() => {
+    setCurrentUser(user);
+  }, [user]);
+
+  // Real-time subscriptions strictly scoped to active complex
+  useEffect(() => {
+    if (!complexId) return;
+    const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+
+    const unsubOps = subscribeToOperations(targetId, (ops) => {
+      setOperations(Array.isArray(ops) ? ops : []);
+    });
+
+    const unsubMovs = subscribeToFinancialMovements(targetId, (movs) => {
+      setFinancialMovements(Array.isArray(movs) ? movs : []);
+    });
+
+    const unsubTxs = subscribeToTransactions(targetId, (txs) => {
+      setLegacyTransactions(Array.isArray(txs) ? txs : []);
+    });
+
+    const unsubVenue = subscribeToVenueProfile(targetId, (prof) => {
+      setVenueProfile(prof);
+    });
+
+    return () => {
+      unsubOps();
+      unsubMovs();
+      unsubTxs();
+      unsubVenue();
+    };
+  }, [complexId]);
+
+  // Open the exact operation ticket modal used in Finanzas
+  const handleOpenTicket = (op: OperationDocument) => {
+    const associatedMovements = financialMovements.filter(m => 
+      m.operationId === op.id || 
+      (op.bookingId && (m.bookingId === op.bookingId || m.operationId === `${op.bookingId}-booking`)) ||
+      (op.id.endsWith('-booking') && (m.bookingId === op.id.replace('-booking', '') || m.operationId === op.id))
+    );
+    setTicketModalMovements(associatedMovements);
+    setTicketModalOperation(op);
+  };
+
+  if (!currentUser) return null;
+
+  const normUserPhone = normalizePhoneNumber(currentUser?.phone || '');
+
+  // Filter bookings belonging to this user in this active complex (used for Datos metrics and virtual operations)
+  const userBookings = useMemo(() => {
+    if (!currentUser) return [];
+    const userIdStr = String(currentUser.id || '');
+    const userCanonicalId = currentUser.canonicalId || (currentUser as any).personId || (currentUser as any).erpUserId;
+    const userHistoricalIds = Array.isArray(currentUser.historicalIds) ? currentUser.historicalIds.map(String) : [];
+    if (currentUser.historicalId) userHistoricalIds.push(String(currentUser.historicalId));
+
+    return (bookings || []).filter((b: any) => {
+      // 1. Direct ID match
+      if (b.userId && String(b.userId) === userIdStr) return true;
+      if (b.host_id && String(b.host_id) === userIdStr) return true;
+
+      // 2. Canonical ID match
+      if (userCanonicalId && b.canonicalId && String(b.canonicalId) === String(userCanonicalId)) return true;
+
+      // 3. Historical IDs match
+      if (b.historicalId && userHistoricalIds.includes(String(b.historicalId))) return true;
+      if (Array.isArray(b.historicalIds) && b.historicalIds.some((hId: any) => userHistoricalIds.includes(String(hId)))) return true;
+
+      // 4. Normalized phone match
+      const bPhone = normalizePhoneNumber(b.userPhone || b.clientPhone || b.host_phone || '');
+      if (normUserPhone && bPhone && bPhone === normUserPhone) return true;
+
+      // 5. Name match fallback
+      if (b.userName && currentUser.name && b.userName.trim().toLowerCase() === currentUser.name.trim().toLowerCase()) {
+        return true;
+      }
+
+      return false;
+    });
+  }, [bookings, currentUser, normUserPhone]);
+
+  // Commercial operations of the player in the active complex (identical model to Finanzas)
+  const playerCommercialOperations = useMemo(() => {
+    if (!currentUser) return [];
+
+    const userIdStr = String(currentUser.id || '');
+    const userCanonicalId = currentUser.canonicalId || (currentUser as any).personId || (currentUser as any).erpUserId;
+    const userHistoricalIds = Array.isArray(currentUser.historicalIds) ? currentUser.historicalIds.map(String) : [];
+    if (currentUser.historicalId) userHistoricalIds.push(String(currentUser.historicalId));
+    const targetComplexIds = (!complexId || complexId === 'complejo_central') ? ['B', 'complejo_central'] : [complexId];
+
+    const list: Array<{
+      id: string;
+      ticketCode: string;
+      rawDate: any;
+      formattedDate: string;
+      title: string;
+      iconType: 'booking' | 'pos';
+      contractualAmount: number;
+      totalCollected: number;
+      amountPending: number;
+      isPending: boolean;
+      originalDoc: OperationDocument;
+    }> = [];
+
+    const processedOpIds = new Set<string>();
+    const processedBookingIds = new Set<string>();
+    const processedLegacyIds = new Set<string>();
+
+    const matchesPlayer = (entity: any) => {
+      if (!entity) return false;
+      const eUserId = entity.userId || entity.clientId || entity.host_id;
+      if (eUserId && String(eUserId) === userIdStr) return true;
+      if (userCanonicalId && entity.canonicalId && String(entity.canonicalId) === String(userCanonicalId)) return true;
+      if (entity.historicalId && userHistoricalIds.includes(String(entity.historicalId))) return true;
+      if (Array.isArray(entity.historicalIds) && entity.historicalIds.some((hId: any) => userHistoricalIds.includes(String(hId)))) return true;
+      const ePhone = normalizePhoneNumber(entity.userPhone || entity.clientPhone || entity.phone || entity.host_phone || '');
+      if (normUserPhone && ePhone && ePhone === normUserPhone) return true;
+      if (entity.userName && currentUser.name && entity.userName.trim().toLowerCase() === currentUser.name.trim().toLowerCase()) return true;
+      if (entity.clientName && currentUser.name && entity.clientName.trim().toLowerCase() === currentUser.name.trim().toLowerCase()) return true;
+      return false;
+    };
+
+    // 1. Process operations from /operations
+    operations.forEach(op => {
+      const c = op.complexId || op.complejoId;
+      if (c && !targetComplexIds.includes(c)) return;
+
+      if (!matchesPlayer(op)) return;
+
+      processedOpIds.add(op.id);
+      if (op.legacySaleId) processedLegacyIds.add(op.legacySaleId);
+      if (op.bookingId) processedBookingIds.add(String(op.bookingId));
+      if (op.id.endsWith('-booking')) processedBookingIds.add(op.id.replace('-booking', ''));
+
+      const contractual = Number(op.contractualAmount ?? (op as any).total ?? (op as any).amount ?? (op as any).price ?? 0);
+      const collected = Number(op.totalCollected ?? (op as any).amount_paid ?? (op as any).collected ?? (op as any).paid ?? 0);
+      const pending = Number(op.amountPending ?? (op as any).pending ?? (op as any).debt ?? (op.paymentStatus !== 'paid' ? Math.max(0, contractual - collected) : 0));
+
+      const isBooking = op.operationType === 'court_booking' || op.operationType === 'booking' || Boolean(op.bookingId);
+      
+      let title = isBooking ? 'Alquiler de Cancha' : 'Mostrador';
+      if (isBooking) {
+        const b = bookings.find(bk => String(bk.id) === String(op.bookingId || op.id.replace('-booking', '')));
+        if (b && (b.courtName || b.court_name)) {
+          title = `Reserva (${b.courtName || b.court_name})`;
+        } else if (op.notes && op.notes.includes('Reserva')) {
+          title = op.notes;
+        } else {
+          title = op.notes || 'Reserva (Cancha 1)';
+        }
+      } else {
+        title = 'Mostrador';
+      }
+
+      const rawDate = op.createdAt || (op as any).date;
+      const isPending = pending > 0 && op.paymentStatus !== 'paid';
+
+      list.push({
+        id: op.id,
+        ticketCode: op.ticketCode || op.id.slice(0, 8).toUpperCase(),
+        rawDate,
+        formattedDate: formatTimelineDate(rawDate),
+        title,
+        iconType: isBooking ? 'booking' : 'pos',
+        contractualAmount: contractual,
+        totalCollected: collected,
+        amountPending: pending,
+        isPending,
+        originalDoc: {
+          ...op,
+          contractualAmount: contractual,
+          totalCollected: collected,
+          amountPending: pending,
+          userName: op.userName || currentUser.name,
+          clientName: op.clientName || currentUser.name
+        }
+      });
+    });
+
+    // 2. Process legacy transactions from /transactions
+    legacyTransactions.forEach(t => {
+      const c = t.complexId || t.complejoId;
+      if (c && !targetComplexIds.includes(c)) return;
+
+      if (processedOpIds.has(t.id) || processedLegacyIds.has(t.id)) return;
+      if (t.bookingId && processedBookingIds.has(String(t.bookingId))) return;
+
+      if (!matchesPlayer(t)) return;
+
+      processedOpIds.add(t.id);
+      if (t.bookingId) processedBookingIds.add(String(t.bookingId));
+
+      const isGasto = t.type === 'expense' || t.type === 'gasto' || t.type === 'egreso';
+      if (isGasto) return;
+
+      const tot = Number(t.total ?? t.amount ?? 0);
+      let collected = tot;
+      let pending = 0;
+      let status = 'paid';
+
+      if (t.paymentStatus === 'fiado' || t.paymentStatus === 'partial' || t.paymentStatus === 'pending' || t.paymentStatus === 'unpaid') {
+        const fiadoAmt = Array.isArray(t.payments)
+          ? t.payments.filter((p: any) => p.method === 'fiado' || p.method === 'pending').reduce((s: number, p: any) => s + Number(p.amount || 0), 0)
+          : Number(t.pendingAmount ?? t.debtAmount ?? (t.paymentStatus === 'unpaid' ? tot : 0));
+        pending = fiadoAmt;
+        collected = Math.max(0, tot - pending);
+        status = collected >= tot && tot > 0 ? 'paid' : (collected > 0 ? 'partial' : 'unpaid');
+      }
+
+      const isBooking = Boolean(t.bookingId);
+      const title = isBooking ? 'Reserva (Cancha 1)' : 'Mostrador';
+      const rawDate = t.createdAt || t.date;
+      const isPending = pending > 0 && status !== 'paid';
+
+      const virtualOp: OperationDocument = {
+        id: t.id,
+        complexId: complexId || 'complejo_central',
+        ticketCode: t.ticketCode || t.id.slice(0, 8).toUpperCase(),
+        operationType: isBooking ? 'court_booking' : 'pos_sale',
+        responsibleType: 'user',
+        userId: currentUser.id ? String(currentUser.id) : null,
+        clientId: currentUser.id ? String(currentUser.id) : null,
+        userName: currentUser.name,
+        clientName: currentUser.name,
+        userPhone: currentUser.phone || '',
+        clientPhone: currentUser.phone || '',
+        contractualAmount: tot,
+        totalCollected: collected,
+        totalRefunded: 0,
+        netCollected: collected,
+        retainedAmount: 0,
+        amountPending: pending,
+        paymentStatus: status as any,
+        currentAccountAssigned: pending > 0,
+        currentAccountDebtAmount: pending,
+        notes: title,
+        createdAt: rawDate || new Date(),
+        updatedAt: rawDate || new Date(),
+        createdBy: 'histórico'
+      };
+
+      list.push({
+        id: t.id,
+        ticketCode: virtualOp.ticketCode,
+        rawDate,
+        formattedDate: formatTimelineDate(rawDate),
+        title,
+        iconType: isBooking ? 'booking' : 'pos',
+        contractualAmount: tot,
+        totalCollected: collected,
+        amountPending: pending,
+        isPending,
+        originalDoc: virtualOp
+      });
+    });
+
+    // 3. Process bookings not having an operation
+    bookings.forEach(b => {
+      if (!b) return;
+      const c = b.complexId || b.complejoId;
+      if (c && !targetComplexIds.includes(c)) return;
+
+      if (processedBookingIds.has(String(b.id))) return;
+      const bStatus = String(b.status || '').toLowerCase();
+      if (bStatus === 'cancelado' || bStatus === 'cancelled') return;
+
+      if (!matchesPlayer(b)) return;
+
+      processedBookingIds.add(String(b.id));
+
+      const tot = Number(b.price || b.price_total || 0);
+      const isPaid = b.payment_status === 'paid' || b.paymentStatus === 'paid' || b.payment_status === 'pagado';
+      const rawPaid = Number(b.amount_paid ?? b.deposit ?? 0);
+      const paid = isPaid ? (rawPaid > 0 ? Math.max(rawPaid, tot) : tot) : rawPaid;
+      const pending = Math.max(0, tot - paid);
+      const status = paid >= tot && tot > 0 ? 'paid' : (paid > 0 ? 'partial' : 'unpaid');
+
+      const rawDate = b.startTime || b.start_time || b.date;
+      const courtTitle = `Reserva (${b.courtName || b.court_name || 'Cancha 1'})`;
+      const isPending = pending > 0 && status !== 'paid';
+
+      const virtualBookingOp: OperationDocument = {
+        id: `${b.id}-booking`,
+        complexId: complexId || 'complejo_central',
+        ticketCode: `B-${String(b.id).slice(0, 6).toUpperCase()}`,
+        operationType: 'court_booking',
+        bookingId: String(b.id),
+        responsibleType: 'user',
+        userId: currentUser.id ? String(currentUser.id) : null,
+        clientId: currentUser.id ? String(currentUser.id) : null,
+        userName: currentUser.name,
+        clientName: currentUser.name,
+        userPhone: currentUser.phone || '',
+        clientPhone: currentUser.phone || '',
+        contractualAmount: tot,
+        totalCollected: paid,
+        totalRefunded: 0,
+        netCollected: paid,
+        retainedAmount: 0,
+        amountPending: pending,
+        paymentStatus: status as any,
+        currentAccountAssigned: pending > 0,
+        currentAccountDebtAmount: pending,
+        notes: courtTitle,
+        createdAt: rawDate || new Date(),
+        updatedAt: rawDate || new Date(),
+        createdBy: 'reserva'
+      };
+
+      list.push({
+        id: virtualBookingOp.id,
+        ticketCode: virtualBookingOp.ticketCode,
+        rawDate,
+        formattedDate: formatTimelineDate(rawDate, b.startTime || b.start_time),
+        title: courtTitle,
+        iconType: 'booking',
+        contractualAmount: tot,
+        totalCollected: paid,
+        amountPending: pending,
+        isPending,
+        originalDoc: virtualBookingOp
+      });
+    });
+
+    // Sort chronologically (newest first)
+    const getMs = (val: any) => {
+      if (!val) return 0;
+      if (typeof val?.toMillis === 'function') return val.toMillis();
+      if (typeof val?.toDate === 'function') return val.toDate().getTime();
+      if (val instanceof Date) return val.getTime();
+      const t = new Date(val).getTime();
+      return isNaN(t) ? 0 : t;
+    };
+
+    list.sort((a, b) => getMs(b.rawDate) - getMs(a.rawDate));
+    return list;
+  }, [currentUser, operations, legacyTransactions, bookings, complexId, normUserPhone]);
+
+  // Exclusive pending operations with real pending balance > 0
+  const pendingOperations = useMemo(() => {
+    return playerCommercialOperations.filter(op => op.amountPending > 0 && op.isPending);
+  }, [playerCommercialOperations]);
+
+  const totalCalculatedDebt = useMemo(() => {
+    const fromPending = pendingOperations.reduce((acc, it) => acc + it.amountPending, 0);
+    const directDebt = Number(currentUser?.debt ?? (currentUser as any)?.currentDebt ?? 0);
+    return Math.max(fromPending, directDebt);
+  }, [pendingOperations, currentUser?.debt, (currentUser as any)?.currentDebt]);
+
+  const hasDebt = totalCalculatedDebt > 0;
+
+  // 12 Lifecycle Metrics for "Datos" tab
+  const metricsData = useMemo(() => {
+    const now = new Date();
+    const todayYMD = parseYMD(now)!;
+    const rawAdq = currentUser?.acquisitionDate || currentUser?.created_at || currentUser?.createdAt;
+    const adqYMD = parseYMD(rawAdq) || todayYMD;
+
+    const cancelledCount = userBookings.filter(b => {
+      const st = String(b.status || '').toLowerCase();
+      return st === 'cancelled' || st === 'cancelado';
+    }).length;
+
+    const played = userBookings.filter(b => isBookingPlayed(b, now));
+    const sortedPlayed = [...played].sort((a, b) => {
+      const aDate = a.date || a.startTime || a.start_time;
+      const bDate = b.date || b.startTime || b.start_time;
+      const aYMD = parseYMD(aDate);
+      const bYMD = parseYMD(bDate);
+      if (!aYMD || !bYMD) return 0;
+      return (new Date(aYMD.year, aYMD.month - 1, aYMD.day).getTime()) - (new Date(bYMD.year, bYMD.month - 1, bYMD.day).getTime());
+    });
+
+    const firstMatch = sortedPlayed[0];
+    const lastMatch = sortedPlayed[sortedPlayed.length - 1];
+
+    const firstMatchDateStr = firstMatch ? (firstMatch.date || firstMatch.startTime || firstMatch.start_time) : null;
+    const lastMatchDateStr = lastMatch ? (lastMatch.date || lastMatch.startTime || lastMatch.start_time) : null;
+
+    const firstMatchYMD = parseYMD(firstMatchDateStr);
+    const lastMatchYMD = parseYMD(lastMatchDateStr);
+
+    let ttvFormatted = '—';
+    let semanaActFormatted = '—';
+    if (firstMatchYMD && adqYMD) {
+      const diff = Math.max(0, differenceInCalendarDays(firstMatchYMD, adqYMD));
+      ttvFormatted = `${diff} días`;
+      semanaActFormatted = `S${Math.floor(diff / 7)}`;
+    }
+
+    let sinJugarFormatted = '—';
+    if (lastMatchYMD) {
+      const diff = Math.max(0, differenceInCalendarDays(todayYMD, lastMatchYMD));
+      sinJugarFormatted = `${diff} días`;
+    }
+
+    const antiguedadDays = Math.max(0, differenceInCalendarDays(todayYMD, adqYMD));
+    const antiguedadFormatted = `${antiguedadDays} días`;
+
+    let actividadFormatted = '—';
+    if (firstMatchYMD && lastMatchYMD) {
+      const diff = Math.max(0, differenceInCalendarDays(lastMatchYMD, firstMatchYMD));
+      actividadFormatted = `${diff} días`;
+    }
+
+    return {
+      canalAdquisicion: currentUser?.acquisitionChannel || 'WhatsApp',
+      reservasCount: userBookings.length,
+      juegosCount: played.length,
+      cancelacionesCount: cancelledCount,
+      ultimoJuegoFormatted: lastMatchYMD ? formatSpanishDate(lastMatchYMD) : '—',
+      diasSinJugarFormatted: sinJugarFormatted,
+      creadoFormatted: formatSpanishDate(adqYMD),
+      ttvFormatted,
+      primerPartidoFormatted: firstMatchYMD ? formatSpanishDate(firstMatchYMD) : '—',
+      semanaActFormatted,
+      antiguedadFormatted,
+      actividadFormatted,
+    };
+  }, [currentUser, userBookings]);
+
+  // Calculated age & category for "Información"
+  const calculatedAge = useMemo(() => {
+    return calculateAgeFromBirthDate(currentUser?.birthDate || (currentUser as any)?.birthdate);
+  }, [currentUser?.birthDate, (currentUser as any)?.birthdate]);
+
+  const ageAndCategoryText = useMemo(() => {
+    const parts: string[] = [];
+    if (calculatedAge !== null) {
+      parts.push(`${calculatedAge} años`);
+    }
+    if (currentUser?.category) {
+      parts.push(currentUser.category);
+    }
+    return parts.length > 0 ? parts.join(' • ') : '—';
+  }, [calculatedAge, currentUser?.category]);
+
+  const cleanPhone = cleanPhoneForWa(currentUser?.phone || '');
+
+  return (
+    <>
+      <div 
+        className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 backdrop-blur-xs pointer-events-auto"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onClose();
+        }}
+      >
+        <motion.div 
+          drag="y"
+          dragConstraints={{ top: 0 }}
+          dragElastic={0.2}
+          onDragEnd={(_, info) => {
+            if (info.offset.y > 100 || info.velocity.y > 350) {
+              onClose();
+            }
+          }}
+          initial={{ y: '100%' }}
+          animate={{ y: 0 }}
+          exit={{ y: '100%' }}
+          transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+          onClick={(e) => e.stopPropagation()}
+          className="bg-white w-full max-w-xl rounded-t-[36px] sm:rounded-t-[40px] shadow-2xl flex flex-col h-[85vh] max-h-[85vh] overflow-hidden relative pointer-events-auto"
+        >
+          {/* Top Drag Handle Bar */}
+          <div className="w-full flex justify-center pt-3 pb-2 cursor-grab active:cursor-grabbing touch-none select-none">
+            <div className="w-16 h-1.5 bg-gray-300 rounded-full" />
+          </div>
+
+          {/* Fixed Header */}
+          <div className="px-6 pt-1 pb-3 shrink-0">
+            <h2 className="text-xl sm:text-2xl font-bold text-gray-900 flex items-center flex-wrap">
+              <span>{currentUser.name}</span>
+              {hasDebt && (
+                <span className="text-red-600 font-bold ml-1.5">(saldo pendiente)</span>
+              )}
+            </h2>
+          </div>
+
+          {/* Fixed Tabs */}
+          <div className="px-6 pb-3 flex items-center gap-2 shrink-0">
+            {(['Datos', 'Historial', 'Información'] as const).map((tab) => {
+              const isActive = activeSection === tab;
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => {
+                    setActiveTooltip(null);
+                    setActiveSection(tab);
+                  }}
+                  className={cn(
+                    "px-4 py-1.5 text-sm font-semibold rounded-full transition-all cursor-pointer",
+                    isActive 
+                      ? "bg-gray-200 text-gray-800" 
+                      : "text-gray-400 hover:text-gray-600"
+                  )}
+                >
+                  {tab}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Scrollable Content Body */}
+          <div 
+            className="flex-1 overflow-y-auto px-6 py-4 pb-24"
+            onClick={() => setActiveTooltip(null)}
+          >
+            {/* SECCIÓN 1: DATOS */}
+            {activeSection === 'Datos' && (
+              <div className="grid grid-cols-2 gap-x-6 gap-y-5">
+                {/* Columna 1 */}
+                <div className="space-y-5">
+                  {/* 1. Canal de adquisición */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Canal de adquisición</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'canal' ? null : 'canal');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Canal de adquisición"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.canalAdquisicion}</div>
+                    {activeTooltip === 'canal' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.canal}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2. Reservas */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Reservas</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'reservas' ? null : 'reservas');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Reservas"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.reservasCount}</div>
+                    {activeTooltip === 'reservas' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.reservas}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Juegos */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Juegos</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'juegos' ? null : 'juegos');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Juegos"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.juegosCount}</div>
+                    {activeTooltip === 'juegos' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.juegos}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 4. Cancelaciones */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Cancelaciones</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'cancelaciones' ? null : 'cancelaciones');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Cancelaciones"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.cancelacionesCount}</div>
+                    {activeTooltip === 'cancelaciones' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.cancelaciones}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 5. Último juego */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Último juego</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'ultimoJuego' ? null : 'ultimoJuego');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Último juego"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.ultimoJuegoFormatted}</div>
+                    {activeTooltip === 'ultimoJuego' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.ultimoJuego}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 6. Días sin jugar */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Días sin jugar</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'diasSinJugar' ? null : 'diasSinJugar');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Días sin jugar"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.diasSinJugarFormatted}</div>
+                    {activeTooltip === 'diasSinJugar' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.diasSinJugar}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Columna 2 */}
+                <div className="space-y-5">
+                  {/* 1. creado */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">creado</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'creado' ? null : 'creado');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info creado"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.creadoFormatted}</div>
+                    {activeTooltip === 'creado' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.creado}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 2. Time to value */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Time to value</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'ttv' ? null : 'ttv');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Time to value"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.ttvFormatted}</div>
+                    {activeTooltip === 'ttv' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.ttv}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Primer partido */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Primer partido</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'primerPartido' ? null : 'primerPartido');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Primer partido"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.primerPartidoFormatted}</div>
+                    {activeTooltip === 'primerPartido' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.primerPartido}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 4. Semana de activación */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Semana de activación</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'semanaAct' ? null : 'semanaAct');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Semana de activación"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.semanaActFormatted}</div>
+                    {activeTooltip === 'semanaAct' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.semanaAct}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 5. Antigüedad */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Antigüedad</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'antiguedad' ? null : 'antiguedad');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Antigüedad"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.antiguedadFormatted}</div>
+                    {activeTooltip === 'antiguedad' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.antiguedad}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 6. Actividad */}
+                  <div className="relative">
+                    <div className="flex items-center gap-1">
+                      <span className="text-sm text-gray-500 font-medium">Actividad</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setActiveTooltip(prev => prev === 'actividad' ? null : 'actividad');
+                        }}
+                        className="text-gray-400 hover:text-gray-600 cursor-pointer p-0.5 rounded-full"
+                        aria-label="Info Actividad"
+                      >
+                        <Info size={13} />
+                      </button>
+                    </div>
+                    <div className="text-base font-bold text-gray-800 mt-0.5">{metricsData.actividadFormatted}</div>
+                    {activeTooltip === 'actividad' && (
+                      <div className="absolute z-30 left-0 top-full mt-1.5 bg-slate-900 text-white text-xs rounded-xl p-2.5 shadow-xl max-w-[220px] pointer-events-auto leading-relaxed">
+                        {TOOLTIP_DESCRIPTIONS.actividad}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* SECCIÓN 2: HISTORIAL */}
+            {activeSection === 'Historial' && (
+              <div className="space-y-6">
+                {/* Saldos pendientes */}
+                <div>
+                  <button 
+                    type="button" 
+                    onClick={() => setPendingExpanded(prev => !prev)}
+                    className="w-full flex items-center justify-between text-base font-bold text-gray-800 mb-3 cursor-pointer py-1"
+                  >
+                    <span>Saldos pendientes</span>
+                    {pendingExpanded ? <ChevronUp size={20} className="text-gray-500" /> : <ChevronDown size={20} className="text-gray-500" />}
+                  </button>
+
+                  {pendingExpanded && (
+                    <div className="space-y-3">
+                      {pendingOperations.length === 0 ? (
+                        <div className="text-sm text-gray-400 italic py-2 pl-1">
+                          No hay saldos pendientes
+                        </div>
+                      ) : (
+                        pendingOperations.map((item) => (
+                          <div 
+                            key={`pending-${item.id}`}
+                            onClick={() => handleOpenTicket(item.originalDoc)}
+                            className="flex items-center justify-between p-2 rounded-2xl hover:bg-gray-50/80 transition-colors cursor-pointer group"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="w-10 h-10 rounded-full bg-red-50 border border-red-200 flex items-center justify-center shrink-0 text-red-600 shadow-2xs">
+                                {item.iconType === 'booking' ? (
+                                  <Calendar size={18} />
+                                ) : (
+                                  <ShoppingBasket size={18} />
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-bold text-gray-800 text-sm truncate">{item.title}</div>
+                                <div className="text-xs text-gray-400 mt-0.5">{formatPendingDate(item.rawDate)}</div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="font-bold text-red-600 text-base">${formatCurrencyAmount(item.amountPending)}</span>
+                              <button 
+                                type="button" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenTicket(item.originalDoc);
+                                }}
+                                className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer"
+                                title="Ver detalle"
+                              >
+                                <MoreVertical size={18} />
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* Actividad reciente */}
+                <div>
+                  <button 
+                    type="button" 
+                    onClick={() => setRecentExpanded(prev => !prev)}
+                    className="w-full flex items-center justify-between text-base font-bold text-gray-800 mb-4 cursor-pointer py-1"
+                  >
+                    <span>Actividad reciente</span>
+                    {recentExpanded ? <ChevronUp size={20} className="text-gray-500" /> : <ChevronDown size={20} className="text-gray-500" />}
+                  </button>
+
+                  {recentExpanded && (
+                    <div className="relative pl-2 space-y-4">
+                      {/* Vertical timeline connector line */}
+                      <div className="absolute left-[26px] top-4 bottom-4 w-0.5 bg-gray-200 z-0" />
+
+                      {playerCommercialOperations.length === 0 ? (
+                        <div className="text-sm text-gray-400 italic py-2 pl-1 relative z-10">
+                          Sin actividad registrada en este complejo
+                        </div>
+                      ) : (
+                        playerCommercialOperations.map((item) => (
+                          <div 
+                            key={`recent-${item.id}`}
+                            onClick={() => handleOpenTicket(item.originalDoc)}
+                            className="relative z-10 flex items-center justify-between gap-3 group cursor-pointer hover:bg-gray-50/80 p-1.5 -ml-1.5 rounded-xl transition-colors"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              {/* Circle icon on the timeline: Green if fully paid, Red if pending balance */}
+                              <div className={cn(
+                                "w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-2xs transition-colors",
+                                item.isPending
+                                  ? "bg-red-50 border border-red-200 text-red-600"
+                                  : "bg-white border border-gray-200 text-[#0BA70B]"
+                              )}>
+                                {item.iconType === 'booking' ? (
+                                  <Calendar size={18} />
+                                ) : (
+                                  <ShoppingBasket size={18} />
+                                )}
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-bold text-gray-800 text-sm truncate">{item.title}</div>
+                                <div className="text-xs text-gray-400 mt-0.5">{item.formattedDate}</div>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                              <span className="font-bold text-gray-800 text-sm sm:text-base">
+                                ${formatCurrencyAmount(item.contractualAmount)}
+                              </span>
+                              <button 
+                                type="button" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleOpenTicket(item.originalDoc);
+                                }}
+                                className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer"
+                                title="Ver detalle"
+                              >
+                                <MoreVertical size={18} />
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* SECCIÓN 3: INFORMACIÓN */}
+            {activeSection === 'Información' && (
+              <div className="space-y-4 py-2">
+                {/* 1. Género */}
+                <div className="flex items-center gap-3.5 py-1">
+                  <UserCheck size={18} className="text-gray-400 shrink-0" />
+                  <span className="text-gray-500 font-medium text-sm">
+                    {currentUser.gender || '—'}
+                  </span>
+                </div>
+
+                {/* 2. Dirección / Ciudad */}
+                <div className="flex items-center gap-3.5 py-1">
+                  <MapPin size={18} className="text-gray-400 shrink-0" />
+                  <span className="text-gray-500 font-medium text-sm">
+                    {currentUser.address || currentUser.city || '—'}
+                  </span>
+                </div>
+
+                {/* 3. Edad y Categoría */}
+                <div className="flex items-center gap-3.5 py-1">
+                  <UserIcon size={18} className="text-gray-400 shrink-0" />
+                  <span className="text-gray-500 font-medium text-sm">
+                    {ageAndCategoryText}
+                  </span>
+                </div>
+
+                {/* 4. Teléfono (verde Jogo con enlace a WhatsApp) */}
+                <div className="flex items-center gap-3.5 py-1">
+                  <Phone size={18} className="text-gray-400 shrink-0" />
+                  {currentUser.phone ? (
+                    <a 
+                      href={`https://wa.me/${cleanPhone}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[#0BA70B] font-bold text-sm hover:underline cursor-pointer"
+                    >
+                      {currentUser.phone}
+                    </a>
+                  ) : (
+                    <span className="text-gray-500 font-medium text-sm">—</span>
+                  )}
+                </div>
+
+                {/* 5. Correo electrónico */}
+                <div className="flex items-center gap-3.5 py-1">
+                  <Mail size={18} className="text-gray-400 shrink-0" />
+                  {currentUser.email ? (
+                    <a 
+                      href={`mailto:${currentUser.email}`}
+                      className="text-gray-600 hover:text-[#0BA70B] hover:underline text-sm"
+                    >
+                      {currentUser.email}
+                    </a>
+                  ) : (
+                    <span className="text-gray-500 font-medium text-sm">-</span>
+                  )}
+                </div>
+
+                {/* 6. Pierna hábil */}
+                <div className="flex items-center gap-3.5 py-1">
+                  <Footprints size={18} className="text-gray-400 shrink-0" />
+                  <span className="text-gray-500 font-medium text-sm">
+                    {currentUser.preferredFoot || '—'}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Floating Action Button (FAB) Bottom-Right: Verde Jogo con icono de lápiz blanco */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsEditModalOpen(true);
+            }}
+            aria-label="Editar perfil"
+            className="absolute bottom-6 right-6 w-14 h-14 rounded-2xl bg-[#0BA70B] text-white flex items-center justify-center shadow-lg hover:bg-emerald-600 active:scale-95 transition-all z-20 cursor-pointer"
+          >
+            <Pencil size={24} className="text-white" />
+          </button>
+        </motion.div>
+      </div>
+
+      <AnimatePresence>
+        {isEditModalOpen && (
+          <NewUserModal 
+            isOpen={isEditModalOpen}
+            isEdit={true}
+            initialData={currentUser}
+            existingUsers={existingUsers}
+            onClose={() => setIsEditModalOpen(false)}
+            onSave={async (updatedFields) => {
+              const clientToSave: Partial<User> = {
+                ...currentUser,
+                ...updatedFields,
+                id: currentUser.id
+              };
+              const savedId = await saveClientInFirestore(complexId, clientToSave);
+              const merged = { ...currentUser, ...updatedFields, id: savedId || currentUser.id } as User;
+              setCurrentUser(merged);
+              if (onUserUpdated) {
+                onUserUpdated(merged);
+              }
+            }}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Modal de Ticket de Venta / Detalle de Operación (Idéntico a Finanzas) */}
+      <TicketModal
+        isOpen={Boolean(ticketModalOperation)}
+        onClose={() => setTicketModalOperation(null)}
+        operation={ticketModalOperation}
+        movements={ticketModalMovements}
+        venueProfile={venueProfile}
+        operatorName={auth.currentUser?.displayName || undefined}
+        originSection="operations"
+        users={existingUsers}
+        bookings={bookings}
+        complexId={complexId}
+        onRegisterPayment={(op) => {
+          setTicketModalOperation(null);
+          setSettleModalTarget({
+            id: op.id,
+            ticketCode: op.ticketCode,
+            clientName: op.userName,
+            userName: op.userName,
+            concept: op.notes || (op.operationType === 'court_booking' ? 'Alquiler Cancha' : 'Operación comercial'),
+            contractualAmount: op.contractualAmount,
+            amountPending: op.amountPending,
+            totalCollected: op.totalCollected,
+            isLegacy: (op as any).isLegacy,
+            userId: op.userId,
+            bookingId: op.bookingId,
+            originalDoc: op
+          });
+        }}
+      />
+
+      {/* Modal de Cobro de Pendientes / Fiados (Idéntico a Finanzas) */}
+      <PendingSettleModal
+        isOpen={Boolean(settleModalTarget)}
+        onClose={() => setSettleModalTarget(null)}
+        operation={settleModalTarget ? {
+          id: settleModalTarget.id,
+          ticketCode: settleModalTarget.ticketCode,
+          userName: settleModalTarget.clientName || settleModalTarget.userName,
+          clientName: settleModalTarget.clientName || settleModalTarget.userName,
+          concept: settleModalTarget.concept,
+          contractualAmount: settleModalTarget.contractualAmount,
+          amountPending: settleModalTarget.amountPending,
+          totalCollected: settleModalTarget.totalCollected,
+          isLegacy: settleModalTarget.isLegacy,
+          userId: settleModalTarget.userId,
+          bookingId: settleModalTarget.bookingId,
+          originalDoc: settleModalTarget.originalDoc
+        } : null}
+        complexId={complexId}
+        operatorId={auth.currentUser?.uid || 'pos_operator'}
+        users={existingUsers}
+        bookings={bookings}
+        onSuccess={() => {
+          setSettleModalTarget(null);
+        }}
+      />
+    </>
   );
 };
 
@@ -4800,202 +6232,6 @@ const ScheduleView = ({
   );
 };
 
-const NewUserModal = ({ isOpen, onClose, onSave }: { isOpen: boolean; onClose: () => void; onSave: (user: any) => void }) => {
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-    phone: '',
-    gender: '',
-    city: '',
-    category: 'jugador',
-    status: 'activo',
-    acquisitionChannel: '',
-    notes: ''
-  });
-
-  if (!isOpen) return null;
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onSave({
-      name: formData.name.trim(),
-      phone: formData.phone.trim(),
-      email: formData.email.trim(),
-      gender: formData.gender,
-      city: formData.city.trim(),
-      category: formData.category,
-      status: formData.status,
-      acquisitionChannel: formData.acquisitionChannel || 'WhatsApp',
-      notes: formData.notes.trim()
-    });
-    onClose();
-  };
-
-  return (
-    <div 
-      className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 pointer-events-auto"
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onClose();
-      }}
-    >
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh] md:max-h-[85vh] pointer-events-auto"
-      >
-        <div className="p-5 border-b border-gray-100 flex justify-between items-center shrink-0">
-          <div>
-            <h3 className="font-bold text-lg text-gray-900">Nuevo Usuario</h3>
-            <p className="text-xs text-gray-500">Alta de jugador o cliente para la sede activa</p>
-          </div>
-          <button 
-            type="button" 
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onClose();
-            }} 
-            className="text-gray-400 hover:text-gray-600 cursor-pointer p-1"
-          >
-            <X size={20} />
-          </button>
-        </div>
-        <form id="new-user-form" onSubmit={handleSubmit} className="p-5 space-y-3.5 overflow-y-auto flex-1">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Nombre y Apellido *</label>
-              <input 
-                required
-                type="text" 
-                placeholder="Ej: Marcos Rojo"
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
-                value={formData.name}
-                onChange={e => setFormData({...formData, name: e.target.value})}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Teléfono *</label>
-              <input 
-                required
-                type="tel" 
-                placeholder="Ej: +54 9 11 9876-5432"
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
-                value={formData.phone}
-                onChange={e => setFormData({...formData, phone: e.target.value})}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Email <span className="text-gray-400 font-normal">(Opcional)</span></label>
-              <input 
-                type="email" 
-                placeholder="jugador@ejemplo.com"
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
-                value={formData.email}
-                onChange={e => setFormData({...formData, email: e.target.value})}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Ciudad / Localidad</label>
-              <input 
-                type="text" 
-                placeholder="Ej: Quilmes / Bernal"
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
-                value={formData.city}
-                onChange={e => setFormData({...formData, city: e.target.value})}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Género</label>
-              <select 
-                value={formData.gender}
-                onChange={e => setFormData({...formData, gender: e.target.value})}
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
-              >
-                <option value="">Seleccionar género...</option>
-                <option value="masculino">Masculino</option>
-                <option value="femenino">Femenino</option>
-                <option value="mixto">Mixto</option>
-                <option value="otro">Otro</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Canal de Adquisición *</label>
-              <select 
-                required
-                value={formData.acquisitionChannel}
-                onChange={e => setFormData({...formData, acquisitionChannel: e.target.value})}
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
-              >
-                <option value="">Seleccionar canal...</option>
-                <option value="WhatsApp">WhatsApp</option>
-                <option value="Referido">Referido</option>
-                <option value="Ig">Instagram (Ig)</option>
-                <option value="Fb">Facebook (Fb)</option>
-                <option value="Tiktok">TikTok</option>
-                <option value="inbound">Inbound</option>
-                <option value="outbound">Outbound</option>
-                <option value="Evento">Evento</option>
-                <option value="Cliente">Cliente Presencial</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Categoría</label>
-              <select 
-                value={formData.category}
-                onChange={e => setFormData({...formData, category: e.target.value})}
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
-              >
-                <option value="jugador">Jugador</option>
-                <option value="capitán">Capitán</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Estado de Negocio</label>
-              <select 
-                value={formData.status}
-                onChange={e => setFormData({...formData, status: e.target.value})}
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
-              >
-                <option value="activo">Activo</option>
-                <option value="nuevo">Nuevo</option>
-                <option value="frecuente">Frecuente</option>
-                <option value="inactivo">Inactivo</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-gray-700 mb-1">Notas u Observaciones</label>
-            <textarea 
-              rows={2}
-              placeholder="Notas operativas del jugador..."
-              value={formData.notes}
-              onChange={e => setFormData({...formData, notes: e.target.value})}
-              className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
-            />
-          </div>
-        </form>
-        <div className="p-4 border-t border-gray-100 flex justify-end gap-3 shrink-0">
-          <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-50 rounded-xl font-medium cursor-pointer">Cancelar</button>
-          <button type="submit" form="new-user-form" disabled={!formData.name || !formData.phone} className="px-5 py-2 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 disabled:opacity-50 cursor-pointer shadow-md shadow-emerald-900/10">Guardar Usuario</button>
-        </div>
-      </motion.div>
-    </div>
-  );
-};
-
 const UsersView = ({ 
   onUserClick, 
   refreshKey, 
@@ -5140,6 +6376,7 @@ const UsersView = ({
         isOpen={showNewUserModal} 
         onClose={() => setShowNewUserModal(false)} 
         onSave={handleCreateUser}
+        existingUsers={crmUsers || users}
       />
       <div className="space-y-3 shrink-0" ref={parentRef}>
         {/* Search Bar & New User Button */}
@@ -5625,12 +6862,17 @@ const FinanceChartModal = ({ isOpen, onClose, complexId = 'complejo_central' }: 
 
 const FinanceView = ({ 
   complexId = 'complejo_central',
+  bookings: parentBookings,
   onNavigateToUserProfile 
 }: { 
   complexId?: string;
+  bookings?: any[];
   onNavigateToUserProfile?: (userId: string) => void;
 }) => {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const targetIds = useMemo(() => {
+    return (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
+  }, [targetId]);
   const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
   const [activeSection, setActiveSection] = useState<'movements' | 'operations' | 'pendings'>('movements');
 
@@ -5789,13 +7031,27 @@ const FinanceView = ({
     };
   }, [targetId]);
 
+  // Combinación unificada de reservas (recibidas activas de App.tsx y por suscripción)
+  const effectiveBookings = useMemo(() => {
+    const map = new Map<string, any>();
+    if (Array.isArray(parentBookings)) {
+      parentBookings.forEach(b => {
+        if (b && b.id) map.set(String(b.id), b);
+      });
+    }
+    rawBookings.forEach(b => {
+      if (b && b.id) map.set(String(b.id), b);
+    });
+    return Array.from(map.values());
+  }, [parentBookings, rawBookings]);
+
   // Map lookups para resolución rápida e íntegra de entidades cruzadas
   const operationsMap = useMemo(() => {
     const map = new Map<string, OperationDocument>();
     operations.forEach(op => {
       if (op.id) map.set(op.id, op);
       if (op.bookingId) {
-        map.set(op.bookingId, op);
+        map.set(String(op.bookingId), op);
         map.set(`${op.bookingId}-booking`, op);
       }
       if (op.ticketCode) map.set(op.ticketCode, op);
@@ -5806,14 +7062,14 @@ const FinanceView = ({
 
   const bookingsMap = useMemo(() => {
     const map = new Map<string, any>();
-    rawBookings.forEach(b => {
+    effectiveBookings.forEach(b => {
       if (b.id) {
         map.set(String(b.id), b);
         map.set(`${b.id}-booking`, b);
       }
     });
     return map;
-  }, [rawBookings]);
+  }, [effectiveBookings]);
 
   // Handle opening ticket from an operation or movement
   const handleOpenTicket = (op: OperationDocument) => {
@@ -5845,8 +7101,16 @@ const FinanceView = ({
       isLegacy?: boolean;
     }> = [];
 
-    // 1.1 Movimientos reales de /financial_movements
+    const processedMovOperationIds = new Set<string>();
+
+    // 1.1 Movimientos reales de /financial_movements filtrados estrictamente por el complejo activo
     financialMovements.forEach(m => {
+      const c = m.complexId || m.complejoId;
+      if (c && !targetIds.includes(c)) return;
+
+      if (m.operationId) processedMovOperationIds.add(m.operationId);
+      if (m.ticketCode) processedMovOperationIds.add(m.ticketCode);
+
       const d = m.effectiveDate?.toDate 
         ? m.effectiveDate.toDate() 
         : (m.createdAt?.toDate ? m.createdAt.toDate() : (m.createdAt ? new Date(m.createdAt) : new Date()));
@@ -5875,14 +7139,48 @@ const FinanceView = ({
       });
     });
 
-    // 1.2 Movimientos históricos de /transactions que no tengan movimiento financiero duplicado
-    // Reconocimiento mediante operationId / legacySaleId / idempotencyKey
+    // 1.2 Movimientos de cobro real provenientes de /operations que no tengan movimiento financiero duplicado
+    operations.forEach(op => {
+      const c = op.complexId || op.complejoId;
+      if (c && !targetIds.includes(c)) return;
+
+      const collected = Number(op.totalCollected ?? (op as any).amount_paid ?? (op as any).collected ?? (op as any).paid ?? 0);
+      if (collected <= 0) return;
+      if (processedMovOperationIds.has(op.id) || (op.ticketCode && processedMovOperationIds.has(op.ticketCode))) {
+        return;
+      }
+      processedMovOperationIds.add(op.id);
+      if (op.ticketCode) processedMovOperationIds.add(op.ticketCode);
+
+      const isExp = Boolean((op as any).isExpense || op.operationType === 'expense' || op.operationType === 'purchase' || op.metadata?.isExpense);
+      const d = op.createdAt?.toDate ? op.createdAt.toDate() : (op.createdAt ? new Date(op.createdAt) : new Date());
+      const linkedDoc = (op.bookingId ? bookingsMap.get(String(op.bookingId)) : null) || bookingsMap.get(op.id.replace('-booking', ''));
+      const resolvedName = resolveClientName(op, users, linkedDoc);
+
+      list.push({
+        id: `${op.id}_mov_auto`,
+        date: d,
+        flow: isExp ? 'expense' : 'income',
+        category: isExp ? 'Pago Gasto' : (op.operationType === 'court_booking' || op.operationType === 'booking' ? 'Cobro Alquiler Cancha' : 'Cobro Venta Mostrador'),
+        amount: collected,
+        paymentMethod: (op as any).paymentMethod || 'Efectivo',
+        responsibleName: resolvedName,
+        operationId: op.id,
+        ticketCode: op.ticketCode || op.id.slice(0, 8).toUpperCase(),
+        notes: op.notes || 'Cobro registrado'
+      });
+    });
+
+    // 1.3 Movimientos históricos de /transactions que no tengan movimiento financiero duplicado
     const modernOpIds = new Set(operations.map(o => o.id));
     const modernLegacyIds = new Set(operations.filter(o => o.legacySaleId).map(o => o.legacySaleId));
 
     legacyTransactions.forEach(t => {
+      const c = t.complexId || t.complejoId;
+      if (c && !targetIds.includes(c)) return;
+
       // Si la transacción ya está migrada o representada en /operations, no duplicarla en movimientos
-      if (t.id && (modernOpIds.has(t.id) || modernLegacyIds.has(t.id))) {
+      if (t.id && (modernOpIds.has(t.id) || modernLegacyIds.has(t.id) || processedMovOperationIds.has(t.id))) {
         return;
       }
       // Si ya hay un financial_movement con este ticketCode o ID, ignorar
@@ -5892,7 +7190,7 @@ const FinanceView = ({
 
       const d = t.createdAt?.toDate ? t.createdAt.toDate() : (t.date ? safeParseDate(t.date) || new Date() : new Date());
       const isVenta = t.type === 'venta' || t.type === 'income';
-      const isGasto = t.type === 'expense' || t.type === 'gasto' || t.type === 'egreso';
+      const isGasto = t.type === 'expense' || t.type === 'gasto' || t.type === 'egreso' || t.type === 'purchase' || t.type === 'compra';
       const flow: 'income' | 'expense' = isGasto ? 'expense' : 'income';
       const resolvedName = resolveClientName(t, users);
 
@@ -5900,14 +7198,14 @@ const FinanceView = ({
       if (Array.isArray(t.payments) && t.payments.length > 0) {
         t.payments.forEach((p: any, pIdx: number) => {
           const pAmt = Number(p.amount || 0);
-          if (pAmt > 0 && p.method !== 'fiado') {
+          if (pAmt > 0 && p.method !== 'fiado' && p.method !== 'pending') {
             list.push({
               id: `${t.id}_pay_${pIdx}`,
               date: d,
               flow,
               category: t.category || (isVenta ? 'Venta Mostrador' : 'Gasto'),
               amount: pAmt,
-              paymentMethod: p.method,
+              paymentMethod: p.method || 'Efectivo',
               responsibleName: resolvedName,
               operationId: t.id,
               ticketCode: t.ticketCode || t.id?.slice(0, 8),
@@ -5917,14 +7215,19 @@ const FinanceView = ({
           }
         });
       } else {
-        const amt = Number(t.total ?? t.amount ?? 0);
-        if (amt > 0 && t.paymentStatus !== 'fiado') {
+        const tot = Number(t.total ?? t.amount ?? 0);
+        let collected = tot;
+        if (t.paymentStatus === 'fiado' || t.paymentStatus === 'partial' || t.paymentStatus === 'pending' || t.paymentStatus === 'unpaid') {
+          const fiadoAmt = Number(t.pendingAmount ?? t.debtAmount ?? (t.paymentStatus === 'unpaid' ? tot : 0));
+          collected = Math.max(0, tot - fiadoAmt);
+        }
+        if (collected > 0) {
           list.push({
             id: t.id,
             date: d,
             flow,
             category: t.category || (isVenta ? 'Venta Mostrador' : 'Gasto'),
-            amount: amt,
+            amount: collected,
             paymentMethod: t.paymentMethod || 'Efectivo',
             responsibleName: resolvedName,
             operationId: t.id,
@@ -5936,34 +7239,44 @@ const FinanceView = ({
       }
     });
 
-    // 1.3 Señas históricas de /bookings que no tengan movimiento financiero registrado en /financial_movements
-    const seenBookingMovs = new Set(
-      financialMovements
+    // 1.4 Cobros reales de reservas en /bookings que no tengan movimiento ni operación financiera registrada
+    const seenBookingMovs = new Set([
+      ...financialMovements
         .filter(m => m.bookingId || m.operationId?.endsWith('-booking'))
-        .map(m => String(m.bookingId || m.operationId?.replace('-booking', '')))
-    );
+        .map(m => String(m.bookingId || m.operationId?.replace('-booking', ''))),
+      ...operations
+        .filter(o => o.bookingId || o.id.endsWith('-booking'))
+        .map(o => String(o.bookingId || o.id.replace('-booking', '')))
+    ]);
 
-    rawBookings.forEach(b => {
+    effectiveBookings.forEach(b => {
       if (!b) return;
+      const c = b.complexId || b.complejoId;
+      if (c && !targetIds.includes(c)) return;
+
       const bStatus = String(b.status || '').toLowerCase();
       if (bStatus === 'cancelado' || bStatus === 'cancelled') return;
       if (seenBookingMovs.has(String(b.id))) return;
 
-      const depositAmt = Number(b.amount_paid ?? b.deposit ?? 0);
-      if (depositAmt > 0) {
+      const tot = Number(b.price || b.price_total || 0);
+      const isPaid = b.payment_status === 'paid' || b.paymentStatus === 'paid' || b.payment_status === 'pagado';
+      const rawPaid = Number(b.amount_paid ?? b.deposit ?? 0);
+      const effectivePaid = isPaid ? (rawPaid > 0 ? Math.max(rawPaid, tot) : tot) : rawPaid;
+
+      if (effectivePaid > 0) {
         const d = b.date ? safeParseDate(b.date) || new Date() : (b.start_time ? safeParseDate(b.start_time) || new Date() : new Date());
         const resolvedName = resolveClientName(b, users);
         list.push({
           id: `${b.id}_deposit_legacy`,
           date: d,
           flow: 'income',
-          category: 'Seña Alquiler Cancha',
-          amount: depositAmt,
+          category: effectivePaid >= tot && tot > 0 ? 'Liquidación Alquiler Cancha' : 'Seña Alquiler Cancha',
+          amount: effectivePaid,
           paymentMethod: 'Efectivo',
           responsibleName: resolvedName,
           operationId: `${b.id}-booking`,
           ticketCode: `B-${String(b.id).slice(0, 6).toUpperCase()}`,
-          notes: `Seña reserva ${b.courtName || b.court_name || 'Cancha'}`,
+          notes: `Cobro reserva ${b.courtName || b.court_name || 'Cancha'}`,
           isLegacy: true
         });
       }
@@ -5971,7 +7284,7 @@ const FinanceView = ({
 
     // Ordenar de más reciente a más antiguo
     return list.sort((a, b) => b.date.getTime() - a.date.getTime());
-  }, [financialMovements, operations, legacyTransactions, rawBookings, users, operationsMap, bookingsMap]);
+  }, [financialMovements, operations, legacyTransactions, effectiveBookings, users, operationsMap, bookingsMap, targetIds]);
 
   const filteredMovements = useMemo(() => {
     return combinedMovements.filter(m => {
@@ -6005,6 +7318,9 @@ const FinanceView = ({
 
     // 2.1 Operaciones nuevas de /operations
     operations.forEach(op => {
+      const c = op.complexId || op.complejoId;
+      if (c && !targetIds.includes(c)) return;
+
       processedOpIds.add(op.id);
       if (op.legacySaleId) processedLegacyIds.add(op.legacySaleId);
 
@@ -6021,10 +7337,14 @@ const FinanceView = ({
         concept = op.items.map(it => `${it.quantity}x ${it.name}`).join(', ');
       }
 
-      const linkedDoc = (op.bookingId ? bookingsMap.get(op.bookingId) : null) ||
+      const linkedDoc = (op.bookingId ? bookingsMap.get(String(op.bookingId)) : null) ||
                         bookingsMap.get(op.id.replace('-booking', ''));
       const resolvedName = resolveClientName(op, users, linkedDoc);
-      const isExp = op.operationType === 'expense' || op.operationType === 'purchase';
+      const isExp = Boolean((op as any).isExpense || op.operationType === 'expense' || op.operationType === 'purchase' || op.metadata?.isExpense);
+
+      const contractual = Number(op.contractualAmount ?? (op as any).total ?? (op as any).amount ?? (op as any).price ?? 0);
+      const collected = Number(op.totalCollected ?? (op as any).amount_paid ?? (op as any).collected ?? (op as any).paid ?? 0);
+      const pending = Number(op.amountPending ?? (op as any).pending ?? (op as any).debt ?? Math.max(0, contractual - collected));
 
       list.push({
         id: op.id,
@@ -6032,13 +7352,16 @@ const FinanceView = ({
         date: d,
         concept,
         clientName: resolvedName,
-        contractualAmount: Number(op.contractualAmount || 0),
-        totalCollected: Number(op.totalCollected || 0),
-        amountPending: Number(op.amountPending || 0),
+        contractualAmount: contractual,
+        totalCollected: collected,
+        amountPending: pending,
         paymentStatus: op.paymentStatus,
         isExpense: isExp,
         originalDoc: {
           ...op,
+          contractualAmount: contractual,
+          totalCollected: collected,
+          amountPending: pending,
           userName: resolvedName,
           clientName: resolvedName
         }
@@ -6047,6 +7370,9 @@ const FinanceView = ({
 
     // 2.2 Ventas históricas de /transactions sin duplicar
     legacyTransactions.forEach(t => {
+      const c = t.complexId || t.complejoId;
+      if (c && !targetIds.includes(c)) return;
+
       if (processedOpIds.has(t.id) || processedLegacyIds.has(t.id)) return;
 
       const d = t.createdAt?.toDate ? t.createdAt.toDate() : (t.date ? safeParseDate(t.date) || new Date() : new Date());
@@ -6057,13 +7383,13 @@ const FinanceView = ({
       let pending = 0;
       let status = 'paid';
 
-      if (t.paymentStatus === 'fiado') {
+      if (t.paymentStatus === 'fiado' || t.paymentStatus === 'partial' || t.paymentStatus === 'pending' || t.paymentStatus === 'unpaid') {
         const fiadoAmt = Array.isArray(t.payments)
-          ? t.payments.filter((p: any) => p.method === 'fiado').reduce((s: number, p: any) => s + Number(p.amount || 0), 0)
-          : tot;
+          ? t.payments.filter((p: any) => p.method === 'fiado' || p.method === 'pending').reduce((s: number, p: any) => s + Number(p.amount || 0), 0)
+          : Number(t.pendingAmount ?? t.debtAmount ?? (t.paymentStatus === 'unpaid' ? tot : 0));
         pending = fiadoAmt;
         collected = Math.max(0, tot - pending);
-        status = collected > 0 ? 'partial' : 'unpaid';
+        status = collected >= tot && tot > 0 ? 'paid' : (collected > 0 ? 'partial' : 'unpaid');
       }
 
       let concept = t.category || (isGasto ? 'Gasto' : 'Venta Mostrador');
@@ -6120,17 +7446,28 @@ const FinanceView = ({
     });
 
     // 2.3 Reservas de turnos de /bookings (si no tienen ya una operación creada)
-    const existingBookingIds = new Set(operations.filter(o => o.bookingId).map(o => o.bookingId));
-    rawBookings.forEach(b => {
-      if (!b || existingBookingIds.has(b.id)) return;
+    const existingBookingIds = new Set(
+      operations
+        .filter(o => o.bookingId || o.id.endsWith('-booking'))
+        .map(o => String(o.bookingId || o.id.replace('-booking', '')))
+    );
+
+    effectiveBookings.forEach(b => {
+      if (!b) return;
+      const c = b.complexId || b.complejoId;
+      if (c && !targetIds.includes(c)) return;
+
+      if (existingBookingIds.has(String(b.id))) return;
       const bStatus = String(b.status || '').toLowerCase();
       if (bStatus === 'cancelado' || bStatus === 'cancelled') return;
 
       const d = b.date ? safeParseDate(b.date) || new Date() : (b.start_time ? safeParseDate(b.start_time) || new Date() : new Date());
       const tot = Number(b.price || b.price_total || 0);
-      const paid = b.payment_status === 'paid' ? tot : Number(b.amount_paid || b.deposit || 0);
+      const isPaid = b.payment_status === 'paid' || b.paymentStatus === 'paid' || b.payment_status === 'pagado';
+      const rawPaid = Number(b.amount_paid ?? b.deposit ?? 0);
+      const paid = isPaid ? (rawPaid > 0 ? Math.max(rawPaid, tot) : tot) : rawPaid;
       const pending = Math.max(0, tot - paid);
-      const status = paid >= tot ? 'paid' : (paid > 0 ? 'partial' : 'unpaid');
+      const status = paid >= tot && tot > 0 ? 'paid' : (paid > 0 ? 'partial' : 'unpaid');
 
       const resolvedName = resolveClientName(b, users);
       const resolvedPhone = resolveClientPhone(b, users);
@@ -6138,7 +7475,7 @@ const FinanceView = ({
       const virtualBookingOp: OperationDocument = {
         id: `${b.id}-booking`,
         complexId: targetId,
-        ticketCode: `B-${b.id.slice(0, 6).toUpperCase()}`,
+        ticketCode: `B-${String(b.id).slice(0, 6).toUpperCase()}`,
         operationType: 'court_booking',
         bookingId: b.id,
         responsibleType: b.userId ? 'user' : 'anonymous',
@@ -6178,7 +7515,7 @@ const FinanceView = ({
     });
 
     return list.sort((a, b) => b.date.getTime() - a.date.getTime());
-  }, [operations, legacyTransactions, rawBookings, targetId, users, bookingsMap]);
+  }, [operations, legacyTransactions, effectiveBookings, targetId, users, bookingsMap, targetIds]);
 
   const filteredOperations = useMemo(() => {
     return combinedOperations.filter(op => {
@@ -6205,7 +7542,7 @@ const FinanceView = ({
   // 3. SECCIÓN PENDIENTES: Saldos por cobrar (ingresos) y por pagar (egresos/compras)
   // -------------------------------------------------------------------------
   const pendingDebts = useMemo(() => {
-    const CANCELLED_STATUSES = ['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded'];
+    const CANCELLED_STATUSES = ['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded', 'cancelled', 'cancelado'];
     return combinedOperations
       .filter(op => op.amountPending > 0 && !CANCELLED_STATUSES.includes(op.paymentStatus))
       .map(op => ({
@@ -6243,7 +7580,6 @@ const FinanceView = ({
     const categoryToSave = newTx.category === 'Otro' && customCategory ? customCategory.trim() : newTx.category;
     const conceptToSave = selectedExpenseItemName ? selectedExpenseItemName : (newTx.description?.trim() || categoryToSave);
     const notesWithMethod = `${newTx.paymentMethod} - ${newTx.description || conceptToSave}`.trim();
-    const todayStr = new Date().toISOString().split('T')[0];
 
     const paymentMethodMap: Record<string, FinancialPaymentMethod> = {
       'Efectivo': 'cash',
@@ -6288,7 +7624,8 @@ const FinanceView = ({
         notes: notesWithMethod,
         metadata: {
           category: categoryToSave,
-          isManual: true
+          isManual: true,
+          isExpense: isGasto
         },
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
@@ -6330,93 +7667,33 @@ const FinanceView = ({
   // Métricas Financieras (Separación de Dimensión Económica y Dimensión de Caja)
   // -------------------------------------------------------------------------
   const financialSummary = useMemo(() => {
-    const CANCELLED_STATUSES = ['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded'];
-
-    // Dimensión Económica: Operaciones comerciales (Ventas + Reservas vs Gastos + Compras)
-    let reservasIncome = 0;
-    let mostradorIncome = 0;
-
-    const economicIncome = combinedOperations
-      .filter(op => !op.isExpense)
-      .reduce((sum, op) => {
-        let opAmt = 0;
-        if (CANCELLED_STATUSES.includes(op.paymentStatus)) {
-          opAmt = Math.max(0, Number(op.originalDoc?.retainedAmount ?? op.originalDoc?.netCollected ?? 0));
-        } else if (op.paymentStatus !== 'cancelled') {
-          opAmt = op.contractualAmount;
-        }
-
-        const isReserva = op.originalDoc?.operationType === 'court_booking' || 
-                          op.originalDoc?.operationType === 'booking' || 
-                          Boolean(op.originalDoc?.bookingId) || 
-                          String(op.id).endsWith('-booking');
-
-        if (isReserva) {
-          reservasIncome += opAmt;
-        } else {
-          mostradorIncome += opAmt;
-        }
-
-        return sum + opAmt;
-      }, 0);
-
-    const reservasIncomePct = economicIncome > 0 ? Math.round((reservasIncome / economicIncome) * 100) : 0;
-    const mostradorIncomePct = economicIncome > 0 ? Math.max(0, 100 - reservasIncomePct) : 0;
-
-    const economicExpense = combinedOperations
-      .filter(op => Boolean(op.isExpense))
-      .filter(op => !CANCELLED_STATUSES.includes(op.paymentStatus) && op.paymentStatus !== 'cancelled')
-      .reduce((sum, op) => sum + op.contractualAmount, 0);
-
-    const netResult = economicIncome - economicExpense;
-
-    // Cobrado: Cobranzas netas a clientes (ingresos menos devoluciones/reintegros)
-    const totalCollectedIncome = combinedMovements
-      .filter(m => m.flow === 'income')
-      .reduce((sum, m) => sum + m.amount, 0);
-
-    const totalRefunds = combinedMovements
-      .filter(m => m.flow === 'expense' && (m.category === 'Reintegro / Devolución' || m.category === 'refund' || m.category === 'Reintegro'))
-      .reduce((sum, m) => sum + m.amount, 0);
-
-    const totalCollectedFromClients = totalCollectedIncome - totalRefunds;
-
-    // Dimensión de Caja: Flujo de dinero efectivamente cobrado o pagado
-    const cashInflows = combinedMovements
-      .filter(m => m.flow === 'income')
-      .reduce((sum, m) => sum + m.amount, 0);
-
-    const cashOutflows = combinedMovements
-      .filter(m => m.flow === 'expense')
-      .reduce((sum, m) => sum + m.amount, 0);
-
-    const cashAvailable = cashInflows - cashOutflows;
-
-    // Saldos Pendientes (por cobrar a clientes y por pagar a proveedores)
-    const pendingToCollect = pendingDebts
-      .filter(d => !d.isExpense)
-      .reduce((sum, d) => sum + d.amountPending, 0);
-
-    const pendingToPay = pendingDebts
-      .filter(d => Boolean(d.isExpense))
-      .reduce((sum, d) => sum + d.amountPending, 0);
-
-    return {
-      economicIncome,
-      reservasIncome,
-      mostradorIncome,
-      reservasIncomePct,
-      mostradorIncomePct,
-      economicExpense,
-      netResult,
-      totalCollectedFromClients,
-      cashInflows,
-      cashOutflows,
-      cashAvailable,
-      pendingToCollect,
-      pendingToPay
-    };
-  }, [combinedOperations, combinedMovements, pendingDebts]);
+    return computeComplexFinancialSummary({
+      targetComplexIds: targetIds,
+      operations: combinedOperations.map(op => ({
+        id: op.id,
+        complexId: targetId,
+        complejoId: targetId,
+        contractualAmount: op.contractualAmount,
+        totalCollected: op.totalCollected,
+        amountPending: op.amountPending,
+        paymentStatus: op.paymentStatus,
+        isExpense: op.isExpense,
+        operationType: op.originalDoc?.operationType,
+        bookingId: op.originalDoc?.bookingId,
+        retainedAmount: op.originalDoc?.retainedAmount,
+        netCollected: op.originalDoc?.netCollected
+      })),
+      movements: combinedMovements.map(m => ({
+        id: m.id,
+        complexId: targetId,
+        complejoId: targetId,
+        flow: m.flow,
+        category: m.category,
+        amount: m.amount,
+        operationId: m.operationId
+      }))
+    });
+  }, [combinedOperations, combinedMovements, targetIds, targetId]);
 
   return (
     <div className="space-y-4 pb-24">
@@ -9316,7 +10593,11 @@ export default function App() {
         obligation: null,
         trialDaysRemaining: null,
         isBlockedByDebt: false,
-        blockingObligation: null
+        blockingObligation: null,
+        totalDebt: 0,
+        totalOverdueDebt: 0,
+        unpaidObligations: [],
+        overdueObligations: []
       };
     }
     return evaluateBillingNoticeState(activeComplexId, activeComplex, weeklyObligations);
@@ -9416,12 +10697,17 @@ export default function App() {
         setSelectedUser(null);
         return;
       }
-      await deleteClientInFirestore(id);
+      await deleteClientInFirestore(id, activeComplexId);
       setSelectedUser(null);
       setRefreshKey(prev => prev + 1);
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const handleUserUpdated = (updatedUser: User) => {
+    setSelectedUser(prev => prev ? { ...prev, ...updatedUser } : updatedUser);
+    setRefreshKey(prev => prev + 1);
   };
 
   const handleCreateMatch = async (bookingData: any) => {
@@ -9586,6 +10872,10 @@ export default function App() {
         <AccessDeniedView
           isDarkMode={isDarkMode}
           blockingObligation={billingNoticeState.blockingObligation}
+          overdueObligations={billingNoticeState.overdueObligations}
+          totalOverdueDebt={billingNoticeState.totalOverdueDebt}
+          unpaidObligations={billingNoticeState.unpaidObligations}
+          totalDebt={billingNoticeState.totalDebt}
           billingConfig={billingConfig}
           complexName={activeComplejoName}
           onOpenPayModal={() => {
@@ -9593,11 +10883,13 @@ export default function App() {
             setIsPayModalOpen(true);
           }}
         />
-        {isPayModalOpen && payTargetObligation && (
+        {isPayModalOpen && (
           <PayBalanceModal
             isOpen={isPayModalOpen}
             onClose={() => setIsPayModalOpen(false)}
-            obligation={payTargetObligation}
+            obligation={payTargetObligation || billingNoticeState.blockingObligation}
+            unpaidObligations={billingNoticeState.overdueObligations.length > 0 ? billingNoticeState.overdueObligations : billingNoticeState.unpaidObligations}
+            totalDebt={billingNoticeState.totalOverdueDebt > 0 ? billingNoticeState.totalOverdueDebt : billingNoticeState.totalDebt}
             billingConfig={billingConfig}
             complexName={activeComplejoName}
           />
@@ -9792,6 +11084,7 @@ export default function App() {
                 <FinanceView 
                   key="view-finance" 
                   complexId={activeComplexId} 
+                  bookings={activeBookings}
                   onNavigateToUserProfile={handleUserClick} 
                 />
               )}
@@ -9812,7 +11105,17 @@ export default function App() {
       {/* Modals */}
       <AnimatePresence>
         {selectedUser && (
-          <UserDetailModal key="modal-user-detail" user={selectedUser} onClose={() => setSelectedUser(null)} onDelete={handleDeleteUser} />
+          <UserDetailModal 
+            key="modal-user-detail" 
+            user={selectedUser} 
+            onClose={() => setSelectedUser(null)} 
+            onDelete={handleDeleteUser}
+            onUserUpdated={handleUserUpdated}
+            complexId={activeComplexId}
+            existingUsers={unifiedCrmUsers}
+            bookings={activeBookings}
+            onSelectBooking={(b) => setSelectedMatch(b)}
+          />
         )}
         {selectedMatch && (
           <MatchDetailModal 
@@ -9929,6 +11232,8 @@ export default function App() {
         onClose={() => setIsNoticeModalOpen(false)}
         noticeType={billingNoticeState.type}
         obligation={billingNoticeState.obligation}
+        unpaidObligations={billingNoticeState.unpaidObligations}
+        totalDebt={billingNoticeState.totalDebt}
         trialDaysRemaining={billingNoticeState.trialDaysRemaining}
         billingConfig={billingConfig}
         complexId={activeComplexId}
@@ -9946,6 +11251,8 @@ export default function App() {
         isOpen={isPayModalOpen}
         onClose={() => setIsPayModalOpen(false)}
         obligation={payTargetObligation || billingNoticeState.obligation}
+        unpaidObligations={billingNoticeState.unpaidObligations}
+        totalDebt={billingNoticeState.totalDebt}
         billingConfig={billingConfig}
         complexName={activeComplejoName}
       />

@@ -49,6 +49,10 @@ export interface BillingNoticeState {
   trialDaysRemaining: number | null;
   isBlockedByDebt: boolean;
   blockingObligation: WeeklyPaymentObligation | null;
+  totalDebt: number;
+  totalOverdueDebt: number;
+  unpaidObligations: WeeklyPaymentObligation[];
+  overdueObligations: WeeklyPaymentObligation[];
 }
 
 // ---------------------------------------------------------------------------
@@ -270,10 +274,10 @@ export function computeClosedWeeklyPeriods(activatedAt: any, now: Date = new Dat
   const nowMs = now.getTime();
   const periods: RawPeriod[] = [];
 
-  let curStart = { year: actComp.year, month: actComp.month, day: actComp.day };
-  const dow = getDayOfWeek(curStart.year, curStart.month, curStart.day);
+  // Encontrar el domingo de la semana en la que cayó activatedAt
+  const dow = getDayOfWeek(actComp.year, actComp.month, actComp.day);
   const daysToSunday = (7 - dow) % 7;
-  let curSunday = addDays(curStart.year, curStart.month, curStart.day, daysToSunday);
+  let curSunday = addDays(actComp.year, actComp.month, actComp.day, daysToSunday);
 
   // Evitamos loop infinito con salvaguarda máxima de 520 semanas (10 años)
   let loopCount = 0;
@@ -285,48 +289,299 @@ export function computeClosedWeeklyPeriods(activatedAt: any, now: Date = new Dat
       break;
     }
 
+    // La semana corre canónicamente de lunes a domingo
+    const curMonday = addDays(curSunday.year, curSunday.month, curSunday.day, -6);
     const dueMonday = addDays(curSunday.year, curSunday.month, curSunday.day, 1);
     periods.push({
-      startDateStr: dateToStr(curStart.year, curStart.month, curStart.day),
+      startDateStr: dateToStr(curMonday.year, curMonday.month, curMonday.day),
       endDateStr: dateToStr(curSunday.year, curSunday.month, curSunday.day),
       dueDateStr: dateToStr(dueMonday.year, dueMonday.month, dueMonday.day),
       endTimestampMs: endMs
     });
 
-    // Siguiente período corre de lunes a domingo
-    curStart = dueMonday;
-    curSunday = addDays(curStart.year, curStart.month, curStart.day, 6);
+    // Siguiente período corre de lunes a domingo (próximo domingo)
+    curSunday = addDays(dueMonday.year, dueMonday.month, dueMonday.day, 6);
   }
 
   return periods;
 }
 
 /**
- * Normaliza las obligaciones registradas en el ERP (en paymentObligations o paymentPeriods)
+ * Evalúa si un período semanal ya cerró en Argentina (el domingo a las 23:59:59.999 ya transcurrió).
+ * Si la semana está en curso o en el futuro, devuelve false (la semana actual nunca se suma a la deuda vencida).
  */
-function extractErpObligations(complexDoc: any): Record<string, any> {
-  const map: Record<string, any> = {};
+export function isPeriodClosed(endDateStr: string, now: Date = new Date()): boolean {
+  if (!endDateStr) return false;
+  const parts = endDateStr.split('-').map(Number);
+  if (parts.length < 3 || isNaN(parts[0]) || isNaN(parts[1]) || isNaN(parts[2])) return false;
+  const endMs = argEndOfDayMs(parts[0], parts[1], parts[2]);
+  return endMs < now.getTime();
+}
+
+/**
+ * Suma los saldos pendientes de todas las obligaciones semanales impagas del complejo.
+ */
+export function calculateTotalWeeklyDebt(obligations: WeeklyPaymentObligation[]): number {
+  if (!Array.isArray(obligations)) return 0;
+  return obligations.reduce((sum, o) => {
+    const bal = Number(o?.remainingBalance || 0);
+    return sum + (bal > 0 ? bal : 0);
+  }, 0);
+}
+
+/**
+ * Suma los saldos pendientes de las obligaciones vencidas (con daysAfterDue >= 3).
+ */
+export function calculateOverdueWeeklyDebt(obligations: WeeklyPaymentObligation[]): number {
+  if (!Array.isArray(obligations)) return 0;
+  return obligations.reduce((sum, o) => {
+    if (o && Number(o.daysAfterDue) >= 3) {
+      const bal = Number(o.remainingBalance || 0);
+      return sum + (bal > 0 ? bal : 0);
+    }
+    return sum;
+  }, 0);
+}
+
+export interface NormalizedErpPeriod {
+  startDateStr: string;
+  endDateStr: string;
+  dueDateStr?: string;
+  originalAmountDue?: number;
+  amountPaid: number;
+  remainingBalance?: number;
+  status?: string;
+}
+
+/**
+ * Convierte cualquier representación de fecha (string YYYY-MM-DD, ISO, Timestamp Firestore, Date) a 'YYYY-MM-DD'.
+ */
+export function toYmdString(val: any): string | null {
+  if (!val) return null;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+    if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) return trimmed.substring(0, 10);
+    const d = new Date(trimmed);
+    if (!isNaN(d.getTime())) {
+      const comp = getArgentinaNowComponents(d);
+      return dateToStr(comp.year, comp.month, comp.day);
+    }
+    return null;
+  }
+  if (typeof val?.toDate === 'function') {
+    const d = val.toDate();
+    const comp = getArgentinaNowComponents(d);
+    return dateToStr(comp.year, comp.month, comp.day);
+  }
+  if (typeof val?.seconds === 'number') {
+    const d = new Date(val.seconds * 1000);
+    const comp = getArgentinaNowComponents(d);
+    return dateToStr(comp.year, comp.month, comp.day);
+  }
+  if (val instanceof Date && !isNaN(val.getTime())) {
+    const comp = getArgentinaNowComponents(val);
+    return dateToStr(comp.year, comp.month, comp.day);
+  }
+  return null;
+}
+
+/**
+ * Determina de forma unívoca si un registro de período del ERP fue marcado como pagado.
+ * Reconoce formatos actuales y heredados (status === 'paid'/'pagado', isPaid === true, paid === true,
+ * remainingBalance === 0, saldoPendiente === 0, etc.).
+ */
+export function isErpItemPaid(item: any): boolean {
+  if (!item) return false;
+  if (item.isPaid === true || item.paid === true || item.pagado === true || item.saldado === true) {
+    return true;
+  }
+  const rawStatus = String(item.status || item.estado || item.paymentStatus || item.payment_status || '').toLowerCase().trim();
+  if (['paid', 'pagado', 'saldado', 'saldada', 'completed', 'completo', 'finalizado'].includes(rawStatus)) {
+    return true;
+  }
+  const rem = item.remainingBalance ?? item.saldoPendiente ?? item.saldo ?? item.balance ?? item.pendingBalance;
+  if (rem !== undefined && rem !== null && rem !== '' && Number(rem) === 0) {
+    return true;
+  }
+  const paid = item.amountPaid ?? item.totalPaid ?? item.montoPagado ?? item.paidAmount;
+  const due = item.originalAmountDue ?? item.amountDue ?? item.monto ?? item.total ?? item.amount;
+  if (paid !== undefined && due !== undefined && Number(due) > 0 && Number(paid) >= Number(due)) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Extrae y parsea fechas de inicio y fin (YYYY-MM-DD) de cualquier formato de registro ERP.
+ * Si alguna fecha falta, deduce la contraparte asegurando semanas canónicas (lunes a domingo).
+ */
+export function parsePeriodDates(item: any, key?: string): { startDateStr: string; endDateStr: string } | null {
+  if (!item && !key) return null;
+
+  let start = toYmdString(
+    item?.startDateStr || item?.startDate || item?.start || item?.from || item?.fechaInicio || item?.periodStart
+  );
+  let end = toYmdString(
+    item?.endDateStr || item?.endDate || item?.end || item?.to || item?.fechaFin || item?.periodEnd
+  );
+
+  if (!start || !end) {
+    const idOrKey = String(item?.id || item?.periodId || item?.period || key || '');
+    const match = idOrKey.match(/(\d{4}-\d{2}-\d{2})[_\-/ ]+(\d{4}-\d{2}-\d{2})/);
+    if (match) {
+      start = start || match[1];
+      end = end || match[2];
+    }
+  }
+
+  // Si tenemos fecha fin (domingo) pero no fecha inicio, deducir lunes canónico 6 días antes
+  if (!start && end) {
+    const [ey, em, ed] = end.split('-').map(Number);
+    if (!isNaN(ey) && !isNaN(em) && !isNaN(ed)) {
+      const mon = addDays(ey, em, ed, -6);
+      start = dateToStr(mon.year, mon.month, mon.day);
+    }
+  }
+
+  // Si tenemos fecha inicio (lunes) pero no fecha fin, deducir domingo canónico 6 días después
+  if (start && !end) {
+    const [sy, sm, sd] = start.split('-').map(Number);
+    if (!isNaN(sy) && !isNaN(sm) && !isNaN(sd)) {
+      const sun = addDays(sy, sm, sd, 6);
+      end = dateToStr(sun.year, sun.month, sun.day);
+    }
+  }
+
+  if (start && end) {
+    return { startDateStr: start.trim(), endDateStr: end.trim() };
+  }
+  return null;
+}
+
+/**
+ * Normaliza y deduplica las obligaciones registradas en el ERP (en paymentObligations o paymentPeriods)
+ * evitando duplicar períodos si aparecen representados en ambas estructuras y garantizando que
+ * el estado pagado y el saldo cero prevalezcan de forma infalible ante cualquier divergencia.
+ */
+export function extractNormalizedErpObligations(complexDoc: any): Map<string, NormalizedErpPeriod> {
+  const map = new Map<string, NormalizedErpPeriod>();
+  const mapByEnd = new Map<string, NormalizedErpPeriod>();
   if (!complexDoc) return map;
 
-  const rawSources = [complexDoc.paymentObligations, complexDoc.paymentPeriods];
-  for (const src of rawSources) {
+  const sources: Array<{ src: any; name: 'paymentObligations' | 'paymentPeriods' }> = [
+    { src: complexDoc.paymentObligations, name: 'paymentObligations' },
+    { src: complexDoc.paymentPeriods, name: 'paymentPeriods' }
+  ];
+
+  for (const { src } of sources) {
     if (!src) continue;
+
+    const entries: any[] = [];
     if (Array.isArray(src)) {
       for (const item of src) {
-        if (!item) continue;
-        const key = item.id || item.periodId || (item.startDate && item.endDate ? `obl_${item.startDate}_${item.endDate}` : null);
-        if (key) map[key] = item;
+        if (item && typeof item === 'object') entries.push({ item, key: item.id || item.periodId });
       }
     } else if (typeof src === 'object') {
       for (const [k, v] of Object.entries(src)) {
-        if (v && typeof v === 'object') {
-          map[k] = v;
+        if (v && typeof v === 'object') entries.push({ item: v, key: k });
+      }
+    }
+
+    for (const { item, key } of entries) {
+      const dates = parsePeriodDates(item, key);
+      if (!dates) continue;
+      const periodKey = `${dates.startDateStr}_${dates.endDateStr}`;
+
+      const rawDue = item.originalAmountDue ?? item.amountDue ?? item.monto ?? item.total ?? item.amount ?? item.totalAmount ?? item.montoTotal;
+      const origDue = rawDue !== undefined && rawDue !== null && rawDue !== '' ? Number(rawDue) : undefined;
+
+      const rawPaid = item.amountPaid ?? item.totalPaid ?? item.montoPagado ?? item.paidAmount ?? item.pagadoMonto;
+      let paid = Math.max(0, Number(rawPaid || 0));
+
+      const rawRem = item.remainingBalance ?? item.saldoPendiente ?? item.saldo ?? item.balance ?? item.pendingBalance;
+      let rem = rawRem !== undefined && rawRem !== null && rawRem !== '' ? Math.max(0, Number(rawRem)) : undefined;
+
+      const itemPaid = isErpItemPaid(item);
+
+      if (itemPaid) {
+        rem = 0;
+        if (origDue !== undefined && origDue > 0 && paid < origDue) {
+          paid = origDue;
+        }
+      } else if (rem === undefined && origDue !== undefined) {
+        rem = Math.max(0, origDue - paid);
+      }
+
+      const itemStatus: 'paid' | 'pending' | 'partial' = itemPaid || rem === 0
+        ? 'paid'
+        : (paid > 0 ? 'partial' : (item.status ? String(item.status).toLowerCase().trim() as any : 'pending'));
+
+      const existing = map.get(periodKey) || mapByEnd.get(dates.endDateStr);
+      if (!existing) {
+        const normalized: NormalizedErpPeriod = {
+          startDateStr: dates.startDateStr,
+          endDateStr: dates.endDateStr,
+          dueDateStr: toYmdString(item.dueDateStr || item.dueDate || item.fechaVencimiento) || undefined,
+          originalAmountDue: origDue,
+          amountPaid: paid,
+          remainingBalance: rem,
+          status: itemStatus
+        };
+        map.set(periodKey, normalized);
+        mapByEnd.set(dates.endDateStr, normalized);
+      } else {
+        // Conciliación segura entre paymentObligations y paymentPeriods:
+        // Si CUALQUIERA de las fuentes declara el período pagado o con saldo cero, el estado pagado es soberano
+        if (itemPaid || rem === 0 || existing.remainingBalance === 0 || existing.status === 'paid') {
+          existing.remainingBalance = 0;
+          existing.status = 'paid';
+          existing.originalAmountDue = origDue ?? existing.originalAmountDue;
+          const targetTotal = Math.max(existing.originalAmountDue || 0, origDue || 0, existing.amountPaid, paid);
+          existing.amountPaid = targetTotal;
+        } else {
+          // Si ninguna lo declara 100% pagado, conciliar pagos mayores y menor saldo remanente
+          existing.originalAmountDue = origDue ?? existing.originalAmountDue;
+          existing.amountPaid = Math.max(existing.amountPaid, paid);
+
+          if (rem !== undefined && existing.remainingBalance !== undefined) {
+            existing.remainingBalance = Math.min(existing.remainingBalance, rem);
+          } else if (rem !== undefined) {
+            existing.remainingBalance = rem;
+          }
+
+          if (existing.originalAmountDue !== undefined && existing.amountPaid > 0) {
+            existing.remainingBalance = Math.min(
+              existing.remainingBalance ?? Infinity,
+              Math.max(0, existing.originalAmountDue - existing.amountPaid)
+            );
+          }
+
+          if (existing.remainingBalance === 0) {
+            existing.status = 'paid';
+          } else if (existing.amountPaid > 0) {
+            existing.status = 'partial';
+          } else {
+            existing.status = 'pending';
+          }
         }
       }
     }
   }
 
   return map;
+}
+
+/**
+ * Normaliza las obligaciones registradas en el ERP (para retrocompatibilidad).
+ */
+export function extractErpObligations(complexDoc: any): Record<string, any> {
+  const normMap = extractNormalizedErpObligations(complexDoc);
+  const out: Record<string, any> = {};
+  for (const [k, v] of normMap.entries()) {
+    out[k] = v;
+  }
+  return out;
 }
 
 /**
@@ -360,7 +615,7 @@ export function isBookingPlayed(booking: Match, nowArg: { dateStr: string; timeS
 
 /**
  * Calcula todas las obligaciones semanales del complejo activo cruzando con /bookings
- * y aplicando la prioridad del ERP.
+ * y aplicando la prioridad del ERP sin duplicaciones ni inclusión de la semana actual.
  */
 export function calculateWeeklyObligations(
   complexId: string,
@@ -377,21 +632,73 @@ export function calculateWeeklyObligations(
   }
 
   const activatedAt = complexDoc.activatedAt || complexDoc.activationDate || complexDoc.createdAt;
-  if (!activatedAt) return [];
-
-  const closedPeriods = computeClosedWeeklyPeriods(activatedAt, now);
-  if (closedPeriods.length === 0) return [];
+  if (!activatedAt && !complexDoc.paymentObligations && !complexDoc.paymentPeriods) return [];
 
   const nowArg = getArgentinaNowComponents(now);
-  const erpObligations = extractErpObligations(complexDoc);
+  const erpMap = extractNormalizedErpObligations(complexDoc);
   const complexName = complexDoc.name || complexDoc.company || 'Mi Complejo';
+
+  // Períodos semanales cerrados calculados desde activatedAt
+  const closedPeriods = activatedAt ? computeClosedWeeklyPeriods(activatedAt, now) : [];
+
+  // Mapear períodos únicos por su clave canónica: ${startDateStr}_${endDateStr}
+  const uniquePeriods = new Map<string, RawPeriod>();
+  const endDateToKey = new Map<string, string>();
+
+  for (const p of closedPeriods) {
+    const key = `${p.startDateStr}_${p.endDateStr}`;
+    uniquePeriods.set(key, p);
+    endDateToKey.set(p.endDateStr, key);
+  }
+
+  // Incorporar períodos adicionales que estén registrados en el ERP,
+  // SIEMPRE que sean períodos cerrados (la semana actual o futura NUNCA se suma a la deuda)
+  for (const [periodKey, erpItem] of erpMap.entries()) {
+    const existingKey = uniquePeriods.has(periodKey) ? periodKey : endDateToKey.get(erpItem.endDateStr);
+    if (!existingKey) {
+      if (isPeriodClosed(erpItem.endDateStr, now)) {
+        const [ey, em, ed] = erpItem.endDateStr.split('-').map(Number);
+        const dueMonday = addDays(ey, em, ed, 1);
+        const dueDateStr = erpItem.dueDateStr || dateToStr(dueMonday.year, dueMonday.month, dueMonday.day);
+        const endMs = argEndOfDayMs(ey, em, ed);
+
+        const newPeriod = {
+          startDateStr: erpItem.startDateStr,
+          endDateStr: erpItem.endDateStr,
+          dueDateStr,
+          endTimestampMs: endMs
+        };
+        uniquePeriods.set(periodKey, newPeriod);
+        endDateToKey.set(erpItem.endDateStr, periodKey);
+      }
+    } else if (existingKey !== periodKey) {
+      // Si el período existía con clave diferente (ej: start date de activatedAt vs lunes de ERP), adoptar la canónica de ERP
+      const old = uniquePeriods.get(existingKey)!;
+      uniquePeriods.delete(existingKey);
+      uniquePeriods.set(periodKey, {
+        startDateStr: erpItem.startDateStr,
+        endDateStr: erpItem.endDateStr,
+        dueDateStr: erpItem.dueDateStr || old.dueDateStr,
+        endTimestampMs: old.endTimestampMs
+      });
+      endDateToKey.set(erpItem.endDateStr, periodKey);
+    }
+  }
+
+  if (uniquePeriods.size === 0) return [];
 
   const results: WeeklyPaymentObligation[] = [];
 
-  for (const period of closedPeriods) {
-    const periodId = `obl_${complexId}_${period.startDateStr}_${period.endDateStr}`;
+  for (const period of uniquePeriods.values()) {
+    // Salvaguarda obligatoria: la semana actual en curso NUNCA se suma
+    if (!isPeriodClosed(period.endDateStr, now)) {
+      continue;
+    }
 
-    // Filtrar reservas que pertenecen al complejo y caen en [startDateStr, endDateStr]
+    const periodKey = `${period.startDateStr}_${period.endDateStr}`;
+    const periodId = `obl_${complexId}_${periodKey}`;
+
+    // Reservas jugadas que pertenecen al complejo y caen en [startDateStr, endDateStr]
     const playedInPeriod: Match[] = [];
     let periodGmv = 0;
 
@@ -412,58 +719,46 @@ export function calculateWeeklyObligations(
     }
 
     const calculatedCommission = Math.round(periodGmv * 0.10);
-
-    // Buscar si existe registro en el ERP
-    let erpMatch = erpObligations[periodId];
-    if (!erpMatch) {
-      // Búsqueda por rango de fechas
-      for (const item of Object.values(erpObligations)) {
-        if (
-          (item.startDate === period.startDateStr || item.startDateStr === period.startDateStr) &&
-          (item.endDate === period.endDateStr || item.endDateStr === period.endDateStr)
-        ) {
-          erpMatch = item;
-          break;
-        }
-      }
-    }
+    const erpMatch = erpMap.get(periodKey) || Array.from(erpMap.values()).find(e => e.endDateStr === period.endDateStr);
 
     let originalAmountDue = calculatedCommission;
     let amountPaid = 0;
-    let remainingBalance = calculatedCommission;
-    let status: 'paid' | 'pending' | 'partial' = 'pending';
 
     if (erpMatch) {
-      if (erpMatch.originalAmountDue !== undefined && Number(erpMatch.originalAmountDue) >= 0) {
-        originalAmountDue = Number(erpMatch.originalAmountDue);
-      } else if (erpMatch.amountDue !== undefined && Number(erpMatch.amountDue) >= 0) {
-        originalAmountDue = Number(erpMatch.amountDue);
+      if (erpMatch.originalAmountDue !== undefined && erpMatch.originalAmountDue >= 0) {
+        originalAmountDue = erpMatch.originalAmountDue;
       }
+      amountPaid = erpMatch.amountPaid >= 0 ? erpMatch.amountPaid : 0;
+    }
 
-      if (erpMatch.amountPaid !== undefined && Number(erpMatch.amountPaid) >= 0) {
-        amountPaid = Number(erpMatch.amountPaid);
-      } else if (erpMatch.totalPaid !== undefined && Number(erpMatch.totalPaid) >= 0) {
-        amountPaid = Number(erpMatch.totalPaid);
+    // Regla: Si el ERP marca la obligación como pagada o saldo pendiente 0, el saldo pendiente ES CERO.
+    let remainingBalance: number;
+    if (erpMatch && (erpMatch.status === 'paid' || erpMatch.remainingBalance === 0)) {
+      remainingBalance = 0;
+      if (originalAmountDue > 0 && amountPaid < originalAmountDue) {
+        amountPaid = originalAmountDue;
       }
-
-      const erpStatus = String(erpMatch.status || '').toLowerCase().trim();
-
-      // Regla de oro: si status === 'paid' o remainingBalance === 0 (o originalAmountDue <= 0), saldo = 0
-      if (erpStatus === 'paid' || erpMatch.remainingBalance === 0 || originalAmountDue <= 0) {
-        remainingBalance = 0;
-        status = 'paid';
-      } else if (erpMatch.remainingBalance !== undefined && erpMatch.remainingBalance !== null) {
-        remainingBalance = Math.max(0, Number(erpMatch.remainingBalance));
-        status = remainingBalance === 0 ? 'paid' : (amountPaid > 0 ? 'partial' : 'pending');
-      } else {
-        remainingBalance = Math.max(0, originalAmountDue - amountPaid);
-        status = remainingBalance === 0 ? 'paid' : (amountPaid > 0 ? 'partial' : 'pending');
-      }
+    } else if (erpMatch && erpMatch.remainingBalance !== undefined) {
+      remainingBalance = Math.max(0, erpMatch.remainingBalance);
     } else {
-      if (originalAmountDue <= 0) {
-        remainingBalance = 0;
-        status = 'paid';
-      }
+      remainingBalance = Math.max(0, originalAmountDue - amountPaid);
+    }
+
+    // Si se pagó un monto, el saldo pendiente no puede superar (originalAmountDue - amountPaid)
+    if (amountPaid > 0 && remainingBalance > Math.max(0, originalAmountDue - amountPaid)) {
+      remainingBalance = Math.max(0, originalAmountDue - amountPaid);
+    }
+
+    // Determinación estricta del estado:
+    // Solo cuando remainingBalance === 0 (o originalAmountDue <= 0 o erpMatch.status === 'paid') se marca como 'paid'
+    let status: 'paid' | 'pending' | 'partial';
+    if (remainingBalance === 0 || originalAmountDue <= 0 || (erpMatch && erpMatch.status === 'paid')) {
+      remainingBalance = 0;
+      status = 'paid';
+    } else if (amountPaid > 0) {
+      status = 'partial';
+    } else {
+      status = 'pending';
     }
 
     const daysAfterDue = diffInDays(nowArg.dateStr, period.dueDateStr);
@@ -537,12 +832,21 @@ export function evaluateBillingNoticeState(
   obligations: WeeklyPaymentObligation[],
   now: Date = new Date()
 ): BillingNoticeState {
+  const unpaidObligations = obligations.filter(o => o.remainingBalance > 0);
+  const overdueObligations = unpaidObligations.filter(o => o.daysAfterDue >= 3);
+  const totalDebt = calculateTotalWeeklyDebt(unpaidObligations);
+  const totalOverdueDebt = calculateTotalWeeklyDebt(overdueObligations);
+
   const result: BillingNoticeState = {
     type: null,
     obligation: null,
     trialDaysRemaining: null,
     isBlockedByDebt: false,
-    blockingObligation: null
+    blockingObligation: null,
+    totalDebt,
+    totalOverdueDebt,
+    unpaidObligations,
+    overdueObligations
   };
 
   if (!complexId || !complexDoc) return result;
@@ -550,44 +854,47 @@ export function evaluateBillingNoticeState(
   const rawStatus = (complexDoc.clientStatus || '').toString().toLowerCase().trim();
   const todayStr = getArgentinaNowComponents(now).dateStr;
 
-  // 1. Caso Complejo Activo con obligaciones pendientes
+  // 1. Caso Complejo Activo con obligaciones
   if (rawStatus === 'active') {
-    const unpaidObligations = obligations.filter(o => o.remainingBalance > 0);
-
-    // E. Jueves en adelante: daysAfterDue >= 3 con saldo > 0 => BLOQUEO PERMANENTE
-    const blocking = unpaidObligations.find(o => o.daysAfterDue >= 3);
-    if (blocking) {
+    // Reglas 4, 5 y 6:
+    // E. Jueves en adelante (daysAfterDue >= 3) con saldo pendiente > 0 => BLOQUEO PERMANENTE.
+    // Mientras quede al menos una obligación vencida impaga, el acceso debe continuar bloqueado.
+    // Se restaura el acceso únicamente cuando todas las obligaciones vencidas estén saldadas.
+    if (overdueObligations.length > 0) {
       result.isBlockedByDebt = true;
-      result.blockingObligation = blocking;
-      return result; // Bloqueo suspende acceso, no es un modal descartable
+      // Para compatibilidad y detalle, ordenamos las vencidas de más antigua a más reciente
+      const sortedOverdue = [...overdueObligations].sort((a, b) => a.startDateStr.localeCompare(b.startDateStr));
+      result.blockingObligation = sortedOverdue[0];
+      return result;
     }
 
-    // Si no está bloqueado, evaluar avisos descartables (Lunes, Martes, Miércoles)
-    // Se toma la obligación impaga más urgente (mayor daysAfterDue)
-    const pendingWithDue = [...unpaidObligations].sort((a, b) => b.daysAfterDue - a.daysAfterDue);
-    const target = pendingWithDue[0];
+    // Si no está bloqueado por deuda vencida, evaluar avisos descartables (Lunes, Martes, Miércoles)
+    if (unpaidObligations.length > 0) {
+      const pendingWithDue = [...unpaidObligations].sort((a, b) => b.daysAfterDue - a.daysAfterDue);
+      const target = pendingWithDue[0];
 
-    if (target) {
-      if (target.daysAfterDue === 0) {
-        // B. Lunes: daysAfterDue === 0
-        if (!isDailyNoticeDismissed(complexId, 'monday', todayStr)) {
-          result.type = 'monday';
-          result.obligation = target;
-          return result;
-        }
-      } else if (target.daysAfterDue === 1) {
-        // C. Martes: daysAfterDue === 1 (por sesión de navegación)
-        if (!isSessionNoticeDismissed(complexId, target.id, todayStr)) {
-          result.type = 'tuesday';
-          result.obligation = target;
-          return result;
-        }
-      } else if (target.daysAfterDue === 2) {
-        // D. Miércoles: daysAfterDue === 2 (por sesión de navegación)
-        if (!isSessionNoticeDismissed(complexId, target.id, todayStr)) {
-          result.type = 'wednesday';
-          result.obligation = target;
-          return result;
+      if (target) {
+        if (target.daysAfterDue === 0) {
+          // B. Lunes: daysAfterDue === 0
+          if (!isDailyNoticeDismissed(complexId, 'monday', todayStr)) {
+            result.type = 'monday';
+            result.obligation = target;
+            return result;
+          }
+        } else if (target.daysAfterDue === 1) {
+          // C. Martes: daysAfterDue === 1 (por sesión de navegación)
+          if (!isSessionNoticeDismissed(complexId, target.id, todayStr)) {
+            result.type = 'tuesday';
+            result.obligation = target;
+            return result;
+          }
+        } else if (target.daysAfterDue === 2) {
+          // D. Miércoles: daysAfterDue === 2 (por sesión de navegación)
+          if (!isSessionNoticeDismissed(complexId, target.id, todayStr)) {
+            result.type = 'wednesday';
+            result.obligation = target;
+            return result;
+          }
         }
       }
     }
@@ -705,24 +1012,63 @@ function cleanPhoneNumber(raw: string): string {
  */
 export function getPaymentWhatsAppUrl(
   config: BillingConfig,
-  obligation: WeeklyPaymentObligation,
-  complexName: string
+  obligation: WeeklyPaymentObligation | null,
+  complexName: string,
+  allObligations?: WeeklyPaymentObligation[],
+  totalAmountOverride?: number
 ): string {
   const phone = cleanPhoneNumber(config.whatsappNumber);
-  const name = complexName || obligation.complexName || 'Mi Complejo';
-  const start = formatDDMMYYYY(obligation.startDateStr);
-  const end = formatDDMMYYYY(obligation.endDateStr);
-  const amount = formatCurrencyARS(obligation.remainingBalance);
+  const name = complexName || obligation?.complexName || 'Mi Complejo';
 
-  const message = [
-    'Hola, ya realicé el pago de Jogo.',
-    '',
-    `Complejo: ${name}`,
-    `Período liquidado: ${start} al ${end}`,
-    `Importe transferido: ${amount}`,
-    '',
-    '¿Podrían verificarlo y registrar el pago? Gracias.'
-  ].join('\n');
+  const items = allObligations && allObligations.length > 0
+    ? allObligations.filter(o => o && o.remainingBalance > 0)
+    : (obligation ? [obligation] : []);
+
+  const total = totalAmountOverride !== undefined && totalAmountOverride > 0
+    ? totalAmountOverride
+    : items.reduce((sum, o) => sum + (o.remainingBalance || 0), 0);
+
+  const amount = formatCurrencyARS(total);
+
+  let message: string;
+  if (items.length > 1) {
+    const detailLines = items.map(o => 
+      `- ${formatDDMMYYYY(o.startDateStr)} al ${formatDDMMYYYY(o.endDateStr)}: ${formatCurrencyARS(o.remainingBalance)}`
+    ).join('\n');
+
+    message = [
+      'Hola, ya realicé el pago de Jogo.',
+      '',
+      `Complejo: ${name}`,
+      `Total transferido: ${amount} (${items.length} semanas acumuladas)`,
+      'Detalle por semana:',
+      detailLines,
+      '',
+      '¿Podrían verificarlo y registrar el pago? Gracias.'
+    ].join('\n');
+  } else if (items.length === 1) {
+    const single = items[0];
+    const start = formatDDMMYYYY(single.startDateStr);
+    const end = formatDDMMYYYY(single.endDateStr);
+    message = [
+      'Hola, ya realicé el pago de Jogo.',
+      '',
+      `Complejo: ${name}`,
+      `Período liquidado: ${start} al ${end}`,
+      `Importe transferido: ${amount}`,
+      '',
+      '¿Podrían verificarlo y registrar el pago? Gracias.'
+    ].join('\n');
+  } else {
+    message = [
+      'Hola, ya realicé el pago de Jogo.',
+      '',
+      `Complejo: ${name}`,
+      `Importe transferido: ${amount}`,
+      '',
+      '¿Podrían verificarlo y registrar el pago? Gracias.'
+    ].join('\n');
+  }
 
   if (!phone) {
     return `https://wa.me/?text=${encodeURIComponent(message)}`;

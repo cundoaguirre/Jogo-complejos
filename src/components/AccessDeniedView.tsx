@@ -13,6 +13,10 @@ import {
 interface AccessDeniedViewProps {
   isDarkMode?: boolean;
   blockingObligation?: WeeklyPaymentObligation | null;
+  overdueObligations?: WeeklyPaymentObligation[];
+  totalOverdueDebt?: number;
+  unpaidObligations?: WeeklyPaymentObligation[];
+  totalDebt?: number;
   billingConfig?: BillingConfig;
   complexName?: string;
   onOpenPayModal?: () => void;
@@ -20,26 +24,46 @@ interface AccessDeniedViewProps {
 
 export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
   blockingObligation,
+  overdueObligations = [],
+  totalOverdueDebt,
+  unpaidObligations = [],
+  totalDebt,
   billingConfig,
   complexName = 'Mi Complejo',
   onOpenPayModal
 }) => {
   const { user, logout } = useFirebase();
 
-  // Si existe una obligación bloqueante (Jueves+ con días vencidos >= 3 y saldo > 0)
-  const isDebtSuspension = Boolean(blockingObligation && blockingObligation.remainingBalance > 0);
+  // Recopilar obligaciones relevantes para la suspensión
+  const relevantObligations = overdueObligations.length > 0
+    ? overdueObligations
+    : (unpaidObligations.length > 0
+      ? unpaidObligations
+      : (blockingObligation ? [blockingObligation] : []));
 
-  const startFormatted = blockingObligation ? formatDDMM(blockingObligation.startDateStr) : '';
-  const endFormatted = blockingObligation ? formatDDMM(blockingObligation.endDateStr) : '';
-  const amountFormatted = blockingObligation ? formatCurrencyARS(blockingObligation.remainingBalance) : '$ 0';
+  // Sumar la deuda total acumulada
+  const totalOutstanding = totalOverdueDebt !== undefined && totalOverdueDebt > 0
+    ? totalOverdueDebt
+    : (totalDebt !== undefined && totalDebt > 0
+      ? totalDebt
+      : relevantObligations.reduce((sum, o) => sum + (o?.remainingBalance || 0), 0));
 
-  const waPaymentUrl = (billingConfig && blockingObligation)
-    ? getPaymentWhatsAppUrl(billingConfig, blockingObligation, complexName)
+  const isDebtSuspension = Boolean(
+    (blockingObligation && blockingObligation.remainingBalance > 0) ||
+    totalOutstanding > 0 ||
+    relevantObligations.some(o => o.remainingBalance > 0)
+  );
+
+  const amountFormatted = formatCurrencyARS(totalOutstanding);
+
+  const waPaymentUrl = (billingConfig && (blockingObligation || relevantObligations.length > 0))
+    ? getPaymentWhatsAppUrl(billingConfig, blockingObligation || relevantObligations[0] || null, complexName, relevantObligations, totalOutstanding)
     : `https://wa.me/?text=${encodeURIComponent('Hola, ya realicé el pago de Jogo.')}`;
 
-  const handleDownloadPdf = () => {
-    if (blockingObligation) {
-      downloadWeeklyBillingPdf(blockingObligation, complexName);
+  const handleDownloadPdf = (obl?: WeeklyPaymentObligation) => {
+    const target = obl || blockingObligation || relevantObligations[0];
+    if (target) {
+      downloadWeeklyBillingPdf(target, complexName);
     }
   };
 
@@ -73,17 +97,17 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
       </header>
 
       {/* Main Container */}
-      <main className="w-full max-w-xl mx-auto px-4 py-8 flex-1 flex flex-col items-center justify-center">
+      <main className="w-full max-w-2xl mx-auto px-4 py-8 flex-1 flex flex-col items-center justify-center">
         <div className="w-full bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-xl shadow-slate-200/50 dark:shadow-black/40 p-6 sm:p-8 text-center space-y-6">
-          {/* CASO E: Suspensión por Deuda Vencida (Jueves en adelante) */}
-          {isDebtSuspension && blockingObligation ? (
+          {/* CASO E: Suspensión por Deuda Vencida (Jueves en adelante con saldo acumulado) */}
+          {isDebtSuspension ? (
             <>
               {/* Icono de Alerta Roja */}
               <div className="w-16 h-16 rounded-3xl bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 flex items-center justify-center mx-auto shadow-inner">
                 <ShieldAlert size={32} />
               </div>
 
-              {/* Título y Monto */}
+              {/* Título y Monto Total Acumulado */}
               <div className="space-y-2">
                 <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-400 text-[11px] font-semibold border border-red-200/80 dark:border-red-800/60">
                   <Lock size={11} />
@@ -95,16 +119,80 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
                 <div className="text-3xl sm:text-4xl font-black text-red-600 dark:text-red-400 tracking-tight font-mono pt-1">
                   {amountFormatted}
                 </div>
+                <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
+                  {relevantObligations.length > 1
+                    ? `Deuda total acumulada (${relevantObligations.length} semanas pendientes)`
+                    : 'Saldo semanal pendiente'}
+                </p>
               </div>
 
-              {/* Texto explicativo exacto */}
-              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 text-xs sm:text-sm text-slate-600 dark:text-slate-300 space-y-2 text-left leading-relaxed">
-                <p>
-                  Hay un saldo pendiente de <span className="font-bold text-slate-900 dark:text-white">{amountFormatted}</span> correspondiente al período <span className="font-semibold text-slate-900 dark:text-white">{startFormatted}–{endFormatted}</span>.
+              {/* Detalle por semana de la deuda acumulada */}
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-850 border border-slate-200/80 dark:border-slate-800 text-xs text-left space-y-3">
+                <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {relevantObligations.length > 1 ? (
+                    <>
+                      Hay un saldo pendiente acumulado de <span className="font-bold text-slate-900 dark:text-white">{amountFormatted}</span> correspondiente a <span className="font-semibold text-slate-900 dark:text-white">{relevantObligations.length} semanas</span>. El acceso se restablecerá al regularizar las obligaciones vencidas:
+                    </>
+                  ) : relevantObligations.length === 1 ? (
+                    <>
+                      Hay un saldo pendiente de <span className="font-bold text-slate-900 dark:text-white">{amountFormatted}</span> correspondiente al período <span className="font-semibold text-slate-900 dark:text-white">{formatDDMM(relevantObligations[0].startDateStr)}–{formatDDMM(relevantObligations[0].endDateStr)}</span>.
+                    </>
+                  ) : (
+                    <>
+                      Hay un saldo pendiente de <span className="font-bold text-slate-900 dark:text-white">{amountFormatted}</span>.
+                    </>
+                  )}
                 </p>
-                <p>
-                  No podrás acceder a las herramientas de gestión de tu complejo hasta regularizarlo.
-                </p>
+
+                {/* Lista desglosada por semana */}
+                {relevantObligations.length > 0 && (
+                  <div className="space-y-2 pt-1 border-t border-slate-200/60 dark:border-slate-800">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400 block">
+                      Detalle por semana:
+                    </span>
+                    <div className="divide-y divide-slate-200/60 dark:divide-slate-800 rounded-xl overflow-hidden border border-slate-200/60 dark:border-slate-800 bg-white dark:bg-slate-900">
+                      {relevantObligations.map((obl) => {
+                        const start = formatDDMM(obl.startDateStr);
+                        const end = formatDDMM(obl.endDateStr);
+                        const due = formatDDMM(obl.dueDateStr);
+                        const isPartial = obl.amountPaid > 0 && obl.remainingBalance > 0;
+                        return (
+                          <div key={obl.id} className="p-3 flex items-center justify-between gap-3 text-xs">
+                            <div className="min-w-0 flex-1">
+                              <div className="font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                                <span>Semana {start}–{end}</span>
+                                {isPartial && (
+                                  <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400">
+                                    Pago parcial
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                                Vencimiento: {due} · Comisión: {formatCurrencyARS(obl.originalAmountDue)}
+                                {obl.amountPaid > 0 && ` · Abonado: ${formatCurrencyARS(obl.amountPaid)}`}
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <span className="font-mono font-bold text-red-600 dark:text-red-400 block">
+                                {formatCurrencyARS(obl.remainingBalance)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadPdf(obl)}
+                                className="text-[10px] text-emerald-600 dark:text-emerald-400 hover:underline inline-flex items-center gap-1 cursor-pointer mt-0.5"
+                                title="Descargar reporte de esta semana"
+                              >
+                                <FileDown size={11} />
+                                <span>Reporte</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-200/60 dark:border-slate-800">
                   Una vez registrado el pago, tu acceso se restablecerá automáticamente en tiempo real.
                 </p>
@@ -120,18 +208,18 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
                     className="w-full py-3.5 px-4 bg-gradient-to-r from-emerald-600 to-[#0BA70B] hover:from-emerald-700 hover:to-emerald-600 text-white font-bold rounded-2xl text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg shadow-emerald-500/20 active:scale-[0.99]"
                   >
                     <CreditCard size={18} />
-                    <span>Pagar</span>
+                    <span>Pagar total adeudado ({amountFormatted})</span>
                   </button>
                 )}
 
-                {/* Botón secundario: Descargar reporte semanal */}
+                {/* Botón secundario: Descargar reporte semanal de la última semana */}
                 <button
                   type="button"
-                  onClick={handleDownloadPdf}
+                  onClick={() => handleDownloadPdf()}
                   className="w-full py-3 px-4 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-750 text-slate-700 dark:text-slate-200 font-semibold rounded-2xl text-xs sm:text-sm border border-slate-200 dark:border-slate-700 flex items-center justify-center gap-2 transition-all cursor-pointer"
                 >
                   <FileDown size={16} />
-                  <span>Descargar reporte semanal</span>
+                  <span>Descargar reporte en PDF</span>
                 </button>
 
                 {/* Acción directa: ¿Ya transferiste? Avisanos por WhatsApp */}

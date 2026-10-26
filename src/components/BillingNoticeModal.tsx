@@ -15,6 +15,8 @@ interface BillingNoticeModalProps {
   onClose: () => void;
   noticeType: NoticeModalType | null;
   obligation: WeeklyPaymentObligation | null;
+  unpaidObligations?: WeeklyPaymentObligation[];
+  totalDebt?: number;
   trialDaysRemaining: number | null;
   billingConfig: BillingConfig;
   complexId: string;
@@ -27,6 +29,8 @@ export const BillingNoticeModal: React.FC<BillingNoticeModalProps> = ({
   onClose,
   noticeType,
   obligation,
+  unpaidObligations = [],
+  totalDebt,
   trialDaysRemaining,
   billingConfig,
   complexId,
