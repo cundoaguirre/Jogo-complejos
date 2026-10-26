@@ -17,6 +17,7 @@ service cloud.firestore {
     }
 
     // Check if the authenticated user has verified membership in complexId
+    // Check if the authenticated user has verified membership in complexId
     function isCollaboratorOf(complexId) {
       let colabPath = /databases/$(database)/documents/collaborators/$(request.auth.uid);
       return isSignedIn() && (
@@ -25,9 +26,29 @@ service cloud.firestore {
           exists(colabPath) &&
           'complexIds' in get(colabPath).data &&
           get(colabPath).data.complexIds is list &&
-          complexId in get(colabPath).data.complexIds
+          (
+            complexId in get(colabPath).data.complexIds ||
+            (complexId == 'B' && 'complejo_central' in get(colabPath).data.complexIds) ||
+            (complexId == 'complejo_central' && 'B' in get(colabPath).data.complexIds)
+          )
         )
       );
+    }
+
+    function isDocCommerciallyActive(docData) {
+      return !('clientStatus' in docData) ||
+        docData.clientStatus == 'active' ||
+        (
+          docData.clientStatus == 'trial' &&
+          (
+            !('trialEndsAt' in docData && docData.trialEndsAt != null && docData.trialEndsAt is timestamp) ||
+            request.time < docData.trialEndsAt
+          ) &&
+          (
+            !('trialEndDate' in docData && docData.trialEndDate != null && docData.trialEndDate is timestamp) ||
+            request.time < docData.trialEndDate
+          )
+        );
     }
 
     // Check if complex is commercially active:
@@ -39,31 +60,14 @@ service cloud.firestore {
     function isComplexCommerciallyActive(complexId) {
       let complexPath = /databases/$(database)/documents/complejos/$(complexId);
       let altComplexPath = /databases/$(database)/documents/complexes/$(complexId);
-      return (
-        exists(complexPath) && (
-          !('clientStatus' in get(complexPath).data) ||
-          get(complexPath).data.clientStatus == 'active' ||
-          (
-            get(complexPath).data.clientStatus == 'trial' &&
-            'trialEndsAt' in get(complexPath).data &&
-            get(complexPath).data.trialEndsAt != null &&
-            get(complexPath).data.trialEndsAt is timestamp &&
-            request.time < get(complexPath).data.trialEndsAt
-          )
-        )
-      ) || (
-        exists(altComplexPath) && (
-          !('clientStatus' in get(altComplexPath).data) ||
-          get(altComplexPath).data.clientStatus == 'active' ||
-          (
-            get(altComplexPath).data.clientStatus == 'trial' &&
-            'trialEndsAt' in get(altComplexPath).data &&
-            get(altComplexPath).data.trialEndsAt != null &&
-            get(altComplexPath).data.trialEndsAt is timestamp &&
-            request.time < get(altComplexPath).data.trialEndsAt
-          )
-        )
-      );
+      let centralPath = /databases/$(database)/documents/complejos/complejo_central;
+      let bPath = /databases/$(database)/documents/complejos/B;
+      return (exists(complexPath) && isDocCommerciallyActive(get(complexPath).data)) ||
+             (exists(altComplexPath) && isDocCommerciallyActive(get(altComplexPath).data)) ||
+             ((complexId == 'B' || complexId == 'complejo_central') && (
+               (exists(centralPath) && isDocCommerciallyActive(get(centralPath).data)) ||
+               (exists(bPath) && isDocCommerciallyActive(get(bPath).data))
+             ));
     }
 
     // Enforce both membership AND valid commercial status for operational data

@@ -3367,7 +3367,8 @@ export async function settleFiadoTransaction(params: {
 }
 
 /**
- * Escucha las transacciones en tiempo real
+ * Escucha las transacciones en tiempo real (/transactions),
+ * fusionando queries por complexId y complejoId para garantizar cobertura total.
  */
 export function subscribeToTransactions(
   complexId: string,
@@ -3375,27 +3376,55 @@ export function subscribeToTransactions(
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const colRef = collection(db, TRANSACTIONS_COLLECTION);
-  const q = query(colRef, where('complejoId', '==', targetId));
+  const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
 
-  return onSnapshot(q, (snap) => {
-    const list: any[] = [];
-    snap.forEach((d) => {
-      list.push({
-        id: d.id,
-        ...d.data()
-      });
+  const maps = targetIds.flatMap(() => [new Map<string, any>(), new Map<string, any>()]);
+  const unsubs: Array<() => void> = [];
+
+  const emitMerged = () => {
+    const merged = new Map<string, any>();
+    maps.forEach(m => {
+      m.forEach((val, key) => merged.set(key, val));
     });
-    // Ordenar de más reciente a más antiguo
+    const list = Array.from(merged.values());
     list.sort((a, b) => {
       const tA = a.createdAt?.toDate ? a.createdAt.toDate().getTime() : (a.createdAt ? new Date(a.createdAt).getTime() : 0);
       const tB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
       return tB - tA;
     });
     cb(list);
-  }, (err) => {
-    console.warn('[Firestore] Error escuchando transacciones:', err);
-    cb([]);
+  };
+
+  let mapIdx = 0;
+  targetIds.forEach((tId) => {
+    const idx1 = mapIdx++;
+    const q1 = query(colRef, where('complexId', '==', tId));
+    unsubs.push(
+      onSnapshot(q1, (snap) => {
+        maps[idx1].clear();
+        snap.forEach((d) => maps[idx1].set(d.id, { id: d.id, ...d.data() }));
+        emitMerged();
+      }, (err) => {
+        console.warn(`[Firestore] Error escuchando transacciones (complexId: ${tId}):`, err);
+      })
+    );
+
+    const idx2 = mapIdx++;
+    const q2 = query(colRef, where('complejoId', '==', tId));
+    unsubs.push(
+      onSnapshot(q2, (snap) => {
+        maps[idx2].clear();
+        snap.forEach((d) => maps[idx2].set(d.id, { id: d.id, ...d.data() }));
+        emitMerged();
+      }, (err) => {
+        console.warn(`[Firestore] Error escuchando transacciones (complejoId: ${tId}):`, err);
+      })
+    );
   });
+
+  return () => {
+    unsubs.forEach(u => u());
+  };
 }
 
 // =========================================================================
@@ -4346,14 +4375,16 @@ export function subscribeToOperations(
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const colRef = collection(db, OPERATIONS_COLLECTION);
-  const q1 = query(colRef, where('complexId', '==', targetId));
-  const q2 = query(colRef, where('complejoId', '==', targetId));
+  const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
 
-  const map1 = new Map<string, OperationDocument>();
-  const map2 = new Map<string, OperationDocument>();
+  const maps = targetIds.flatMap(() => [new Map<string, OperationDocument>(), new Map<string, OperationDocument>()]);
+  const unsubs: Array<() => void> = [];
 
   const emitMerged = () => {
-    const merged = new Map<string, OperationDocument>([...map1, ...map2]);
+    const merged = new Map<string, OperationDocument>();
+    maps.forEach(m => {
+      m.forEach((val, key) => merged.set(key, val));
+    });
     const list = Array.from(merged.values());
     const parseTime = (item: any) => {
       const v = item?.createdAt || item?.date;
@@ -4368,29 +4399,35 @@ export function subscribeToOperations(
     cb(list);
   };
 
-  const unsub1 = onSnapshot(q1, (snap) => {
-    map1.clear();
-    snap.forEach((d) => {
-      map1.set(d.id, { id: d.id, ...d.data() } as OperationDocument);
-    });
-    emitMerged();
-  }, (err) => {
-    console.warn('[Firestore] Error escuchando operaciones (q1 complexId):', err);
-  });
+  let mapIdx = 0;
+  targetIds.forEach((tId) => {
+    const idx1 = mapIdx++;
+    const q1 = query(colRef, where('complexId', '==', tId));
+    unsubs.push(
+      onSnapshot(q1, (snap) => {
+        maps[idx1].clear();
+        snap.forEach((d) => maps[idx1].set(d.id, { id: d.id, ...d.data() } as OperationDocument));
+        emitMerged();
+      }, (err) => {
+        console.warn(`[Firestore] Error escuchando operaciones (complexId: ${tId}):`, err);
+      })
+    );
 
-  const unsub2 = onSnapshot(q2, (snap) => {
-    map2.clear();
-    snap.forEach((d) => {
-      map2.set(d.id, { id: d.id, ...d.data() } as OperationDocument);
-    });
-    emitMerged();
-  }, (err) => {
-    console.warn('[Firestore] Error escuchando operaciones (q2 complejoId):', err);
+    const idx2 = mapIdx++;
+    const q2 = query(colRef, where('complejoId', '==', tId));
+    unsubs.push(
+      onSnapshot(q2, (snap) => {
+        maps[idx2].clear();
+        snap.forEach((d) => maps[idx2].set(d.id, { id: d.id, ...d.data() } as OperationDocument));
+        emitMerged();
+      }, (err) => {
+        console.warn(`[Firestore] Error escuchando operaciones (complejoId: ${tId}):`, err);
+      })
+    );
   });
 
   return () => {
-    unsub1();
-    unsub2();
+    unsubs.forEach(u => u());
   };
 }
 
@@ -4404,14 +4441,16 @@ export function subscribeToFinancialMovements(
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const colRef = collection(db, FINANCIAL_MOVEMENTS_COLLECTION);
-  const q1 = query(colRef, where('complexId', '==', targetId));
-  const q2 = query(colRef, where('complejoId', '==', targetId));
+  const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
 
-  const map1 = new Map<string, FinancialMovementDocument>();
-  const map2 = new Map<string, FinancialMovementDocument>();
+  const maps = targetIds.flatMap(() => [new Map<string, FinancialMovementDocument>(), new Map<string, FinancialMovementDocument>()]);
+  const unsubs: Array<() => void> = [];
 
   const emitMerged = () => {
-    const merged = new Map<string, FinancialMovementDocument>([...map1, ...map2]);
+    const merged = new Map<string, FinancialMovementDocument>();
+    maps.forEach(m => {
+      m.forEach((val, key) => merged.set(key, val));
+    });
     const list = Array.from(merged.values());
     const parseTime = (item: any) => {
       const v = item?.createdAt || item?.date;
@@ -4426,29 +4465,35 @@ export function subscribeToFinancialMovements(
     cb(list);
   };
 
-  const unsub1 = onSnapshot(q1, (snap) => {
-    map1.clear();
-    snap.forEach((d) => {
-      map1.set(d.id, { id: d.id, ...d.data() } as FinancialMovementDocument);
-    });
-    emitMerged();
-  }, (err) => {
-    console.warn('[Firestore] Error escuchando movimientos (q1 complexId):', err);
-  });
+  let mapIdx = 0;
+  targetIds.forEach((tId) => {
+    const idx1 = mapIdx++;
+    const q1 = query(colRef, where('complexId', '==', tId));
+    unsubs.push(
+      onSnapshot(q1, (snap) => {
+        maps[idx1].clear();
+        snap.forEach((d) => maps[idx1].set(d.id, { id: d.id, ...d.data() } as FinancialMovementDocument));
+        emitMerged();
+      }, (err) => {
+        console.warn(`[Firestore] Error escuchando movimientos (complexId: ${tId}):`, err);
+      })
+    );
 
-  const unsub2 = onSnapshot(q2, (snap) => {
-    map2.clear();
-    snap.forEach((d) => {
-      map2.set(d.id, { id: d.id, ...d.data() } as FinancialMovementDocument);
-    });
-    emitMerged();
-  }, (err) => {
-    console.warn('[Firestore] Error escuchando movimientos (q2 complejoId):', err);
+    const idx2 = mapIdx++;
+    const q2 = query(colRef, where('complejoId', '==', tId));
+    unsubs.push(
+      onSnapshot(q2, (snap) => {
+        maps[idx2].clear();
+        snap.forEach((d) => maps[idx2].set(d.id, { id: d.id, ...d.data() } as FinancialMovementDocument));
+        emitMerged();
+      }, (err) => {
+        console.warn(`[Firestore] Error escuchando movimientos (complejoId: ${tId}):`, err);
+      })
+    );
   });
 
   return () => {
-    unsub1();
-    unsub2();
+    unsubs.forEach(u => u());
   };
 }
 
