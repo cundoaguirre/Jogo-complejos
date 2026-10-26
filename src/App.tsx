@@ -6357,6 +6357,50 @@ const UsersView = ({
     });
   }, [crmUsers, userMetricsMap, search, reservasFilter, juegosFilter, diasFilter]);
 
+  const getWhatsAppUrl = (rawPhone?: string | null): string | null => {
+    if (!rawPhone || typeof rawPhone !== 'string') return null;
+    const trimmed = rawPhone.trim();
+    if (!trimmed || trimmed === '-' || trimmed.toLowerCase().includes('sin') || trimmed.includes('@')) {
+      return null;
+    }
+    let digits = trimmed.replace(/\D/g, '');
+    if (!digits || digits.length < 6) return null;
+
+    // Quitar ceros a la izquierda
+    while (digits.startsWith('0') && digits.length > 8) {
+      digits = digits.slice(1);
+    }
+
+    // Si tiene el prefijo '15' de móvil local en Argentina
+    if (digits.length === 11 && digits.startsWith('1115')) {
+      digits = '11' + digits.slice(4);
+    } else if (digits.length === 11 && digits.startsWith('15')) {
+      digits = digits.slice(2);
+    }
+
+    // Si ya comienza con 549 (código móvil internacional de Argentina)
+    if (digits.startsWith('549')) {
+      return `https://wa.me/${digits}`;
+    }
+
+    // Si comienza con 54
+    if (digits.startsWith('54')) {
+      // Si tiene 12 dígitos (54 + 10 dígitos sin el 9 de móvil), insertar el 9
+      if (digits.length === 12 && !digits.startsWith('549')) {
+        digits = '549' + digits.slice(2);
+      }
+      return `https://wa.me/${digits}`;
+    }
+
+    // Si tiene 10 dígitos (número estándar móvil en Argentina ej: 1138032662)
+    if (digits.length === 10) {
+      return `https://wa.me/549${digits}`;
+    }
+
+    // Cualquier otro número válido sin 54
+    return `https://wa.me/549${digits}`;
+  };
+
   const getSinJugarBadge = (days: number | null) => {
     if (days === null) return null;
     // Verde Jogo si <= 15 días
@@ -6373,12 +6417,12 @@ const UsersView = ({
     }
     return {
       label: `Hace ${days}d`,
-      className: cn('px-3 py-0.5 rounded-full text-[11px] sm:text-xs font-semibold inline-flex items-center justify-center tracking-tight whitespace-nowrap shadow-xs', bgClass)
+      className: cn('px-1.5 sm:px-2.5 py-0.5 rounded-full text-[9.5px] sm:text-[11px] font-semibold inline-block tracking-tight whitespace-nowrap shadow-xs', bgClass)
     };
   };
 
   return (
-    <div className="w-full relative pb-24">
+    <div className="w-full h-full flex-1 flex flex-col min-h-0 relative">
       {/* Modal para crear usuario existente */}
       <NewUserModal 
         isOpen={showNewUserModal} 
@@ -6388,27 +6432,27 @@ const UsersView = ({
       />
 
       {/* Gran tarjeta blanca, con bordes superiores redondeados y borde gris fino */}
-      <div className="w-full bg-white dark:bg-slate-800 rounded-t-[32px] border-t border-x border-b border-gray-200/90 dark:border-slate-700/80 shadow-xs p-4 sm:p-6 min-h-[calc(100vh-140px)] flex flex-col">
-        {/* Buscador y Filtros */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4 mb-5">
-          {/* Buscador */}
-          <div className="relative flex-1 max-w-full md:max-w-md">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" size={17} strokeWidth={2.2} />
+      <div className="w-full flex-1 flex flex-col min-h-0 bg-white dark:bg-slate-800 rounded-t-[28px] sm:rounded-t-[32px] border-t border-x border-gray-200/90 dark:border-slate-700/80 shadow-xs overflow-hidden">
+        {/* Buscador y Filtros en una misma fila horizontal */}
+        <div className="flex flex-row items-center justify-between gap-1.5 sm:gap-3 shrink-0 p-3 sm:p-5 pb-2.5 sm:pb-3 border-b border-gray-100 dark:border-slate-700/60">
+          {/* Buscador alineado a la izquierda */}
+          <div className="relative flex-1 min-w-[95px] max-w-[170px] sm:max-w-xs md:max-w-sm">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" size={13} strokeWidth={2.2} />
             <input 
               type="text" 
               placeholder="Buscar por nombre o teléfono" 
-              className="w-full pl-9 pr-4 py-2 bg-transparent rounded-full text-xs sm:text-sm outline-none text-gray-800 dark:text-slate-100 placeholder:text-gray-400 border border-gray-200 dark:border-slate-700 focus:border-gray-400 dark:focus:border-slate-500 transition-colors"
+              className="w-full pl-7 pr-2 py-1.5 bg-transparent rounded-full text-[10.5px] sm:text-xs outline-none text-gray-800 dark:text-slate-100 placeholder:text-gray-400 placeholder:text-[9.5px] sm:placeholder:text-xs border border-gray-200 dark:border-slate-700 focus:border-gray-400 dark:focus:border-slate-500 transition-colors"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
 
-          {/* Filtros desplegables */}
-          <div className="flex items-center gap-3 sm:gap-5 overflow-x-auto pb-1 md:pb-0 shrink-0 no-scrollbar">
+          {/* Filtros alineados a la derecha */}
+          <div className="flex items-center gap-1.5 sm:gap-3 shrink-0">
             {/* Filtro Reservas */}
-            <div className="relative inline-flex items-center gap-1 text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white text-xs sm:text-sm font-normal cursor-pointer select-none">
-              <span>{reservasFilter === 'total' ? 'Reservas' : `Reservas: ${reservasFilter}`}</span>
-              <ChevronRight size={13} className="text-gray-400 shrink-0" />
+            <div className="relative inline-flex items-center gap-0.5 text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white text-[10px] sm:text-xs font-normal cursor-pointer select-none">
+              <span>{reservasFilter === 'total' ? 'Reservas' : `- ${reservasFilter.replace('-', '')}`}</span>
+              <ChevronRight size={11} className="text-gray-400 shrink-0" />
               <select 
                 value={reservasFilter}
                 onChange={(e) => setReservasFilter(e.target.value as any)}
@@ -6416,17 +6460,17 @@ const UsersView = ({
                 aria-label="Filtro Reservas"
               >
                 <option value="total">Reservas: Total</option>
-                <option value="-5">-5</option>
-                <option value="-10">-10</option>
-                <option value="-20">-20</option>
-                <option value="-50">-50</option>
+                <option value="-5">-5 reservas</option>
+                <option value="-10">-10 reservas</option>
+                <option value="-20">-20 reservas</option>
+                <option value="-50">-50 reservas</option>
               </select>
             </div>
 
-            {/* Filtro Juegos / Jugados */}
-            <div className="relative inline-flex items-center gap-1 text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white text-xs sm:text-sm font-normal cursor-pointer select-none">
-              <span>{juegosFilter === 'total' ? 'Jugados' : `Jugados: ${juegosFilter}`}</span>
-              <ChevronRight size={13} className="text-gray-400 shrink-0" />
+            {/* Filtro Jugados */}
+            <div className="relative inline-flex items-center gap-0.5 text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white text-[10px] sm:text-xs font-normal cursor-pointer select-none">
+              <span>{juegosFilter === 'total' ? 'Jugados' : `- ${juegosFilter.replace('-', '')}`}</span>
+              <ChevronRight size={11} className="text-gray-400 shrink-0" />
               <select 
                 value={juegosFilter}
                 onChange={(e) => setJuegosFilter(e.target.value as any)}
@@ -6434,17 +6478,17 @@ const UsersView = ({
                 aria-label="Filtro Jugados"
               >
                 <option value="total">Jugados: Total</option>
-                <option value="-5">-5</option>
-                <option value="-10">-10</option>
-                <option value="-20">-20</option>
-                <option value="-50">-50</option>
+                <option value="-5">-5 juegos</option>
+                <option value="-10">-10 juegos</option>
+                <option value="-20">-20 juegos</option>
+                <option value="-50">-50 juegos</option>
               </select>
             </div>
 
             {/* Filtro Días sin jugar */}
-            <div className="relative inline-flex items-center gap-1 text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white text-xs sm:text-sm font-normal cursor-pointer select-none">
-              <span>{diasFilter === 'total' ? 'Días sin jugar' : `Sin jugar: ${diasFilter}`}</span>
-              <ChevronRight size={13} className="text-gray-400 shrink-0" />
+            <div className="relative inline-flex items-center gap-0.5 text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white text-[10px] sm:text-xs font-normal cursor-pointer select-none">
+              <span>{diasFilter === 'total' ? 'Días sin jugar' : `${diasFilter}d`}</span>
+              <ChevronRight size={11} className="text-gray-400 shrink-0" />
               <select 
                 value={diasFilter}
                 onChange={(e) => setDiasFilter(e.target.value as any)}
@@ -6461,17 +6505,17 @@ const UsersView = ({
           </div>
         </div>
 
-        {/* Tabla contenedora */}
-        <div className="w-full rounded-2xl border border-gray-100 dark:border-slate-700/60 overflow-hidden">
-          <div className="overflow-x-auto w-full">
-            <table className="w-full text-left border-collapse min-w-[560px]">
-              <thead>
-                <tr className="border-b border-gray-100 dark:border-slate-700/80 text-gray-500 dark:text-slate-400 text-xs sm:text-sm font-normal">
-                  <th className="py-3 px-3 sm:px-4 text-left font-normal w-[34%]">Usuario</th>
-                  <th className="py-3 px-2 sm:px-4 text-center font-normal w-[15%]">Reservas</th>
-                  <th className="py-3 px-2 sm:px-4 text-center font-normal w-[15%]">Jugados</th>
-                  <th className="py-3 px-2 sm:px-4 text-center font-normal w-[21%]">Días sin jugar</th>
-                  <th className="py-3 px-3 sm:px-4 text-center sm:text-right font-normal w-[15%]">Actividad</th>
+        {/* Contenedor de Tabla con encabezado fijo y scroll independiente para las filas */}
+        <div className="w-full flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-1.5 sm:px-4">
+            <table className="w-full table-fixed border-collapse">
+              <thead className="sticky top-0 z-10 bg-white dark:bg-slate-800 border-b border-gray-100 dark:border-slate-700/80 shadow-2xs">
+                <tr className="text-gray-500 dark:text-slate-400 text-[10px] sm:text-xs font-normal">
+                  <th className="py-2.5 px-1 sm:px-2 text-left font-normal w-[36%] sm:w-[34%]">Usuario</th>
+                  <th className="py-2.5 px-0.5 sm:px-1 text-center font-normal w-[13%] sm:w-[14%]">Reservas</th>
+                  <th className="py-2.5 px-0.5 sm:px-1 text-center font-normal w-[13%] sm:w-[14%]">Jugados</th>
+                  <th className="py-2.5 px-0.5 sm:px-1 text-center font-normal w-[24%] sm:w-[23%]">Días sin jugar</th>
+                  <th className="py-2.5 px-1 sm:px-2 text-center sm:text-right font-normal w-[14%] sm:w-[15%]">Actividad</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100 dark:divide-slate-700/60">
@@ -6479,6 +6523,8 @@ const UsersView = ({
                   if (!user) return null;
                   const metrics = userMetricsMap.get(String(user.id)) || calculateUserLifecycleMetrics(user, [], new Date());
                   const badge = getSinJugarBadge(metrics.sinJugarDays);
+                  const waUrl = getWhatsAppUrl(user.phone);
+                  const hasPhone = Boolean(waUrl && user.phone && user.phone.trim() && user.phone.trim() !== '-' && !user.phone.toLowerCase().includes('sin') && !user.phone.includes('@'));
 
                   return (
                     <tr 
@@ -6491,29 +6537,46 @@ const UsersView = ({
                       className="hover:bg-gray-50/70 dark:hover:bg-slate-700/30 transition-colors cursor-pointer group"
                     >
                       {/* Usuario */}
-                      <td className="py-3.5 px-3 sm:px-4 text-left">
-                        <div className="flex flex-col leading-tight">
-                          <span className="font-bold text-gray-900 dark:text-slate-100 text-xs sm:text-sm">
+                      <td className="py-2.5 px-1 sm:px-2 text-left align-middle overflow-hidden">
+                        <div className="flex flex-col min-w-0 pr-1">
+                          <span className="font-bold text-gray-900 dark:text-slate-100 text-[11.5px] sm:text-sm truncate block leading-tight">
                             {user.name}
                           </span>
-                          <span className="text-[#0BA70B] dark:text-[#0BA70B] text-xs sm:text-sm font-normal mt-0.5">
-                            {user.phone || (user.email && !user.email.includes('sin-correo.com') ? user.email : 'Sin teléfono')}
-                          </span>
+                          {hasPhone ? (
+                            <a
+                              href={waUrl!}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-[#0BA70B] dark:text-[#0BA70B] text-[10.5px] sm:text-xs font-normal hover:underline truncate block mt-0.5 cursor-pointer leading-tight"
+                              title={`Abrir WhatsApp con ${user.name}`}
+                            >
+                              {user.phone}
+                            </a>
+                          ) : (
+                            <span className="text-gray-400 dark:text-slate-500 text-[10.5px] sm:text-xs font-normal block mt-0.5 leading-tight">
+                              -
+                            </span>
+                          )}
                         </div>
                       </td>
 
                       {/* Reservas */}
-                      <td className="py-3.5 px-2 sm:px-4 text-center text-gray-700 dark:text-slate-300 text-xs sm:text-sm font-normal">
-                        {metrics.reservas}
+                      <td className="py-2.5 px-0.5 sm:px-1 text-center align-middle">
+                        <span className="text-gray-700 dark:text-slate-300 text-[11.5px] sm:text-sm font-normal">
+                          {metrics.reservas}
+                        </span>
                       </td>
 
                       {/* Jugados */}
-                      <td className="py-3.5 px-2 sm:px-4 text-center text-gray-700 dark:text-slate-300 text-xs sm:text-sm font-normal">
-                        {metrics.juegos}
+                      <td className="py-2.5 px-0.5 sm:px-1 text-center align-middle">
+                        <span className="text-gray-700 dark:text-slate-300 text-[11.5px] sm:text-sm font-normal">
+                          {metrics.juegos}
+                        </span>
                       </td>
 
                       {/* Días sin jugar */}
-                      <td className="py-3.5 px-2 sm:px-4 text-center">
+                      <td className="py-2.5 px-0.5 sm:px-1 text-center align-middle">
                         {badge ? (
                           <span className={badge.className}>
                             {badge.label}
@@ -6524,21 +6587,27 @@ const UsersView = ({
                       </td>
 
                       {/* Actividad */}
-                      <td className="py-3.5 px-3 sm:px-4 text-center sm:text-right text-gray-700 dark:text-slate-300 text-xs sm:text-sm font-normal">
-                        {metrics.cicloFormatted !== '-' ? metrics.cicloFormatted : '-'}
+                      <td className="py-2.5 px-1 sm:px-2 text-center sm:text-right align-middle">
+                        <span className="text-gray-700 dark:text-slate-300 text-[11.5px] sm:text-sm font-normal">
+                          {metrics.cicloFormatted !== '-' ? metrics.cicloFormatted : '-'}
+                        </span>
                       </td>
                     </tr>
                   );
                 })}
+                {/* Espaciador inferior para garantizar visibilidad total sobre la barra inferior y FAB */}
+                <tr aria-hidden="true">
+                  <td colSpan={5} className="h-16 border-none" />
+                </tr>
               </tbody>
             </table>
-          </div>
 
-          {filteredUsers.length === 0 && (
-            <div className="p-12 text-center text-gray-400 dark:text-slate-500 text-xs sm:text-sm">
-              No se encontraron usuarios con los filtros seleccionados.
-            </div>
-          )}
+            {filteredUsers.length === 0 && (
+              <div className="p-12 text-center text-gray-400 dark:text-slate-500 text-xs sm:text-sm">
+                No se encontraron usuarios con los filtros seleccionados.
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -6548,9 +6617,9 @@ const UsersView = ({
         onClick={() => setShowNewUserModal(true)} 
         aria-label="Registrar nuevo usuario"
         title="Registrar nuevo usuario"
-        className="fixed bottom-20 right-5 lg:bottom-10 lg:right-10 z-30 w-14 h-14 bg-[#0BA70B] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
+        className="fixed bottom-20 right-4 sm:right-6 lg:bottom-8 lg:right-8 z-30 w-13 h-13 sm:w-14 sm:h-14 bg-[#0BA70B] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
       >
-        <UserPlus size={28} strokeWidth={2.4} />
+        <UserPlus size={26} strokeWidth={2.4} />
       </button>
     </div>
   );
@@ -10989,7 +11058,15 @@ export default function App() {
         </header>
 
         {/* Content */}
-        <main id="main-scroll" className={cn("flex-1 relative pt-0 pb-24 lg:pb-6 overflow-y-auto", activeTab === 'users' ? "bg-[#f4f5f7] dark:bg-slate-900 px-3 md:px-6" : "bg-[#f0f2f5] dark:bg-slate-900 px-3 md:px-6")}>
+        <main 
+          id="main-scroll" 
+          className={cn(
+            "flex-1 relative pt-0", 
+            activeTab === 'users' 
+              ? "bg-[#f4f5f7] dark:bg-slate-900 px-2 sm:px-4 md:px-6 pb-16 lg:pb-3 flex flex-col min-h-0 overflow-hidden" 
+              : "bg-[#f0f2f5] dark:bg-slate-900 px-3 md:px-6 pb-24 lg:pb-6 overflow-y-auto"
+          )}
+        >
           {activationSuccessBanner && (
             <div className="mt-3 p-4 bg-emerald-500/15 border border-emerald-500/40 rounded-2xl flex items-center justify-between text-emerald-950 dark:text-emerald-200">
               <div className="flex items-center gap-3">
@@ -11013,7 +11090,7 @@ export default function App() {
           )}
 
           <ErrorBoundary key={`section-boundary-${activeTab}`} sectionName={activeTab}>
-            <div className="w-full pt-3 md:pt-5">
+            <div className={cn("w-full", activeTab === 'users' ? "flex-1 flex flex-col min-h-0 pt-1.5 sm:pt-3" : "pt-3 md:pt-5")}>
               {activeTab === 'schedule' && (
                 <ScheduleView 
                   key="view-schedule"
