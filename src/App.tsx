@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Calendar, TrendingUp, TrendingDown, DollarSign, CalendarCheck, Percent, Clock, 
   Search, Bell, Menu, X, Phone, MapPin, Star, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, List, Plus, Sparkles,
   ArrowLeft, ArrowRight, Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
-  Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, ShoppingBasket, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, UserCheck, BarChart2, MoreVertical, FileText, Download,
+  Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, ShoppingBasket, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, UserCheck, UserPlus, BarChart2, MoreVertical, FileText, Download,
   MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle, AlertTriangle,
   Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard, Info, Pencil, Footprints
 } from 'lucide-react';
@@ -167,7 +167,7 @@ export interface NavItemDef {
 
 export const MAIN_NAV_ITEMS: NavItemDef[] = [
   { id: 'finance', label: 'Finanzas', icon: DollarSign },
-  { id: 'schedule', label: 'Agenda', icon: Calendar },
+  { id: 'schedule', label: 'Reservas', icon: Calendar },
   { id: 'users', label: 'Usuarios', icon: Users },
   { id: 'profile', label: 'Perfil', icon: Store },
 ];
@@ -6249,15 +6249,13 @@ const UsersView = ({
 }) => {
   const [users, setUsers] = useState<User[]>([]);
   const [bookings, setBookings] = useState<Match[]>([]);
-  const parentRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState('');
   const [showNewUserModal, setShowNewUserModal] = useState(false);
-  const [filters, setFilters] = useState({
-    acquisition: 'all', // all, today, week, month
-    activation: 'all', // all, today, week, month
-    retention: 'all', // all, green, yellow, red
-    matches: 'all', // all, 0-5, 5-20, 20+
-  });
+
+  // Filtros desplegables: Reservas, Juegos (Jugados), Días sin jugar
+  const [reservasFilter, setReservasFilter] = useState<'total' | '-5' | '-10' | '-20' | '-50'>('total');
+  const [juegosFilter, setJuegosFilter] = useState<'total' | '-5' | '-10' | '-20' | '-50'>('total');
+  const [diasFilter, setDiasFilter] = useState<'total' | '0-15' | '16-30' | '31-60' | '60+'>('total');
 
   useEffect(() => {
     let isMounted = true;
@@ -6304,299 +6302,256 @@ const UsersView = ({
     }
   };
 
-  const filteredUsers = (Array.isArray(crmUsers) ? crmUsers : []).filter(user => {
-    if (!user) return false;
-    const metrics = userMetricsMap.get(String(user.id));
-    if (!metrics) return false;
+  const filteredUsers = useMemo(() => {
+    return (Array.isArray(crmUsers) ? crmUsers : []).filter(user => {
+      if (!user) return false;
+      const metrics = userMetricsMap.get(String(user.id));
+      if (!metrics) return false;
 
-    // Search Filter
-    const searchLower = (search || '').toLowerCase();
-    const userName = (user.name || '').toLowerCase();
-    const userCanonical = (user.canonicalName || '').toLowerCase();
-    const userPhone = String(user.phone || '');
-    const userAddress = (user.address || (user as any).city || '').toLowerCase();
+      // 1. Buscador por nombre o teléfono
+      const searchClean = (search || '').trim().toLowerCase();
+      if (searchClean) {
+        const userName = (user.name || '').toLowerCase();
+        const userCanonical = (user.canonicalName || '').toLowerCase();
+        const userPhone = String(user.phone || '');
+        const phoneClean = userPhone.replace(/\D/g, '');
+        const searchPhoneClean = searchClean.replace(/\D/g, '');
 
-    const matchesSearch = 
-      userName.includes(searchLower) ||
-      userCanonical.includes(searchLower) ||
-      userPhone.includes(searchLower) ||
-      userAddress.includes(searchLower);
+        const matchesName = userName.includes(searchClean) || userCanonical.includes(searchClean);
+        const matchesPhone = userPhone.includes(searchClean) || (searchPhoneClean.length >= 3 && phoneClean.includes(searchPhoneClean));
 
-    if (!matchesSearch) return false;
-
-    const now = new Date();
-
-    // Acquisition Filter
-    if (filters.acquisition !== 'all') {
-      const rawAdq = user.acquisitionDate || (user as any).acquisition_date || user.created_at;
-      const adqDate = rawAdq ? safeParseDate(rawAdq) : null;
-      if (adqDate) {
-        if (filters.acquisition === 'today' && !isSameDay(adqDate, now)) return false;
-        if (filters.acquisition === 'week' && !isSameWeek(adqDate, now)) return false;
-        if (filters.acquisition === 'month' && !isSameMonth(adqDate, now)) return false;
+        if (!matchesName && !matchesPhone) {
+          return false;
+        }
       }
-    }
 
-    // Activation Filter
-    if (filters.activation !== 'all') {
-      if (!metrics.isActivated) {
-        return false;
+      // 2. Filtro Reservas (-5, -10, -20, -50, total)
+      if (reservasFilter !== 'total') {
+        const r = metrics.reservas;
+        if (reservasFilter === '-5' && r > 5) return false;
+        if (reservasFilter === '-10' && r > 10) return false;
+        if (reservasFilter === '-20' && r > 20) return false;
+        if (reservasFilter === '-50' && r > 50) return false;
       }
-      const rawAct = user.activationDate || (user as any).activation_date || user.first_visit;
-      const actDate = rawAct ? safeParseDate(rawAct) : null;
-      if (actDate) {
-        if (filters.activation === 'today' && !isSameDay(actDate, now)) return false;
-        if (filters.activation === 'week' && !isSameWeek(actDate, now)) return false;
-        if (filters.activation === 'month' && !isSameMonth(actDate, now)) return false;
+
+      // 3. Filtro Juegos / Jugados (-5, -10, -20, -50, total)
+      if (juegosFilter !== 'total') {
+        const j = metrics.juegos;
+        if (juegosFilter === '-5' && j > 5) return false;
+        if (juegosFilter === '-10' && j > 10) return false;
+        if (juegosFilter === '-20' && j > 20) return false;
+        if (juegosFilter === '-50' && j > 50) return false;
       }
-    }
 
-    // Retention Filter (Días sin Jugar)
-    if (filters.retention !== 'all') {
-      const days = metrics.sinJugarDays;
-      if (filters.retention === 'green' && (days === null || days > 15)) return false;
-      if (filters.retention === 'yellow' && (days === null || days <= 15 || days > 30)) return false;
-      if (filters.retention === 'red' && (days !== null && days <= 30)) return false;
-    }
+      // 4. Filtro Días sin jugar (0 a 15 días, 16 a 30 días, 31 a 60 días, + 60 días, total)
+      if (diasFilter !== 'total') {
+        const days = metrics.sinJugarDays;
+        if (days === null) return false;
+        if (diasFilter === '0-15' && (days < 0 || days > 15)) return false;
+        if (diasFilter === '16-30' && (days < 16 || days > 30)) return false;
+        if (diasFilter === '31-60' && (days < 31 || days > 60)) return false;
+        if (diasFilter === '60+' && days < 61) return false;
+      }
 
-    // Matches Played Filter
-    if (filters.matches !== 'all') {
-      const played = metrics.juegos;
-      if (filters.matches === '0-5' && played > 5) return false;
-      if (filters.matches === '5-20' && (played <= 5 || played > 20)) return false;
-      if (filters.matches === '20+' && played <= 20) return false;
-    }
+      return true;
+    });
+  }, [crmUsers, userMetricsMap, search, reservasFilter, juegosFilter, diasFilter]);
 
-    return true;
-  });
+  const getSinJugarBadge = (days: number | null) => {
+    if (days === null) return null;
+    // Verde Jogo si <= 15 días
+    let bgClass = 'bg-[#0BA70B] text-white';
+    if (days >= 16 && days <= 30) {
+      // Amarillo si 16 a 30 días
+      bgClass = 'bg-[#F2B90F] text-slate-900 font-bold';
+    } else if (days >= 31 && days <= 60) {
+      // Naranja si 31 a 60 días
+      bgClass = 'bg-[#F2780F] text-white font-semibold';
+    } else if (days >= 61) {
+      // Rojo si 61 o más días
+      bgClass = 'bg-[#E53E3E] text-white font-semibold';
+    }
+    return {
+      label: `Hace ${days}d`,
+      className: cn('px-3 py-0.5 rounded-full text-[11px] sm:text-xs font-semibold inline-flex items-center justify-center tracking-tight whitespace-nowrap shadow-xs', bgClass)
+    };
+  };
 
   return (
-    <div className="w-full flex flex-col space-y-4 pb-12">
+    <div className="w-full relative pb-24">
+      {/* Modal para crear usuario existente */}
       <NewUserModal 
         isOpen={showNewUserModal} 
         onClose={() => setShowNewUserModal(false)} 
         onSave={handleCreateUser}
         existingUsers={crmUsers || users}
       />
-      <div className="space-y-3 shrink-0" ref={parentRef}>
-        {/* Search Bar & New User Button */}
-        <div className="flex gap-2 w-full">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-300" size={16} strokeWidth={3} />
+
+      {/* Gran tarjeta blanca, con bordes superiores redondeados y borde gris fino */}
+      <div className="w-full bg-white dark:bg-slate-800 rounded-t-[32px] border-t border-x border-b border-gray-200/90 dark:border-slate-700/80 shadow-xs p-4 sm:p-6 min-h-[calc(100vh-140px)] flex flex-col">
+        {/* Buscador y Filtros */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 sm:gap-4 mb-5">
+          {/* Buscador */}
+          <div className="relative flex-1 max-w-full md:max-w-md">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400" size={17} strokeWidth={2.2} />
             <input 
               type="text" 
-              placeholder="Buscar por nombre, teléfono o barrio.." 
-              className="pl-9 pr-3 py-2 bg-white dark:bg-slate-800 rounded-[10px] text-xs sm:text-sm w-full outline-none shadow-sm text-gray-700 dark:text-slate-200 font-medium border border-gray-100 dark:border-slate-700"
+              placeholder="Buscar por nombre o teléfono" 
+              className="w-full pl-9 pr-4 py-2 bg-transparent rounded-full text-xs sm:text-sm outline-none text-gray-800 dark:text-slate-100 placeholder:text-gray-400 border border-gray-200 dark:border-slate-700 focus:border-gray-400 dark:focus:border-slate-500 transition-colors"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          <button 
-            type="button" 
-            onClick={() => setShowNewUserModal(true)} 
-            className="bg-[#0BA70B] hover:bg-emerald-600 text-white px-3.5 py-2 rounded-[10px] font-bold text-[11px] sm:text-sm shadow-sm active:scale-95 transition-transform whitespace-nowrap cursor-pointer"
-          >
-            + Nuevo usuario
-          </button>
-        </div>
-        
-        {/* Filters */}
-        <div className="flex gap-2 overflow-x-auto pb-1 pt-0.5 no-scrollbar">
-          {/* Filter 1 */}
-          <div className="relative flex-shrink-0 flex items-center gap-1 bg-white dark:bg-slate-800 px-2.5 py-1.5 rounded-[8px] shadow-sm text-[10px] sm:text-xs border border-gray-100 dark:border-slate-700">
-            <ChevronDown className="text-[#0BA70B]" size={12} strokeWidth={3} />
-            <span className="text-gray-800 dark:text-slate-200"><span className="font-bold">Adquisición:</span> {filters.acquisition === 'all' ? 'todos' : filters.acquisition === 'today' ? 'hoy' : filters.acquisition === 'week' ? 'semana' : 'mes'}</span>
-            <select 
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              value={filters.acquisition}
-              onChange={e => setFilters({...filters, acquisition: e.target.value})}
-            >
-              <option value="all">Adquisición: Todos</option>
-              <option value="today">Hoy</option>
-              <option value="week">Esta Semana</option>
-              <option value="month">Este Mes</option>
-            </select>
-          </div>
-          
-          {/* Filter 2 */}
-          <div className="relative flex-shrink-0 flex items-center gap-1 bg-white dark:bg-slate-800 px-2.5 py-1.5 rounded-[8px] shadow-sm text-[10px] sm:text-xs border border-gray-100 dark:border-slate-700">
-            <ChevronDown className="text-[#0BA70B]" size={12} strokeWidth={3} />
-            <span className="text-gray-800 dark:text-slate-200"><span className="font-bold">Activación:</span> {filters.activation === 'all' ? 'todos' : filters.activation === 'today' ? 'hoy' : filters.activation === 'week' ? 'semana' : 'mes'}</span>
-            <select 
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              value={filters.activation}
-              onChange={e => setFilters({...filters, activation: e.target.value})}
-            >
-              <option value="all">Activación: Todos</option>
-              <option value="today">Hoy</option>
-              <option value="week">Esta Semana</option>
-              <option value="month">Este Mes</option>
-            </select>
-          </div>
-          
-          {/* Filter 3 */}
-          <div className="relative flex-shrink-0 flex items-center gap-1 bg-white dark:bg-slate-800 px-2.5 py-1.5 rounded-[8px] shadow-sm text-[10px] sm:text-xs border border-gray-100 dark:border-slate-700">
-            <ChevronDown className="text-[#0BA70B]" size={12} strokeWidth={3} />
-            <span className="text-gray-800 dark:text-slate-200"><span className="font-bold">Estado:</span> {filters.retention === 'all' ? 'todos' : filters.retention === 'green' ? 'activos' : filters.retention === 'yellow' ? 'en riesgo' : 'inactivos'}</span>
-            <select 
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              value={filters.retention}
-              onChange={e => setFilters({...filters, retention: e.target.value})}
-            >
-              <option value="all">Estado: Todos</option>
-              <option value="green">Activos</option>
-              <option value="yellow">En Riesgo</option>
-              <option value="red">Inactivos</option>
-            </select>
-          </div>
-          
-          {/* Filter 4 */}
-          <div className="relative flex-shrink-0 flex items-center gap-1 bg-white dark:bg-slate-800 px-2.5 py-1.5 rounded-[8px] shadow-sm text-[10px] sm:text-xs border border-gray-100 dark:border-slate-700">
-            <ChevronDown className="text-[#0BA70B]" size={12} strokeWidth={3} />
-            <span className="text-gray-800 dark:text-slate-200"><span className="font-bold">Partidos:</span> {filters.matches === 'all' ? 'todos' : filters.matches === '0-5' ? '0-5' : filters.matches === '5-20' ? '5-20' : '20+'}</span>
-            <select 
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              value={filters.matches}
-              onChange={e => setFilters({...filters, matches: e.target.value})}
-            >
-              <option value="all">Partidos: Todos</option>
-              <option value="0-5">0 a 5 partidos</option>
-              <option value="5-20">5 a 20 partidos</option>
-              <option value="20+">Más de 20</option>
-            </select>
+
+          {/* Filtros desplegables */}
+          <div className="flex items-center gap-3 sm:gap-5 overflow-x-auto pb-1 md:pb-0 shrink-0 no-scrollbar">
+            {/* Filtro Reservas */}
+            <div className="relative inline-flex items-center gap-1 text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white text-xs sm:text-sm font-normal cursor-pointer select-none">
+              <span>{reservasFilter === 'total' ? 'Reservas' : `Reservas: ${reservasFilter}`}</span>
+              <ChevronRight size={13} className="text-gray-400 shrink-0" />
+              <select 
+                value={reservasFilter}
+                onChange={(e) => setReservasFilter(e.target.value as any)}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                aria-label="Filtro Reservas"
+              >
+                <option value="total">Reservas: Total</option>
+                <option value="-5">-5</option>
+                <option value="-10">-10</option>
+                <option value="-20">-20</option>
+                <option value="-50">-50</option>
+              </select>
+            </div>
+
+            {/* Filtro Juegos / Jugados */}
+            <div className="relative inline-flex items-center gap-1 text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white text-xs sm:text-sm font-normal cursor-pointer select-none">
+              <span>{juegosFilter === 'total' ? 'Jugados' : `Jugados: ${juegosFilter}`}</span>
+              <ChevronRight size={13} className="text-gray-400 shrink-0" />
+              <select 
+                value={juegosFilter}
+                onChange={(e) => setJuegosFilter(e.target.value as any)}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                aria-label="Filtro Jugados"
+              >
+                <option value="total">Jugados: Total</option>
+                <option value="-5">-5</option>
+                <option value="-10">-10</option>
+                <option value="-20">-20</option>
+                <option value="-50">-50</option>
+              </select>
+            </div>
+
+            {/* Filtro Días sin jugar */}
+            <div className="relative inline-flex items-center gap-1 text-gray-600 hover:text-gray-900 dark:text-slate-300 dark:hover:text-white text-xs sm:text-sm font-normal cursor-pointer select-none">
+              <span>{diasFilter === 'total' ? 'Días sin jugar' : `Sin jugar: ${diasFilter}`}</span>
+              <ChevronRight size={13} className="text-gray-400 shrink-0" />
+              <select 
+                value={diasFilter}
+                onChange={(e) => setDiasFilter(e.target.value as any)}
+                className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                aria-label="Filtro Días sin jugar"
+              >
+                <option value="total">Días sin jugar: Total</option>
+                <option value="0-15">0 a 15 días</option>
+                <option value="16-30">16 a 30 días</option>
+                <option value="31-60">31 a 60 días</option>
+                <option value="60+">+ 60 días</option>
+              </select>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="w-full bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-700/60 overflow-hidden">
-        <div className="overflow-x-auto w-full">
-          <table className="w-full text-[11px] text-left min-w-[850px] bg-white dark:bg-slate-800">
-            <thead className="sticky top-0 z-20 bg-gray-50 dark:bg-slate-800/90 text-gray-500 dark:text-slate-400 font-medium whitespace-nowrap shadow-sm shadow-gray-200/50 dark:shadow-none border-b border-gray-100 dark:border-slate-700/60">
-              <tr>
-                <th className="pl-6 md:pl-4 pr-2 py-3">Jugador</th>
-                <th className="px-2 py-3 text-center">Frec</th>
-                <th className="px-2 py-3">Adquisición</th>
-                <th className="px-2 py-3">Activación</th>
-                <th className="px-2 py-3 text-center">TTV</th>
-                <th className="px-2 py-3 text-center">Sem. Act.</th>
-                <th className="px-2 py-3 text-center">Reservas</th>
-                <th className="px-2 py-3 text-center">Juegos</th>
-                <th className="px-2 py-3">Último Juego</th>
-                <th className="px-2 py-3 text-center">Sin Jugar</th>
-                <th className="px-2 py-3 text-center">Ciclo</th>
-                <th className="pr-6 md:pr-4 pl-2 py-3"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100 dark:divide-slate-700/60">
-              {filteredUsers.map((user, uIdx) => {
-                if (!user) return null;
-                const metrics = userMetricsMap.get(String(user.id)) || calculateUserLifecycleMetrics(user, [], new Date());
-                
-                return (
-                  <tr 
-                    key={`user-row-${user.id || uIdx}-${uIdx}`} 
-                    className="hover:bg-gray-50 dark:hover:bg-slate-700/40 transition-colors cursor-pointer group" 
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onUserClick(user.id, user);
-                    }}
-                  >
-                    {/* 1. Jugador */}
-                    <td className="pl-6 md:pl-4 pr-2 py-3">
-                      <div className="flex items-center gap-2">
-                        <div className="w-7 h-7 rounded-full bg-emerald-100 dark:bg-emerald-900/50 flex items-center justify-center font-bold text-emerald-700 dark:text-emerald-300 border-2 border-white dark:border-slate-800 shadow-sm flex-shrink-0 text-xs">
-                          {user.name?.charAt(0).toUpperCase() || '?'}
+        {/* Tabla contenedora */}
+        <div className="w-full rounded-2xl border border-gray-100 dark:border-slate-700/60 overflow-hidden">
+          <div className="overflow-x-auto w-full">
+            <table className="w-full text-left border-collapse min-w-[560px]">
+              <thead>
+                <tr className="border-b border-gray-100 dark:border-slate-700/80 text-gray-500 dark:text-slate-400 text-xs sm:text-sm font-normal">
+                  <th className="py-3 px-3 sm:px-4 text-left font-normal w-[34%]">Usuario</th>
+                  <th className="py-3 px-2 sm:px-4 text-center font-normal w-[15%]">Reservas</th>
+                  <th className="py-3 px-2 sm:px-4 text-center font-normal w-[15%]">Jugados</th>
+                  <th className="py-3 px-2 sm:px-4 text-center font-normal w-[21%]">Días sin jugar</th>
+                  <th className="py-3 px-3 sm:px-4 text-center sm:text-right font-normal w-[15%]">Actividad</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 dark:divide-slate-700/60">
+                {filteredUsers.map((user, idx) => {
+                  if (!user) return null;
+                  const metrics = userMetricsMap.get(String(user.id)) || calculateUserLifecycleMetrics(user, [], new Date());
+                  const badge = getSinJugarBadge(metrics.sinJugarDays);
+
+                  return (
+                    <tr 
+                      key={`user-row-${user.id || idx}`}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        onUserClick(user.id, user);
+                      }}
+                      className="hover:bg-gray-50/70 dark:hover:bg-slate-700/30 transition-colors cursor-pointer group"
+                    >
+                      {/* Usuario */}
+                      <td className="py-3.5 px-3 sm:px-4 text-left">
+                        <div className="flex flex-col leading-tight">
+                          <span className="font-bold text-gray-900 dark:text-slate-100 text-xs sm:text-sm">
+                            {user.name}
+                          </span>
+                          <span className="text-[#0BA70B] dark:text-[#0BA70B] text-xs sm:text-sm font-normal mt-0.5">
+                            {user.phone || (user.email && !user.email.includes('sin-correo.com') ? user.email : 'Sin teléfono')}
+                          </span>
                         </div>
-                        <div className="min-w-0 max-w-[130px]">
-                          <div className="font-bold text-gray-900 dark:text-slate-100 truncate flex items-center gap-1.5">
-                            <span>{user.name}</span>
-                            {user.isDerived && (
-                              <span className="text-[9px] font-semibold px-1 py-0.5 rounded bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/60 shrink-0">
-                                Invitado
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[9px] text-gray-500 dark:text-slate-400 truncate">{user.phone || (user.email?.includes('sin-correo.com') ? 'Sin teléfono' : user.email)}</div>
-                        </div>
-                      </div>
-                    </td>
+                      </td>
 
-                    {/* 2. Frec */}
-                    <td className="px-2 py-3 text-center font-mono font-medium text-gray-700 dark:text-slate-300">
-                      {metrics.frecuencia}
-                    </td>
-
-                    {/* 3. Adquisición */}
-                    <td className="px-2 py-3 text-gray-600 dark:text-slate-400 font-mono text-[10px] whitespace-nowrap">
-                      {metrics.adquisicionFormatted}
-                    </td>
-
-                    {/* 4. Activación */}
-                    <td className="px-2 py-3 text-gray-600 dark:text-slate-400 font-mono text-[10px] whitespace-nowrap">
-                      {metrics.activacionFormatted}
-                    </td>
-
-                    {/* 5. TTV */}
-                    <td className="px-2 py-3 text-center font-mono text-gray-600 dark:text-slate-400">
-                      {metrics.ttvFormatted}
-                    </td>
-
-                    {/* 6. Sem. Act. */}
-                    <td className="px-2 py-3 text-center">
-                      {metrics.semanaActFormatted !== '-' ? (
-                        <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400 font-mono font-bold text-[10px]">
-                          {metrics.semanaActFormatted}
-                        </span>
-                      ) : (
-                        <span className="text-gray-400 font-mono">-</span>
-                      )}
-                    </td>
-
-                    {/* Reservas */}
-                    <td className="px-2 py-3 font-medium text-center">
-                      <span className="bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 px-2 py-0.5 rounded-md font-mono font-semibold">
+                      {/* Reservas */}
+                      <td className="py-3.5 px-2 sm:px-4 text-center text-gray-700 dark:text-slate-300 text-xs sm:text-sm font-normal">
                         {metrics.reservas}
-                      </span>
-                    </td>
+                      </td>
 
-                    {/* 7. Juegos */}
-                    <td className="px-2 py-3 font-medium text-center">
-                      <span className="bg-gray-100 dark:bg-slate-700 text-gray-800 dark:text-slate-200 px-2 py-0.5 rounded-md font-mono font-semibold">
+                      {/* Jugados */}
+                      <td className="py-3.5 px-2 sm:px-4 text-center text-gray-700 dark:text-slate-300 text-xs sm:text-sm font-normal">
                         {metrics.juegos}
-                      </span>
-                    </td>
+                      </td>
 
-                    {/* 8. Último Juego */}
-                    <td className="px-2 py-3 text-gray-600 dark:text-slate-400 font-mono text-[10px] whitespace-nowrap">
-                      {metrics.ultimoJuegoFormatted}
-                    </td>
+                      {/* Días sin jugar */}
+                      <td className="py-3.5 px-2 sm:px-4 text-center">
+                        {badge ? (
+                          <span className={badge.className}>
+                            {badge.label}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400 font-normal text-xs">-</span>
+                        )}
+                      </td>
 
-                    {/* 9. Sin Jugar */}
-                    <td className="px-2 py-3 text-center font-mono text-gray-600 dark:text-slate-400">
-                      {metrics.sinJugarFormatted}
-                    </td>
-
-                    {/* 10. Ciclo */}
-                    <td className="px-2 py-3 text-center font-mono text-gray-600 dark:text-slate-400">
-                      {metrics.cicloFormatted}
-                    </td>
-
-                    <td className="pr-6 md:pr-4 pl-2 py-3 text-right">
-                      <ChevronRight size={14} className="text-gray-300 dark:text-slate-500 group-hover:text-gray-500 dark:group-hover:text-slate-300 transition-colors" />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-        {filteredUsers.length === 0 && (
-          <div className="p-12 text-center text-gray-500 dark:text-slate-400">
-            No se encontraron usuarios con los filtros seleccionados.
+                      {/* Actividad */}
+                      <td className="py-3.5 px-3 sm:px-4 text-center sm:text-right text-gray-700 dark:text-slate-300 text-xs sm:text-sm font-normal">
+                        {metrics.cicloFormatted !== '-' ? metrics.cicloFormatted : '-'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        )}
+
+          {filteredUsers.length === 0 && (
+            <div className="p-12 text-center text-gray-400 dark:text-slate-500 text-xs sm:text-sm">
+              No se encontraron usuarios con los filtros seleccionados.
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* FAB Botón de alta: fijo abajo a la derecha, fondo verde Jogo, cuadrado con esquinas redondeadas y sombra sutil */}
+      <button 
+        type="button" 
+        onClick={() => setShowNewUserModal(true)} 
+        aria-label="Registrar nuevo usuario"
+        title="Registrar nuevo usuario"
+        className="fixed bottom-20 right-5 lg:bottom-10 lg:right-10 z-30 w-14 h-14 bg-[#0BA70B] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
+      >
+        <UserPlus size={28} strokeWidth={2.4} />
+      </button>
     </div>
   );
 };
@@ -10244,16 +10199,17 @@ const BottomNav = ({ active, onNavigate }: { active: NavTabId | string, onNaviga
     <nav 
       role="navigation" 
       aria-label="Navegación principal inferior"
-      className="fixed bottom-0 left-0 right-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-gray-200 dark:border-slate-800 px-3 py-1.5 flex justify-around items-center z-40 pb-safe shadow-[0_-4px_12px_rgba(0,0,0,0.05)] lg:hidden"
+      className="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-900 border-t border-gray-200 dark:border-slate-800 px-3 py-1.5 flex justify-around items-center z-40 pb-safe shadow-[0_-4px_12px_rgba(0,0,0,0.03)] lg:hidden"
     >
       {MAIN_NAV_ITEMS.map(item => {
         const isCurrent = active === item.id;
+        const displayLabel = item.id === 'schedule' ? 'Reservas' : item.label;
         return (
           <button
             type="button"
             role="tab"
             aria-selected={isCurrent}
-            aria-label={item.label}
+            aria-label={displayLabel}
             key={`bottom-nav-${item.id}`}
             onClick={(e) => {
               e.preventDefault();
@@ -10263,21 +10219,18 @@ const BottomNav = ({ active, onNavigate }: { active: NavTabId | string, onNaviga
             className={cn(
               "flex-1 flex flex-col items-center justify-center gap-0.5 py-1 px-2 rounded-xl transition-all cursor-pointer select-none touch-manipulation",
               isCurrent 
-                ? "text-emerald-600 dark:text-emerald-400 font-bold scale-[1.02]" 
+                ? "text-[#0BA70B] dark:text-[#0BA70B] font-bold" 
                 : "text-gray-400 dark:text-slate-400 hover:text-gray-600 dark:hover:text-slate-200 active:scale-95"
             )}
           >
-            <div className={cn(
-              "p-1.5 rounded-xl transition-all duration-200",
-              isCurrent ? "bg-emerald-50 dark:bg-emerald-950/60 shadow-sm" : "bg-transparent"
-            )}>
-              <item.icon size={22} strokeWidth={isCurrent ? 2.5 : 1.8} />
+            <div className="p-1 transition-all duration-200">
+              <item.icon size={22} strokeWidth={isCurrent ? 2.5 : 1.8} className={isCurrent ? "text-[#0BA70B] dark:text-[#0BA70B]" : "text-gray-400 dark:text-slate-400"} />
             </div>
             <span className={cn(
               "text-[11px] leading-tight tracking-tight transition-colors",
-              isCurrent ? "font-bold text-emerald-700 dark:text-emerald-300" : "font-medium"
+              isCurrent ? "font-bold text-[#0BA70B] dark:text-[#0BA70B]" : "font-medium text-gray-400 dark:text-slate-400"
             )}>
-              {item.label}
+              {displayLabel}
             </span>
           </button>
         );
@@ -10921,21 +10874,37 @@ export default function App() {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
-        <header className="bg-[#0BA70B] dark:bg-[#0BA70B] h-20 flex items-center justify-between px-4 md:px-6 text-white z-20 relative">
-          <div className="flex items-center gap-4">
-            <button type="button" onClick={() => setSidebarOpen(true)} className="lg:hidden text-white hover:text-white/80 transition-colors p-1 -ml-1 cursor-pointer" aria-label="Abrir menú lateral">
-              <Menu size={32} strokeWidth={2.5} />
+        <header className={cn(
+          "h-16 md:h-20 flex items-center justify-between px-4 md:px-6 z-20 relative transition-colors",
+          activeTab === 'users'
+            ? "bg-[#f4f5f7] dark:bg-slate-900 text-slate-800 dark:text-slate-100 border-b border-transparent"
+            : "bg-[#0BA70B] dark:bg-[#0BA70B] text-white"
+        )}>
+          <div className="flex items-center gap-3 sm:gap-4">
+            <button 
+              type="button" 
+              onClick={() => setSidebarOpen(true)} 
+              className={cn(
+                "lg:hidden p-1 -ml-1 cursor-pointer transition-colors",
+                activeTab === 'users' ? "text-slate-800 dark:text-slate-100 hover:text-slate-600" : "text-white hover:text-white/80"
+              )} 
+              aria-label="Abrir menú lateral"
+            >
+              <Menu size={activeTab === 'users' ? 30 : 32} strokeWidth={2.5} />
             </button>
             <div className="flex flex-col">
-              <h2 className="text-[20px] md:text-[24px] font-bold tracking-wide leading-tight">
+              <h2 className={cn(
+                "text-[22px] md:text-[26px] font-bold tracking-tight leading-tight",
+                activeTab === 'users' ? "text-slate-800 dark:text-slate-100" : "text-white"
+              )}>
                 { 
                  activeTab === 'schedule' ? 'Agenda' :
-                 activeTab === 'users' ? 'Usuarios totales' :
+                 activeTab === 'users' ? 'Usuarios' :
                  activeTab === 'finance' ? 'Finanzas' :
                  activeTab === 'profile' ? 'Perfil' : 
                  activeTab === 'analytics' ? 'Analíticas' : activeTab}
               </h2>
-              {authorizedComplexes.length > 1 ? (
+              {activeTab !== 'users' && authorizedComplexes.length > 1 ? (
                 <div className="relative inline-block mt-0.5">
                   <select
                     value={activeComplexId || ''}
@@ -10951,7 +10920,7 @@ export default function App() {
                   </select>
                   <ChevronDown size={11} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-white/80 pointer-events-none" />
                 </div>
-              ) : activeComplex?.name ? (
+              ) : (activeTab !== 'users' && activeComplex?.name) ? (
                 <div className="flex items-center gap-1.5 text-xs text-emerald-100 font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-200 animate-pulse" />
                   <span className="truncate max-w-[200px]">{activeComplex.name}</span>
@@ -10960,65 +10929,67 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-2 sm:gap-4">
-            {activeTab === 'users' && (
-              <div className="flex items-center gap-1.5 text-white font-bold text-xl md:text-2xl mr-1">
-                <UserIcon size={24} strokeWidth={2.5} />
+            {activeTab === 'users' ? (
+              <div className="flex items-center gap-1.5 text-slate-800 dark:text-slate-100 font-bold text-2xl md:text-3xl mr-1">
+                <UserIcon size={26} strokeWidth={2.4} />
                 <span>{unifiedCrmUsers.length}</span>
               </div>
-            )}
-            
-            {/* Perfil del operador autenticado & Cerrar Sesión */}
-            <div className="flex items-center gap-2 bg-white/15 dark:bg-black/20 hover:bg-white/25 transition-all rounded-full py-1 pl-1.5 pr-2.5 border border-white/20 text-white shadow-sm">
-              {user?.photoURL ? (
-                <img src={user.photoURL} alt={user.displayName || 'Usuario'} className="w-7 h-7 rounded-full object-cover border border-white/40" />
-              ) : (
-                <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center font-bold text-xs uppercase text-white">
-                  {user?.displayName?.[0] || user?.email?.[0] || 'U'}
+            ) : (
+              <>
+                {/* Perfil del operador autenticado & Cerrar Sesión */}
+                <div className="flex items-center gap-2 bg-white/15 dark:bg-black/20 hover:bg-white/25 transition-all rounded-full py-1 pl-1.5 pr-2.5 border border-white/20 text-white shadow-sm">
+                  {user?.photoURL ? (
+                    <img src={user.photoURL} alt={user.displayName || 'Usuario'} className="w-7 h-7 rounded-full object-cover border border-white/40" />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-white/20 flex items-center justify-center font-bold text-xs uppercase text-white">
+                      {user?.displayName?.[0] || user?.email?.[0] || 'U'}
+                    </div>
+                  )}
+                  <div className="hidden md:flex flex-col text-left">
+                    <span className="text-xs font-semibold leading-tight truncate max-w-[120px]">{user?.displayName || user?.email?.split('@')[0]}</span>
+                    {isAdmin && <span className="text-[9px] uppercase tracking-wider text-emerald-200 font-bold">Admin</span>}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={logout}
+                    title="Cerrar sesión"
+                    className="p-1 hover:text-red-200 transition-colors ml-0.5 cursor-pointer text-white/90"
+                    aria-label="Cerrar sesión"
+                  >
+                    <LogOut size={16} />
+                  </button>
                 </div>
-              )}
-              <div className="hidden md:flex flex-col text-left">
-                <span className="text-xs font-semibold leading-tight truncate max-w-[120px]">{user?.displayName || user?.email?.split('@')[0]}</span>
-                {isAdmin && <span className="text-[9px] uppercase tracking-wider text-emerald-200 font-bold">Admin</span>}
-              </div>
-              <button
-                type="button"
-                onClick={logout}
-                title="Cerrar sesión"
-                className="p-1 hover:text-red-200 transition-colors ml-0.5 cursor-pointer text-white/90"
-                aria-label="Cerrar sesión"
-              >
-                <LogOut size={16} />
-              </button>
-            </div>
 
-            {/* Night mode toggle button in Header */}
-            <button 
-              type="button" 
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                toggleDarkMode();
-              }} 
-              title={isDarkMode ? "Modo nocturno: Prendido (clic para apagar)" : "Modo nocturno: Apagado (clic para prender)"}
-              className="text-white hover:bg-white/20 p-2 rounded-full transition-colors flex items-center justify-center cursor-pointer relative"
-              aria-label="Alternar modo nocturno"
-            >
-              {isDarkMode ? (
-                <Moon size={22} className="text-yellow-300 fill-yellow-300/30" />
-              ) : (
-                <Sun size={22} className="text-white hover:text-yellow-200" />
-              )}
-            </button>
+                {/* Night mode toggle button in Header */}
+                <button 
+                  type="button" 
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    toggleDarkMode();
+                  }} 
+                  title={isDarkMode ? "Modo nocturno: Prendido (clic para apagar)" : "Modo nocturno: Apagado (clic para prender)"}
+                  className="text-white hover:bg-white/20 p-2 rounded-full transition-colors flex items-center justify-center cursor-pointer relative"
+                  aria-label="Alternar modo nocturno"
+                >
+                  {isDarkMode ? (
+                    <Moon size={22} className="text-yellow-300 fill-yellow-300/30" />
+                  ) : (
+                    <Sun size={22} className="text-white hover:text-yellow-200" />
+                  )}
+                </button>
 
-            <button type="button" onClick={() => setNotificationsOpen(true)} className="text-white hover:bg-white/20 p-2 rounded-full transition-colors relative cursor-pointer" aria-label="Notificaciones">
-              <Bell size={24} />
-              <div className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#0BA70B]"></div>
-            </button>
+                <button type="button" onClick={() => setNotificationsOpen(true)} className="text-white hover:bg-white/20 p-2 rounded-full transition-colors relative cursor-pointer" aria-label="Notificaciones">
+                  <Bell size={24} />
+                  <div className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#0BA70B]"></div>
+                </button>
+              </>
+            )}
           </div>
         </header>
 
         {/* Content */}
-        <main id="main-scroll" className="flex-1 relative pt-0 px-3 md:px-6 pb-24 lg:pb-6 bg-[#f0f2f5] dark:bg-slate-900 overflow-y-auto">
+        <main id="main-scroll" className={cn("flex-1 relative pt-0 pb-24 lg:pb-6 overflow-y-auto", activeTab === 'users' ? "bg-[#f4f5f7] dark:bg-slate-900 px-3 md:px-6" : "bg-[#f0f2f5] dark:bg-slate-900 px-3 md:px-6")}>
           {activationSuccessBanner && (
             <div className="mt-3 p-4 bg-emerald-500/15 border border-emerald-500/40 rounded-2xl flex items-center justify-between text-emerald-950 dark:text-emerald-200">
               <div className="flex items-center gap-3">
