@@ -1735,12 +1735,13 @@ const CreateMatchModal = ({
 
     setIsSubmitting(true);
     try {
+      const resolvedCanonId = selectedHost?.canonicalId || data.canonicalId;
+      const resolvedCanonName = selectedHost?.canonicalName || data.canonicalName;
+      const resolvedHistId = selectedHost?.historicalId || data.historicalId;
+      const resolvedHistIds = selectedHost?.historicalIds || data.historicalIds;
+
       await onCreate({
         ...data,
-        canonicalId: selectedHost?.canonicalId || data.canonicalId,
-        canonicalName: selectedHost?.canonicalName || data.canonicalName,
-        historicalId: selectedHost?.historicalId || data.historicalId,
-        historicalIds: selectedHost?.historicalIds || data.historicalIds,
         courtId: data.court_id,
         courtName,
         clientName,
@@ -1768,7 +1769,11 @@ const CreateMatchModal = ({
           return endDateTime < now ? 'jugado' : 'confirmado';
         })(),
         paymentStatus,
-        notes: data.notes || ''
+        notes: data.notes || '',
+        ...(resolvedCanonId ? { canonicalId: resolvedCanonId } : {}),
+        ...(resolvedCanonName ? { canonicalName: resolvedCanonName } : {}),
+        ...(resolvedHistId ? { historicalId: resolvedHistId } : {}),
+        ...(Array.isArray(resolvedHistIds) && resolvedHistIds.length > 0 ? { historicalIds: resolvedHistIds } : {})
       });
       onClose();
     } catch (err: any) {
@@ -9446,7 +9451,11 @@ export default function App() {
         userPhone: bookingData.userPhone || bookingData.clientPhone || '',
         userEmail: bookingData.userEmail || bookingData.clientEmail || '',
         notes: bookingData.notes || '',
-        payments: bookingData.payments || undefined,
+        ...(bookingData.payments ? { payments: bookingData.payments } : {}),
+        ...(bookingData.canonicalId ? { canonicalId: bookingData.canonicalId } : {}),
+        ...(bookingData.canonicalName ? { canonicalName: bookingData.canonicalName } : {}),
+        ...(bookingData.historicalId ? { historicalId: bookingData.historicalId } : {}),
+        ...(Array.isArray(bookingData.historicalIds) && bookingData.historicalIds.length > 0 ? { historicalIds: bookingData.historicalIds } : {}),
         ownerId: auth.currentUser?.uid || '',
         adminId: ''
       };

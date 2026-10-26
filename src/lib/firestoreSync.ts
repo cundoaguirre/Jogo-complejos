@@ -77,6 +77,25 @@ export function getActiveComplexId(user?: any, customComplexId?: string): string
 }
 
 /**
+ * Sanitiza recursivamente un documento u objeto eliminando cualquier clave cuyo valor sea 'undefined',
+ * garantizando compatibilidad absoluta con Transaction.set(), setDoc() y updateDoc() en Firebase Firestore.
+ */
+export function cleanFirestoreDocument<T extends Record<string, any>>(obj: T): T {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const result: any = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) {
+      if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date) && typeof (value as any).toDate !== 'function') {
+        result[key] = cleanFirestoreDocument(value);
+      } else {
+        result[key] = value;
+      }
+    }
+  }
+  return result;
+}
+
+/**
  * Calculates duration in minutes between two "HH:mm" strings
  */
 export function calculateDurationMinutes(startTime: string, endTime: string): number {
@@ -886,7 +905,22 @@ export async function createBookingInFirestore(data: {
   const newBookingRef = doc(collection(db, BOOKINGS_COLLECTION));
   const newBookingId = newBookingRef.id;
 
-  const payload = {
+  // Resolución segura de identificadores canónicos e históricos (omitir si están ausentes/vacíos)
+  const rawCanonId = data.canonicalId || (data as any).canonicalUserId || (data as any).personId || (data as any).erpUserId;
+  const validCanonId = typeof rawCanonId === 'string' && rawCanonId.trim() ? rawCanonId.trim() : (typeof rawCanonId === 'number' ? String(rawCanonId) : null);
+
+  const rawCanonName = (data as any).canonicalName;
+  const validCanonName = typeof rawCanonName === 'string' && rawCanonName.trim() ? rawCanonName.trim() : null;
+
+  const rawHistId = (data as any).historicalId;
+  const validHistId = typeof rawHistId === 'string' && rawHistId.trim() ? rawHistId.trim() : (typeof rawHistId === 'number' ? String(rawHistId) : null);
+
+  const rawHistIds = (data as any).historicalIds;
+  const validHistIds = Array.isArray(rawHistIds)
+    ? rawHistIds.map((h: any) => String(h || '').trim()).filter(Boolean)
+    : [];
+
+  const payload: Record<string, any> = {
     id: newBookingId,
     complejoId: targetComplexId,
     complexId: targetComplexId,
@@ -913,11 +947,10 @@ export async function createBookingInFirestore(data: {
     userEmail: (data.userEmail || data.clientEmail || '').trim(),
     clientEmail: (data.userEmail || data.clientEmail || '').trim(),
     notes: data.notes || '',
-    canonicalId: data.canonicalId || (data as any).canonicalUserId || (data as any).personId || undefined,
-    canonicalUserId: (data as any).canonicalUserId || data.canonicalId || (data as any).personId || undefined,
-    canonicalName: (data as any).canonicalName || undefined,
-    historicalId: (data as any).historicalId || undefined,
-    historicalIds: (data as any).historicalIds || undefined,
+    ...(validCanonId ? { canonicalId: validCanonId, canonicalUserId: validCanonId } : {}),
+    ...(validCanonName ? { canonicalName: validCanonName } : {}),
+    ...(validHistId ? { historicalId: validHistId } : {}),
+    ...(validHistIds.length > 0 ? { historicalIds: validHistIds } : {}),
     ownerId: auth.currentUser?.uid || data.ownerId || '',
     adminId: data.adminId || '',
     createdAt: new Date().toISOString(),
@@ -996,8 +1029,8 @@ export async function createBookingInFirestore(data: {
       }, { merge: true });
     }
 
-    // 5. Write canonical booking document into /bookings
-    transaction.set(newBookingRef, payload);
+    // 5. Write canonical booking document into /bookings (sanitizado contra campos undefined)
+    transaction.set(newBookingRef, cleanFirestoreDocument(payload));
 
     // 6. Motor Financiero Unificado: Registrar operación comercial y movimiento de seña si corresponde
     if (price > 0 || deposit > 0) {
@@ -1176,11 +1209,11 @@ export async function updateBookingInFirestore(
           }
         }
 
-        transaction.update(docRef, {
+        transaction.update(docRef, cleanFirestoreDocument({
           ...patch,
           status: 'cancelado',
           updatedAt: new Date().toISOString()
-        });
+        }));
         return;
       }
 
@@ -1256,17 +1289,17 @@ export async function updateBookingInFirestore(
       }
 
       // Update booking document
-      transaction.update(docRef, {
+      transaction.update(docRef, cleanFirestoreDocument({
         ...patch,
         updatedAt: new Date().toISOString()
-      });
+      }));
     });
   } else {
     // Pure metadata update (e.g. payment, deposit, notes)
-    await updateDoc(docRef, {
+    await updateDoc(docRef, cleanFirestoreDocument({
       ...patch,
       updatedAt: new Date().toISOString()
-    });
+    }));
   }
 
   // Lifecycle metrics synchronization

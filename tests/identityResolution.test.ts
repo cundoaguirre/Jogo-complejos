@@ -4,7 +4,7 @@ import {
   findMatchingLocalUser,
   normalizePhoneNumber
 } from '../src/lib/crmActivityIndex';
-import { resolveClientName } from '../src/lib/firestoreSync';
+import { resolveClientName, cleanFirestoreDocument } from '../src/lib/firestoreSync';
 import type { Match, User } from '../src/types';
 
 let passed = 0;
@@ -306,6 +306,90 @@ assertEqual(normalizePhoneNumber('+54 9 11 4455-6677'), '1144556677', 'Normaliza
 assertEqual(normalizePhoneNumber('11 15 4455-6677'), '1144556677', 'Normalización de 11 15 a 10 dígitos');
 assertEqual(normalizePhoneNumber('0351 15 998-8776'), '3519988776', 'Normalización Córdoba 0351 15 a 10 dígitos');
 assertEqual(normalizePhoneNumber('+54 9 351 998-8776'), '3519988776', 'Normalización Córdoba +54 9 351 a 10 dígitos');
+
+// --------------------------------------------------------------------------------------------------
+// 9. ESCRITURA EN FIRESTORE: AUSENCIA DE 'undefined' EN TRANSACTION.SET() (RESERVA CON Y SIN CANONICALID)
+// --------------------------------------------------------------------------------------------------
+console.log('\n--- 9. ESCRITURA EN FIRESTORE: MANEJO SEGURO DE CANONICALID Y OMISIÓN DE UNDEFINED ---');
+
+// Validador estricto idéntico a Firestore SDK para Transaction.set()
+function validateFirestorePayload(docPath: string, payload: any) {
+  for (const [key, value] of Object.entries(payload)) {
+    if (value === undefined) {
+      throw new Error(`"Transaction.set()": valor no compatible "undefined" en el campo "${key}", documento "${docPath}".`);
+    }
+  }
+}
+
+// 9.1 Caso de falla reproducido: Objeto crudo con canonicalId: undefined
+const rawFaultyPayload = {
+  id: '8YcmcpSXYUl3ByVNJoxc',
+  courtName: 'Cancha 1',
+  date: '2026-10-25',
+  startTime: '19:00',
+  endTime: '20:00',
+  clientName: 'Jugador Común',
+  canonicalId: undefined,
+  canonicalUserId: undefined,
+  canonicalName: undefined,
+  historicalId: undefined,
+  historicalIds: undefined
+};
+
+let capturedError: string | null = null;
+try {
+  validateFirestorePayload('bookings/8YcmcpSXYUl3ByVNJoxc', rawFaultyPayload);
+} catch (e: any) {
+  capturedError = e.message;
+}
+assert(capturedError !== null && capturedError.includes('valor no compatible "undefined" en el campo "canonicalId"'), 
+  'El validador de Firestore reproduce exactamente el error con canonicalId undefined');
+
+// 9.2 Reserva creada desde el SaaS SIN canonicalId (jugador local nuevo o sin cuenta ERP)
+const cleanPayloadWithoutCanonical = cleanFirestoreDocument(rawFaultyPayload);
+assert(!('canonicalId' in cleanPayloadWithoutCanonical), 'canonicalId debe ser completamente omitido del documento');
+assert(!('canonicalUserId' in cleanPayloadWithoutCanonical), 'canonicalUserId debe ser completamente omitido del documento');
+assert(!('canonicalName' in cleanPayloadWithoutCanonical), 'canonicalName debe ser completamente omitido del documento');
+assert(!('historicalId' in cleanPayloadWithoutCanonical), 'historicalId debe ser completamente omitido del documento');
+assert(!('historicalIds' in cleanPayloadWithoutCanonical), 'historicalIds debe ser completamente omitido del documento');
+
+let successWithoutCanonical = false;
+try {
+  validateFirestorePayload('bookings/8YcmcpSXYUl3ByVNJoxc', cleanPayloadWithoutCanonical);
+  successWithoutCanonical = true;
+} catch (e: any) {
+  successWithoutCanonical = false;
+}
+assert(successWithoutCanonical, 'Transaction.set() para reserva sin canonicalId se ejecuta con éxito absoluto sin errores de undefined');
+
+// 9.3 Reserva creada con identidad canónica válida (conservación íntegra)
+const bookingWithCanonicalInput = {
+  id: 'booking_with_canon_123',
+  courtName: 'Cancha 2',
+  date: '2026-10-26',
+  startTime: '20:00',
+  endTime: '21:00',
+  clientName: 'Pájaro Gutiérrez',
+  canonicalId: CANONICAL_PERSON_ID,
+  canonicalUserId: CANONICAL_PERSON_ID,
+  canonicalName: CANONICAL_NAME,
+  historicalId: 'hist_salon_001',
+  historicalIds: ['hist_salon_001', 'hist_pato_002']
+};
+
+const cleanPayloadWithCanonical = cleanFirestoreDocument(bookingWithCanonicalInput);
+assertEqual(cleanPayloadWithCanonical.canonicalId, CANONICAL_PERSON_ID, 'canonicalId válido debe conservarse intacto en el documento');
+assertEqual(cleanPayloadWithCanonical.canonicalName, CANONICAL_NAME, 'canonicalName válido debe conservarse intacto');
+assertEqual(cleanPayloadWithCanonical.historicalId, 'hist_salon_001', 'historicalId válido debe conservarse intacto');
+
+let successWithCanonical = false;
+try {
+  validateFirestorePayload('bookings/booking_with_canon_123', cleanPayloadWithCanonical);
+  successWithCanonical = true;
+} catch (e: any) {
+  successWithCanonical = false;
+}
+assert(successWithCanonical, 'Transaction.set() para reserva con identidad canónica se ejecuta con éxito y conserva todos los campos');
 
 console.log('\n----------------------------------------------------');
 console.log(`TOTAL PRUEBAS: ${passed + failed} | EXITOSAS: ${passed} | FALLIDAS: ${failed}`);
