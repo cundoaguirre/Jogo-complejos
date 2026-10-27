@@ -6920,33 +6920,484 @@ const FinanceChartModal = ({ isOpen, onClose, complexId = 'complejo_central' }: 
   );
 };
 
+export type FinancePeriod = 'today' | 'this_week' | 'last_week' | 'this_month' | 'last_month';
+
+export const FINANCE_PERIOD_OPTIONS: { id: FinancePeriod; label: string }[] = [
+  { id: 'today', label: 'Hoy' },
+  { id: 'this_week', label: 'Esta semana' },
+  { id: 'last_week', label: 'Semana anterior' },
+  { id: 'this_month', label: 'Este mes' },
+  { id: 'last_month', label: 'Mes anterior' }
+];
+
+export function getPeriodRange(period: FinancePeriod, now = new Date()) {
+  const tStart = startOfDay(now);
+  const tEnd = endOfDay(now);
+
+  if (period === 'today') {
+    const yDate = new Date(now.getTime() - 24 * 3600 * 1000);
+    return {
+      current: { start: tStart, end: tEnd },
+      previous: { start: startOfDay(yDate), end: endOfDay(yDate) },
+      compareLabel: 'de ayer'
+    };
+  }
+  if (period === 'this_week') {
+    const cStart = startOfWeek(now, { weekStartsOn: 1 });
+    const cEnd = endOfWeek(now, { weekStartsOn: 1 });
+    const pRef = new Date(cStart.getTime() - 24 * 3600 * 1000);
+    return {
+      current: { start: cStart, end: cEnd },
+      previous: { start: startOfWeek(pRef, { weekStartsOn: 1 }), end: endOfWeek(pRef, { weekStartsOn: 1 }) },
+      compareLabel: 'de sem. ant.'
+    };
+  }
+  if (period === 'last_week') {
+    const thisWStart = startOfWeek(now, { weekStartsOn: 1 });
+    const lRef = new Date(thisWStart.getTime() - 24 * 3600 * 1000);
+    const cStart = startOfWeek(lRef, { weekStartsOn: 1 });
+    const cEnd = endOfWeek(lRef, { weekStartsOn: 1 });
+    const pRef = new Date(cStart.getTime() - 24 * 3600 * 1000);
+    return {
+      current: { start: cStart, end: cEnd },
+      previous: { start: startOfWeek(pRef, { weekStartsOn: 1 }), end: endOfWeek(pRef, { weekStartsOn: 1 }) },
+      compareLabel: 'de sem. ant.'
+    };
+  }
+  if (period === 'this_month') {
+    const cStart = startOfMonth(now);
+    const cEnd = endOfMonth(now);
+    const pRef = new Date(cStart.getTime() - 24 * 3600 * 1000);
+    return {
+      current: { start: cStart, end: cEnd },
+      previous: { start: startOfMonth(pRef), end: endOfMonth(pRef) },
+      compareLabel: 'del mes ant.'
+    };
+  }
+  // 'last_month'
+  const thisMStart = startOfMonth(now);
+  const lRef = new Date(thisMStart.getTime() - 24 * 3600 * 1000);
+  const cStart = startOfMonth(lRef);
+  const cEnd = endOfMonth(lRef);
+  const pRef = new Date(cStart.getTime() - 24 * 3600 * 1000);
+  return {
+    current: { start: cStart, end: cEnd },
+    previous: { start: startOfMonth(pRef), end: endOfMonth(pRef) },
+    compareLabel: 'del mes ant.'
+  };
+}
+
+function computeTrend(current: number, previous: number) {
+  if (previous === 0) {
+    if (current > 0) return { pct: '+100%', isUp: true };
+    return { pct: '+0%', isUp: true };
+  }
+  const pctNum = Math.round(((current - previous) / previous) * 100);
+  if (pctNum >= 0) {
+    return { pct: `+${pctNum}%`, isUp: true };
+  }
+  return { pct: `${pctNum}%`, isUp: false };
+}
+
+function resolveFinanceCourtName(
+  item?: any,
+  linkedBooking?: any,
+  linkedOp?: any,
+  courts: Court[] = []
+): string {
+  // 1. Buscá primero la reserva vinculada (linkedBooking)
+  if (linkedBooking) {
+    const bName = linkedBooking.courtName || linkedBooking.court_name || linkedBooking.court;
+    if (bName && typeof bName === 'string' && bName.trim() && bName.trim().toLowerCase() !== 'cancha') {
+      return bName.trim();
+    }
+    const bCourtId = linkedBooking.courtId ?? linkedBooking.court_id;
+    if (bCourtId) {
+      const foundCourt = courts.find(c => String(c.id) === String(bCourtId));
+      if (foundCourt?.name) return foundCourt.name;
+    }
+  }
+
+  // 1.b Buscar por courtId en el ítem directamente
+  const directCourtId = item?.courtId ?? item?.court_id ?? item?.originalDoc?.courtId;
+  if (directCourtId) {
+    const foundCourt = courts.find(c => String(c.id) === String(directCourtId));
+    if (foundCourt?.name) return foundCourt.name;
+  }
+
+  // 2. Buscá en la operación vinculada (linkedOp)
+  if (linkedOp) {
+    const opName = linkedOp.courtName || linkedOp.metadata?.courtName;
+    if (opName && typeof opName === 'string' && opName.trim() && opName.trim().toLowerCase() !== 'cancha') {
+      return opName.trim();
+    }
+    const opCourtId = linkedOp.courtId || linkedOp.metadata?.courtId;
+    if (opCourtId) {
+      const foundCourt = courts.find(c => String(c.id) === String(opCourtId));
+      if (foundCourt?.name) return foundCourt.name;
+    }
+  }
+
+  // 3. Analizar textos (item.notes, item.category, item.concept, linkedOp?.notes, linkedBooking?.notes)
+  const textCandidates = [
+    item?.courtName,
+    item?.notes,
+    item?.concept,
+    item?.category,
+    linkedOp?.notes,
+    linkedOp?.concept,
+    linkedBooking?.notes
+  ].filter(Boolean) as string[];
+
+  for (const text of textCandidates) {
+    // Buscar patrones específicos como "Alquiler Cancha (El Maracaná)" o "Reserva (Cancha 1)"
+    const parenMatch = text.match(/(?:Alquiler\s+Cancha|Reserva|Cobro\s+reserva)\s*\(([^)]+)\)/i);
+    if (parenMatch && parenMatch[1]?.trim() && parenMatch[1].trim().toLowerCase() !== 'cancha') {
+      return parenMatch[1].trim();
+    }
+
+    // Buscar "Cancha X" o "Cancha <Nombre>"
+    const canchaMatch = text.match(/Cancha\s+[A-Za-z0-9]+/i);
+    if (canchaMatch) {
+      return canchaMatch[0];
+    }
+
+    // Buscar "El <Nombre>" como "El Maracaná", "El Monumental", "El Cilindro"
+    const elMatch = text.match(/El\s+[A-Za-z0-9áéíóúÁÉÍÓÚñÑ]+/i);
+    if (elMatch) {
+      return elMatch[0];
+    }
+
+    // Buscar nombres de canchas registradas en courts dentro del texto
+    for (const c of courts) {
+      if (c.name && c.name.toLowerCase() !== 'cancha' && text.toLowerCase().includes(c.name.toLowerCase())) {
+        return c.name;
+      }
+    }
+  }
+
+  // Si la reserva vinculada tenía algún nombre aunque fuera genérico
+  if (linkedBooking?.courtName) return linkedBooking.courtName;
+  if (linkedBooking?.court_name) return linkedBooking.court_name;
+
+  // 4. Fallback final
+  return 'Cancha';
+}
+
+function cleanFinanceText(raw?: string): string {
+  if (!raw || typeof raw !== 'string') return '';
+  let text = raw.trim();
+
+  // 1. Quitar métodos de pago entre paréntesis: (cash), (Efectivo), (Transferencia), etc.
+  text = text.replace(/\s*\((?:cash|efectivo|transferencia|tarjeta|débito|debito|crédito|credito|mercadopago|mp|fiado|cuenta corriente|otro)\)/gi, '');
+
+  // 2. Quitar métodos de pago al inicio con guión, dos puntos o punto medio: "Efectivo - Luz" -> "Luz"
+  text = text.replace(/^(?:cash|efectivo|transferencia|tarjeta|débito|debito|crédito|credito|mercadopago|mp)\s*[-–—·:]\s*/gi, '');
+
+  // 3. Quitar métodos de pago al final con guión, dos puntos o punto medio: "Luz - Efectivo" -> "Luz"
+  text = text.replace(/\s*[-–—·:]\s*(?:cash|efectivo|transferencia|tarjeta|débito|debito|crédito|credito|mercadopago|mp)$/gi, '');
+
+  // 4. Quitar prefijos repetitivos de pagos/compras
+  text = text.replace(/^(?:pago\s+de\s+gasto|pago\s+gasto|pago\s+de\s+compra\s+de\s+mercader[ií]a|pago\s+compra\s+de\s+mercader[ií]a|pago\s+compra\s+mercader[ií]a|pago\s+compra|compra\s+de\s+mercader[ií]a|compra\s+mercader[ií]a)\s*[-–—·:]*\s*/gi, '');
+
+  // 5. Quitar etiquetas redundantes tipo "(Rubro - Concepto · Rubro)"
+  text = text.replace(/\s*\(Rubro\s*-\s*Concepto\s*·\s*Rubro\)/gi, '');
+
+  // 6. Limpiar signos de puntuación sueltos en bordes
+  text = text.replace(/^[\s·\-–—:,]+|[\s·\-–—:,]+$/g, '').trim();
+
+  return text;
+}
+
+function isGenericExpenseCategory(cat?: string): boolean {
+  if (!cat || typeof cat !== 'string') return true;
+  const lower = cat.trim().toLowerCase();
+  return (
+    lower === '' ||
+    lower === 'gasto' ||
+    lower === 'gastos' ||
+    lower === 'pago gasto' ||
+    lower === 'pago gastos' ||
+    lower === 'pago de gasto' ||
+    lower === 'pago de gastos' ||
+    lower === 'expense_payment' ||
+    lower === 'expense' ||
+    lower === 'expenses' ||
+    lower === 'egreso' ||
+    lower === 'egresos' ||
+    lower === 'gasto operativo' ||
+    lower === 'gastos operativos'
+  );
+}
+
+interface FinanceRowDisplay {
+  kind: 'booking' | 'pos' | 'expense' | 'purchase';
+  title: string;
+  subtitle: string;
+}
+
+function resolveFinanceRowDisplay(
+  rawItem: any,
+  linkedOp?: any,
+  linkedBooking?: any,
+  courts: Court[] = [],
+  users: any[] = []
+): FinanceRowDisplay {
+  const opType = rawItem?.originalDoc?.operationType || linkedOp?.operationType || rawItem?.operationType;
+  const rawId = String(rawItem?.id || '');
+  const opId = String(rawItem?.operationId || linkedOp?.id || '');
+  const hasBookingId = Boolean(rawItem?.bookingId || (rawItem as any)?.booking_id || linkedOp?.bookingId || linkedBooking);
+  const textCategory = String(rawItem?.category || rawItem?.originalDoc?.metadata?.category || linkedOp?.metadata?.category || '').toLowerCase();
+  const textConcept = String(rawItem?.concept || rawItem?.notes || linkedOp?.notes || linkedOp?.concept || '').toLowerCase();
+
+  const isReserva = (
+    opType === 'court_booking' ||
+    opType === 'booking' ||
+    hasBookingId ||
+    rawId.endsWith('-booking') ||
+    opId.endsWith('-booking') ||
+    textCategory.includes('alquiler cancha') ||
+    textCategory.includes('seña alquiler') ||
+    textCategory.includes('liquidación alquiler') ||
+    textCategory.includes('reserva') ||
+    (textConcept.includes('alquiler') && !rawItem?.isExpense && rawItem?.flow !== 'expense')
+  );
+
+  // 1. Reserva (booking)
+  if (isReserva) {
+    const courtName = resolveFinanceCourtName(rawItem, linkedBooking, linkedOp, courts);
+    const title = `Reserva (${courtName})`;
+
+    const rawClient =
+      linkedBooking?.clientName ||
+      linkedBooking?.client_name ||
+      linkedBooking?.userName ||
+      linkedBooking?.name ||
+      linkedBooking?.responsibleName ||
+      linkedOp?.clientName ||
+      linkedOp?.customerName ||
+      rawItem?.clientName ||
+      rawItem?.responsibleName ||
+      rawItem?.userName;
+
+    let subtitle = 'NN';
+    if (rawClient && typeof rawClient === 'string') {
+      const trimmed = rawClient.trim();
+      const lower = trimmed.toLowerCase();
+      if (lower !== '' && lower !== 'nn' && lower !== 'cliente mostrador') {
+        subtitle = trimmed;
+      }
+    }
+
+    return {
+      kind: 'booking',
+      title,
+      subtitle
+    };
+  }
+
+  // 2. Compra de mercadería (purchase)
+  const isPurchase = (
+    opType === 'purchase' ||
+    textCategory.includes('compra') ||
+    textCategory.includes('mercader') ||
+    textConcept.includes('compra') ||
+    textConcept.includes('mercader')
+  );
+
+  if (isPurchase) {
+    const title = 'Compra de mercadería';
+
+    let subtitle = '';
+    const items = linkedOp?.items || rawItem?.originalDoc?.items || rawItem?.items;
+    if (Array.isArray(items) && items.length > 0) {
+      subtitle = items
+        .map(it => (it.quantity ? `${it.quantity}x ${it.name}` : it.name))
+        .join(', ');
+    }
+
+    if (!subtitle) {
+      const candidates = [
+        rawItem?.notes,
+        rawItem?.concept,
+        linkedOp?.notes,
+        linkedOp?.concept,
+        rawItem?.description
+      ].filter(Boolean) as string[];
+
+      for (const cand of candidates) {
+        const cleaned = cleanFinanceText(cand);
+        if (cleaned && cleaned.toLowerCase() !== 'compra de mercadería' && cleaned.toLowerCase() !== 'compra') {
+          subtitle = cleaned;
+          break;
+        }
+      }
+    }
+
+    if (!subtitle) {
+      const supplier = linkedOp?.supplierName || linkedOp?.supplier || rawItem?.supplierName || rawItem?.supplier;
+      if (supplier && typeof supplier === 'string' && supplier.trim()) {
+        subtitle = supplier.trim();
+      } else {
+        subtitle = 'Mercadería';
+      }
+    }
+
+    return {
+      kind: 'purchase',
+      title,
+      subtitle
+    };
+  }
+
+  // 3. Gasto (expense)
+  const isExpense = (
+    rawItem?.flow === 'expense' ||
+    rawItem?.isExpense ||
+    opType === 'expense' ||
+    textCategory.includes('gasto') ||
+    textCategory.includes('egreso') ||
+    textConcept.includes('gasto')
+  );
+
+  if (isExpense) {
+    const specificCatCandidates = [
+      linkedOp?.metadata?.category,
+      linkedOp?.category,
+      rawItem?.originalDoc?.metadata?.category,
+      rawItem?.category
+    ].filter(c => c && !isGenericExpenseCategory(c)) as string[];
+
+    let title = specificCatCandidates[0] ? cleanFinanceText(specificCatCandidates[0]) : '';
+
+    const detailCandidates = [
+      rawItem?.notes,
+      rawItem?.concept,
+      linkedOp?.notes,
+      linkedOp?.concept,
+      rawItem?.description
+    ].filter(Boolean) as string[];
+
+    let cleanDetail = '';
+    for (const d of detailCandidates) {
+      const cleaned = cleanFinanceText(d);
+      if (cleaned) {
+        cleanDetail = cleaned;
+        break;
+      }
+    }
+
+    if (!title && cleanDetail) {
+      title = cleanDetail;
+      const supplierOrResp = linkedOp?.supplierName || rawItem?.supplierName || linkedOp?.responsibleName || rawItem?.responsibleName;
+      if (supplierOrResp && typeof supplierOrResp === 'string' && supplierOrResp.trim() && supplierOrResp.toLowerCase() !== 'nn' && supplierOrResp.toLowerCase() !== 'cliente mostrador') {
+        cleanDetail = supplierOrResp.trim();
+      } else {
+        cleanDetail = 'Gasto Operativo';
+      }
+    }
+
+    if (!title) {
+      title = 'Gasto Operativo';
+    }
+
+    let subtitle = cleanDetail;
+    if (!subtitle || subtitle.toLowerCase() === title.toLowerCase()) {
+      const supplierOrResp = linkedOp?.supplierName || rawItem?.supplierName || linkedOp?.responsibleName || rawItem?.responsibleName;
+      if (supplierOrResp && typeof supplierOrResp === 'string' && supplierOrResp.trim() && supplierOrResp.toLowerCase() !== 'nn' && supplierOrResp.toLowerCase() !== 'cliente mostrador') {
+        subtitle = supplierOrResp.trim();
+      } else {
+        subtitle = title !== 'Gasto Operativo' ? 'Gasto Operativo' : 'Servicios';
+      }
+    }
+
+    return {
+      kind: 'expense',
+      title,
+      subtitle
+    };
+  }
+
+  // 4. Default: Mostrador (pos)
+  const title = 'Mostrador';
+  const rawClient =
+    rawItem?.clientName ||
+    linkedOp?.clientName ||
+    rawItem?.responsibleName ||
+    rawItem?.customerName ||
+    rawItem?.userName;
+
+  let subtitle = 'NN';
+  if (rawClient && typeof rawClient === 'string') {
+    const trimmed = rawClient.trim();
+    const lower = trimmed.toLowerCase();
+    if (lower !== '' && lower !== 'nn' && lower !== 'cliente mostrador') {
+      subtitle = trimmed;
+    }
+  }
+
+  return {
+    kind: 'pos',
+    title,
+    subtitle
+  };
+}
+
+function extractCourtName(concept?: string, notes?: string, category?: string, bookingId?: string | number, bookingsMap?: Map<string, any>): string {
+  const linkedBooking = bookingId && bookingsMap ? bookingsMap.get(String(bookingId)) : undefined;
+  return resolveFinanceCourtName({ concept, notes, category }, linkedBooking);
+}
+
+function formatTimelineGroupDate(d: Date): { key: string; label: string } {
+  const now = new Date();
+  if (isSameDay(d, now)) {
+    return { key: 'hoy', label: 'Hoy' };
+  }
+  const yesterday = new Date(now.getTime() - 24 * 3600 * 1000);
+  if (isSameDay(d, yesterday)) {
+    return { key: 'ayer', label: 'Ayer' };
+  }
+  const dayNum = d.getDate();
+  const rawMonth = format(d, 'MMMM', { locale: es });
+  const capitalizedMonth = rawMonth.charAt(0).toUpperCase() + rawMonth.slice(1);
+  return { key: format(d, 'yyyy-MM-dd'), label: `${dayNum} ${capitalizedMonth}` };
+}
+
 const FinanceView = ({ 
   complexId = 'complejo_central',
   bookings: parentBookings,
-  onNavigateToUserProfile 
+  courts: parentCourts,
+  onNavigateToUserProfile,
+  financePeriod = 'today',
+  onPeriodChange
 }: { 
   complexId?: string;
   bookings?: any[];
+  courts?: Court[];
   onNavigateToUserProfile?: (userId: string) => void;
+  financePeriod?: FinancePeriod;
+  onPeriodChange?: (period: FinancePeriod) => void;
 }) => {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const targetIds = useMemo(() => {
     return (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
   }, [targetId]);
-  const [activeTooltip, setActiveTooltip] = useState<string | null>(null);
-  const [activeSection, setActiveSection] = useState<'movements' | 'operations' | 'pendings'>('movements');
+  
+  const [activeSection, setActiveSection] = useState<'movements' | 'operations'>('movements');
 
   // Datasets
   const [operations, setOperations] = useState<OperationDocument[]>([]);
   const [financialMovements, setFinancialMovements] = useState<FinancialMovementDocument[]>([]);
   const [legacyTransactions, setLegacyTransactions] = useState<any[]>([]);
   const [rawBookings, setRawBookings] = useState<any[]>([]);
+  const [courts, setCourts] = useState<Court[]>([]);
   const [users, setUsers] = useState<any[]>([]);
   const [venueProfile, setVenueProfile] = useState<any>(null);
 
-  // Filters
-  const [movementFilter, setMovementFilter] = useState<'all' | 'income' | 'expense'>('all');
-  const [operationFilter, setOperationFilter] = useState<'all' | 'income' | 'expense'>('all');
+  // Filters & Search
+  const [movementFilter, setMovementFilter] = useState<'all' | 'reservas' | 'mostrador' | 'income' | 'expense'>('all');
+  const [operationFilter, setOperationFilter] = useState<'all' | 'pending' | 'mostrador' | 'reservas' | 'income' | 'expense'>('all');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Modals & Navigation
   const [isPOSModalOpen, setIsPOSModalOpen] = useState(false);
@@ -6969,7 +7420,6 @@ const FinanceView = ({
   const [expenseCategories, setExpenseCategories] = useState<ProductCategory[]>([]);
   const [expenseItems, setExpenseItems] = useState<Product[]>([]);
   const [selectedExpenseItemName, setSelectedExpenseItemName] = useState<string>('');
-  const [pendingFilter, setPendingFilter] = useState<'all' | 'receivable' | 'payable'>('all');
 
   // Estado para Modal de Confirmación de Eliminación Definitiva y Toast
   const [deleteTarget, setDeleteTarget] = useState<{
@@ -7063,6 +7513,10 @@ const FinanceView = ({
       setRawBookings(Array.isArray(bList) ? bList : []);
     });
 
+    const unsubCourts = subscribeToCourts(targetId, (courtList) => {
+      setCourts(Array.isArray(courtList) ? courtList : []);
+    });
+
     const unsubClients = subscribeToClients(targetId, (cList) => {
       setUsers(Array.isArray(cList) ? cList : []);
     });
@@ -7084,6 +7538,7 @@ const FinanceView = ({
       unsubMovs();
       unsubTxs();
       unsubBookings();
+      unsubCourts();
       unsubClients();
       unsubVenue();
       unsubExpCats();
@@ -7091,7 +7546,12 @@ const FinanceView = ({
     };
   }, [targetId]);
 
-  // Combinación unificada de reservas (recibidas activas de App.tsx y por suscripción)
+  const effectiveCourts = useMemo(() => {
+    if (Array.isArray(parentCourts) && parentCourts.length > 0) return parentCourts;
+    return courts;
+  }, [parentCourts, courts]);
+
+  // Combinación unificada de reservas
   const effectiveBookings = useMemo(() => {
     const map = new Map<string, any>();
     if (Array.isArray(parentBookings)) {
@@ -7109,13 +7569,13 @@ const FinanceView = ({
   const operationsMap = useMemo(() => {
     const map = new Map<string, OperationDocument>();
     operations.forEach(op => {
-      if (op.id) map.set(op.id, op);
+      if (op.id) map.set(String(op.id), op);
+      if (op.ticketCode) map.set(String(op.ticketCode), op);
       if (op.bookingId) {
         map.set(String(op.bookingId), op);
         map.set(`${op.bookingId}-booking`, op);
       }
-      if (op.ticketCode) map.set(op.ticketCode, op);
-      if (op.legacySaleId) map.set(op.legacySaleId, op);
+      if (op.legacySaleId) map.set(String(op.legacySaleId), op);
     });
     return map;
   }, [operations]);
@@ -7142,10 +7602,7 @@ const FinanceView = ({
     setTicketModalOperation(op);
   };
 
-
-  // -------------------------------------------------------------------------
-  // 1. SECCIÓN MOVIMIENTOS: Libro diario de dinero real (ingresos y egresos individuales)
-  // -------------------------------------------------------------------------
+  // 1. SECCIÓN MOVIMIENTOS: Libro diario de dinero real
   const combinedMovements = useMemo(() => {
     const list: Array<{
       id: string;
@@ -7156,9 +7613,11 @@ const FinanceView = ({
       paymentMethod: string;
       responsibleName: string;
       operationId?: string | null;
+      bookingId?: string | null;
       ticketCode?: string;
       notes?: string;
       isLegacy?: boolean;
+      originalDoc?: any;
     }> = [];
 
     const processedMovOperationIds = new Set<string>();
@@ -7194,8 +7653,10 @@ const FinanceView = ({
         paymentMethod: m.paymentMethod,
         responsibleName: resolvedName,
         operationId: m.operationId,
+        bookingId: (m as any).bookingId,
         ticketCode: m.ticketCode,
-        notes: m.notes
+        notes: m.notes,
+        originalDoc: m
       });
     });
 
@@ -7239,11 +7700,9 @@ const FinanceView = ({
       const c = t.complexId || t.complejoId;
       if (c && !targetIds.includes(c)) return;
 
-      // Si la transacción ya está migrada o representada en /operations, no duplicarla en movimientos
       if (t.id && (modernOpIds.has(t.id) || modernLegacyIds.has(t.id) || processedMovOperationIds.has(t.id))) {
         return;
       }
-      // Si ya hay un financial_movement con este ticketCode o ID, ignorar
       if (t.id && financialMovements.some(m => m.id === t.id || m.operationId === t.id)) {
         return;
       }
@@ -7254,7 +7713,6 @@ const FinanceView = ({
       const flow: 'income' | 'expense' = isGasto ? 'expense' : 'income';
       const resolvedName = resolveClientName(t, users);
 
-      // Si tiene desglose de pagos, agregar cada pago real individualmente
       if (Array.isArray(t.payments) && t.payments.length > 0) {
         t.payments.forEach((p: any, pIdx: number) => {
           const pAmt = Number(p.amount || 0);
@@ -7299,7 +7757,7 @@ const FinanceView = ({
       }
     });
 
-    // 1.4 Cobros reales de reservas en /bookings que no tengan movimiento ni operación financiera registrada
+    // 1.4 Cobros reales de reservas en /bookings
     const seenBookingMovs = new Set([
       ...financialMovements
         .filter(m => m.bookingId || m.operationId?.endsWith('-booking'))
@@ -7342,21 +7800,10 @@ const FinanceView = ({
       }
     });
 
-    // Ordenar de más reciente a más antiguo
     return list.sort((a, b) => b.date.getTime() - a.date.getTime());
   }, [financialMovements, operations, legacyTransactions, effectiveBookings, users, operationsMap, bookingsMap, targetIds]);
 
-  const filteredMovements = useMemo(() => {
-    return combinedMovements.filter(m => {
-      if (movementFilter === 'income') return m.flow === 'income';
-      if (movementFilter === 'expense') return m.flow === 'expense';
-      return true; // 'all'
-    });
-  }, [combinedMovements, movementFilter]);
-
-  // -------------------------------------------------------------------------
-  // 2. SECCIÓN OPERACIONES: Vista comercial unificada (1 fila por venta/reserva)
-  // -------------------------------------------------------------------------
+  // 2. SECCIÓN OPERACIONES: Vista comercial unificada
   const combinedOperations = useMemo(() => {
     const list: Array<{
       id: string;
@@ -7376,7 +7823,6 @@ const FinanceView = ({
     const processedOpIds = new Set<string>();
     const processedLegacyIds = new Set<string>();
 
-    // 2.1 Operaciones nuevas de /operations
     operations.forEach(op => {
       const c = op.complexId || op.complejoId;
       if (c && !targetIds.includes(c)) return;
@@ -7428,7 +7874,6 @@ const FinanceView = ({
       });
     });
 
-    // 2.2 Ventas históricas de /transactions sin duplicar
     legacyTransactions.forEach(t => {
       const c = t.complexId || t.complejoId;
       if (c && !targetIds.includes(c)) return;
@@ -7460,7 +7905,6 @@ const FinanceView = ({
       const resolvedName = resolveClientName(t, users);
       const resolvedPhone = resolveClientPhone(t, users);
 
-      // Convertir a estructura virtual para visualización y ticket
       const virtualOp: OperationDocument = {
         id: t.id,
         complexId: targetId,
@@ -7505,7 +7949,6 @@ const FinanceView = ({
       });
     });
 
-    // 2.3 Reservas de turnos de /bookings (si no tienen ya una operación creada)
     const existingBookingIds = new Set(
       operations
         .filter(o => o.bookingId || o.id.endsWith('-booking'))
@@ -7577,14 +8020,6 @@ const FinanceView = ({
     return list.sort((a, b) => b.date.getTime() - a.date.getTime());
   }, [operations, legacyTransactions, effectiveBookings, targetId, users, bookingsMap, targetIds]);
 
-  const filteredOperations = useMemo(() => {
-    return combinedOperations.filter(op => {
-      if (operationFilter === 'income') return !op.isExpense;
-      if (operationFilter === 'expense') return Boolean(op.isExpense);
-      return true; // 'all'
-    });
-  }, [combinedOperations, operationFilter]);
-
   const handleOpenTicketFromMovement = (opId?: string | null) => {
     if (!opId) return;
     const foundInCombined = combinedOperations.find(o => o.id === opId)?.originalDoc;
@@ -7598,39 +8033,7 @@ const FinanceView = ({
     }
   };
 
-  // -------------------------------------------------------------------------
-  // 3. SECCIÓN PENDIENTES: Saldos por cobrar (ingresos) y por pagar (egresos/compras)
-  // -------------------------------------------------------------------------
-  const pendingDebts = useMemo(() => {
-    const CANCELLED_STATUSES = ['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded', 'cancelled', 'cancelado'];
-    return combinedOperations
-      .filter(op => op.amountPending > 0 && !CANCELLED_STATUSES.includes(op.paymentStatus))
-      .map(op => ({
-        id: op.id,
-        ticketCode: op.ticketCode,
-        date: op.date,
-        concept: op.concept,
-        clientName: op.clientName,
-        contractualAmount: op.contractualAmount,
-        totalCollected: op.totalCollected,
-        amountPending: op.amountPending,
-        originalDoc: op.originalDoc,
-        isLegacy: op.isLegacy,
-        isExpense: Boolean(op.isExpense || op.originalDoc?.operationType === 'expense' || op.originalDoc?.operationType === 'purchase'),
-        userId: op.originalDoc?.userId || null,
-        bookingId: op.originalDoc?.bookingId || null
-      }));
-  }, [combinedOperations]);
-
-  const filteredPendingDebts = useMemo(() => {
-    return pendingDebts.filter(d => {
-      if (pendingFilter === 'receivable') return !d.isExpense;
-      if (pendingFilter === 'payable') return Boolean(d.isExpense);
-      return true;
-    });
-  }, [pendingDebts, pendingFilter]);
-
-  // Handle manual transaction submission (Gastos como egresos e Ingresos manuales)
+  // Handle manual transaction submission
   const handleSaveTx = async (e: React.FormEvent) => {
     e.preventDefault();
     const amountVal = Number(newTx.amount);
@@ -7655,7 +8058,6 @@ const FinanceView = ({
       const currentYear = new Date().getFullYear().toString().slice(-2);
       const ticketCode = `${isGasto ? 'E' : 'I'}-${currentYear}-${Math.floor(1000 + Math.random() * 9000)}`;
 
-      // 1. Crear documento en /operations
       await addDoc(collection(db, 'operations'), {
         id: operationId,
         complexId: targetId,
@@ -7692,7 +8094,6 @@ const FinanceView = ({
         createdBy: 'administrador'
       });
 
-      // 2. Crear documento en /financial_movements
       await addDoc(collection(db, 'financial_movements'), {
         id: movId,
         complexId: targetId,
@@ -7724,12 +8125,49 @@ const FinanceView = ({
   };
 
   // -------------------------------------------------------------------------
-  // Métricas Financieras (Separación de Dimensión Económica y Dimensión de Caja)
+  // Métricas Financieras del Período Seleccionado vs Período Anterior
   // -------------------------------------------------------------------------
+  const { current: currentRange, previous: previousRange, compareLabel } = useMemo(() => {
+    return getPeriodRange(financePeriod);
+  }, [financePeriod]);
+
+  const periodOperations = useMemo(() => {
+    const inPeriod = combinedOperations.filter(op => {
+      const t = op.date.getTime();
+      return t >= currentRange.start.getTime() && t <= currentRange.end.getTime();
+    });
+    // Si en el período actual no hay operaciones pero sí hay registros en general y se trata de "Hoy",
+    // calculamos las métricas con los datos del período (puede ser 0 si hoy no hubo movimientos)
+    return inPeriod;
+  }, [combinedOperations, currentRange]);
+
+  const periodMovements = useMemo(() => {
+    return combinedMovements.filter(m => {
+      const t = m.date.getTime();
+      return t >= currentRange.start.getTime() && t <= currentRange.end.getTime();
+    });
+  }, [combinedMovements, currentRange]);
+
+  const previousOperations = useMemo(() => {
+    return combinedOperations.filter(op => {
+      const t = op.date.getTime();
+      return t >= previousRange.start.getTime() && t <= previousRange.end.getTime();
+    });
+  }, [combinedOperations, previousRange]);
+
+  const previousMovements = useMemo(() => {
+    return combinedMovements.filter(m => {
+      const t = m.date.getTime();
+      return t >= previousRange.start.getTime() && t <= previousRange.end.getTime();
+    });
+  }, [combinedMovements, previousRange]);
+
+  // Si no hay operaciones en el período seleccionado, pero existen operaciones totales en el complejo,
+  // usamos las operaciones del período para que refleje fielmente el lapso elegido.
   const financialSummary = useMemo(() => {
     return computeComplexFinancialSummary({
       targetComplexIds: targetIds,
-      operations: combinedOperations.map(op => ({
+      operations: periodOperations.map(op => ({
         id: op.id,
         complexId: targetId,
         complejoId: targetId,
@@ -7743,7 +8181,7 @@ const FinanceView = ({
         retainedAmount: op.originalDoc?.retainedAmount,
         netCollected: op.originalDoc?.netCollected
       })),
-      movements: combinedMovements.map(m => ({
+      movements: periodMovements.map(m => ({
         id: m.id,
         complexId: targetId,
         complejoId: targetId,
@@ -7753,703 +8191,583 @@ const FinanceView = ({
         operationId: m.operationId
       }))
     });
-  }, [combinedOperations, combinedMovements, targetIds, targetId]);
+  }, [periodOperations, periodMovements, targetIds, targetId]);
+
+  const previousSummary = useMemo(() => {
+    return computeComplexFinancialSummary({
+      targetComplexIds: targetIds,
+      operations: previousOperations.map(op => ({
+        id: op.id,
+        complexId: targetId,
+        complejoId: targetId,
+        contractualAmount: op.contractualAmount,
+        totalCollected: op.totalCollected,
+        amountPending: op.amountPending,
+        paymentStatus: op.paymentStatus,
+        isExpense: op.isExpense,
+        operationType: op.originalDoc?.operationType,
+        bookingId: op.originalDoc?.bookingId,
+        retainedAmount: op.originalDoc?.retainedAmount,
+        netCollected: op.originalDoc?.netCollected
+      })),
+      movements: previousMovements.map(m => ({
+        id: m.id,
+        complexId: targetId,
+        complejoId: targetId,
+        flow: m.flow,
+        category: m.category,
+        amount: m.amount,
+        operationId: m.operationId
+      }))
+    });
+  }, [previousOperations, previousMovements, targetIds, targetId]);
+
+  const incomeTrend = useMemo(() => {
+    return computeTrend(financialSummary.economicIncome, previousSummary.economicIncome);
+  }, [financialSummary.economicIncome, previousSummary.economicIncome]);
+
+  const cashTrend = useMemo(() => {
+    return computeTrend(financialSummary.cashAvailable, previousSummary.cashAvailable);
+  }, [financialSummary.cashAvailable, previousSummary.cashAvailable]);
+
+  const porCobrarPct = financialSummary.economicIncome > 0
+    ? Math.round((financialSummary.pendingToCollect / financialSummary.economicIncome) * 100)
+    : (financialSummary.pendingToCollect > 0 ? 100 : 0);
+
+  const porPagarPct = financialSummary.economicExpense > 0
+    ? Math.round((financialSummary.pendingToPay / financialSummary.economicExpense) * 100)
+    : (financialSummary.pendingToPay > 0 ? 100 : 0);
+
+  // Cantidad de productos distintos vendidos en mostrador en el período
+  const distinctProductsCount = useMemo(() => {
+    const set = new Set<string>();
+    periodOperations.forEach(op => {
+      const isBooking = op.originalDoc?.operationType === 'court_booking' || op.originalDoc?.operationType === 'booking' || Boolean(op.originalDoc?.bookingId) || op.id.endsWith('-booking');
+      if (op.isExpense || isBooking) return;
+      if (Array.isArray(op.originalDoc?.items) && op.originalDoc.items.length > 0) {
+        op.originalDoc.items.forEach(it => {
+          if (it.name) set.add(it.name.trim().toLowerCase());
+        });
+      } else if (op.concept) {
+        set.add(op.concept.trim().toLowerCase());
+      }
+    });
+    return set.size;
+  }, [periodOperations]);
+
+  // Cantidad de reservas confirmadas en el período
+  const periodBookingsCount = useMemo(() => {
+    return periodOperations.filter(op => {
+      return op.originalDoc?.operationType === 'court_booking' || op.originalDoc?.operationType === 'booking' || Boolean(op.originalDoc?.bookingId) || op.id.endsWith('-booking');
+    }).length;
+  }, [periodOperations]);
+
+  // -------------------------------------------------------------------------
+  // Filtros y Búsqueda de Tarjeta 2
+  // -------------------------------------------------------------------------
+  const filteredCombinedMovements = useMemo(() => {
+    return combinedMovements.filter(m => {
+      const isReserva = m.category.toLowerCase().includes('reserva') ||
+                        m.category.toLowerCase().includes('cancha') ||
+                        m.category.toLowerCase().includes('alquiler') ||
+                        (m.operationId && m.operationId.endsWith('-booking'));
+      const isExpense = m.flow === 'expense';
+      const isMostrador = !isReserva && !isExpense;
+
+      if (movementFilter === 'reservas' && !isReserva) return false;
+      if (movementFilter === 'mostrador' && !isMostrador) return false;
+      if (movementFilter === 'income' && m.flow !== 'income') return false;
+      if (movementFilter === 'expense' && m.flow !== 'expense') return false;
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const matchTicket = m.ticketCode?.toLowerCase().includes(q);
+        const matchName = m.responsibleName?.toLowerCase().includes(q);
+        const matchCat = m.category?.toLowerCase().includes(q);
+        const matchNotes = m.notes?.toLowerCase().includes(q);
+        const matchMethod = m.paymentMethod?.toLowerCase().includes(q);
+        if (!matchTicket && !matchName && !matchCat && !matchNotes && !matchMethod) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [combinedMovements, movementFilter, searchQuery]);
+
+  const filteredCombinedOperations = useMemo(() => {
+    return combinedOperations.filter(op => {
+      const isReserva = op.originalDoc?.operationType === 'court_booking' ||
+                        op.originalDoc?.operationType === 'booking' ||
+                        Boolean(op.originalDoc?.bookingId) ||
+                        op.id.endsWith('-booking') ||
+                        op.concept.toLowerCase().includes('alquiler') ||
+                        op.concept.toLowerCase().includes('cancha');
+      const isExpense = Boolean(op.isExpense || op.originalDoc?.operationType === 'expense');
+      const isMostrador = !isReserva && !isExpense;
+
+      if (operationFilter === 'pending' && !(op.amountPending > 0)) return false;
+      if (operationFilter === 'mostrador' && !isMostrador) return false;
+      if (operationFilter === 'reservas' && !isReserva) return false;
+      if (operationFilter === 'income' && isExpense) return false;
+      if (operationFilter === 'expense' && !isExpense) return false;
+
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase().trim();
+        const matchTicket = op.ticketCode?.toLowerCase().includes(q);
+        const matchName = op.clientName?.toLowerCase().includes(q);
+        const matchConcept = op.concept?.toLowerCase().includes(q);
+        const matchPhone = op.originalDoc?.clientPhone?.toLowerCase().includes(q);
+        const matchNotes = op.originalDoc?.notes?.toLowerCase().includes(q);
+        if (!matchTicket && !matchName && !matchConcept && !matchPhone && !matchNotes) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [combinedOperations, operationFilter, searchQuery]);
+
+  // Agrupación cronológica por fecha para el timeline
+  const groupedTimelineItems = useMemo(() => {
+    const groups: { key: string; label: string; items: any[] }[] = [];
+    const groupMap = new Map<string, { key: string; label: string; items: any[] }>();
+
+    if (activeSection === 'movements') {
+      filteredCombinedMovements.forEach(m => {
+        const d = m.date instanceof Date ? m.date : new Date(m.date);
+        const { key, label } = formatTimelineGroupDate(d);
+        if (!groupMap.has(key)) {
+          const groupObj = { key, label, items: [] };
+          groupMap.set(key, groupObj);
+          groups.push(groupObj);
+        }
+
+        const linkedOp =
+          (m.operationId ? operationsMap.get(String(m.operationId)) : undefined) ||
+          (m.ticketCode ? operationsMap.get(String(m.ticketCode)) : undefined);
+
+        const linkedBooking =
+          ((m as any).bookingId ? bookingsMap.get(String((m as any).bookingId)) : undefined) ||
+          (linkedOp?.bookingId ? bookingsMap.get(String(linkedOp.bookingId)) : undefined) ||
+          (m.operationId ? bookingsMap.get(String(m.operationId)) : undefined) ||
+          (m.operationId?.endsWith('-booking') ? bookingsMap.get(m.operationId.replace('-booking', '')) : undefined);
+
+        const display = resolveFinanceRowDisplay(m, linkedOp, linkedBooking, effectiveCourts, users);
+
+        let icon = <ShoppingBasket size={20} className="text-[#1d63b8]" />;
+        if (display.kind === 'booking') {
+          icon = <Calendar size={20} className="text-[#0BA70B]" />;
+        } else if (display.kind === 'purchase') {
+          icon = <Package size={20} className="text-purple-600" />;
+        } else if (display.kind === 'expense') {
+          icon = <Receipt size={20} className="text-red-500" />;
+        }
+
+        groupMap.get(key)!.items.push({
+          id: m.id,
+          date: d,
+          icon,
+          title: display.title,
+          subtitle: display.subtitle,
+          amount: m.amount,
+          amountPending: 0,
+          time: format(d, 'HH:mm'),
+          onClick: () => {
+            if (m.operationId) handleOpenTicketFromMovement(m.operationId);
+          }
+        });
+      });
+    } else {
+      filteredCombinedOperations.forEach(op => {
+        const d = op.date instanceof Date ? op.date : new Date(op.date);
+        const { key, label } = formatTimelineGroupDate(d);
+        if (!groupMap.has(key)) {
+          const groupObj = { key, label, items: [] };
+          groupMap.set(key, groupObj);
+          groups.push(groupObj);
+        }
+
+        const linkedBooking =
+          (op.originalDoc?.bookingId ? bookingsMap.get(String(op.originalDoc.bookingId)) : undefined) ||
+          (op.id.endsWith('-booking') ? bookingsMap.get(op.id.replace('-booking', '')) : undefined);
+
+        const display = resolveFinanceRowDisplay(op, op.originalDoc, linkedBooking, effectiveCourts, users);
+
+        let icon = <ShoppingBasket size={20} className="text-[#1d63b8]" />;
+        if (display.kind === 'booking') {
+          icon = <Calendar size={20} className="text-[#0BA70B]" />;
+        } else if (display.kind === 'purchase') {
+          icon = <Package size={20} className="text-purple-600" />;
+        } else if (display.kind === 'expense') {
+          icon = <Receipt size={20} className="text-red-500" />;
+        }
+
+        groupMap.get(key)!.items.push({
+          id: op.id,
+          date: d,
+          icon,
+          title: display.title,
+          subtitle: display.subtitle,
+          amount: op.contractualAmount,
+          amountPending: op.amountPending,
+          totalCollected: op.totalCollected,
+          time: format(d, 'HH:mm'),
+          onClick: () => {
+            if (op.originalDoc) handleOpenTicket(op.originalDoc);
+          }
+        });
+      });
+    }
+
+    return groups;
+  }, [activeSection, filteredCombinedMovements, filteredCombinedOperations, bookingsMap, operationsMap, effectiveCourts, users]);
 
   return (
-    <div className="space-y-4 pb-24">
-      {/* 1. Header con Resumen General */}
-      <div className="px-1 md:px-0">
-        <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-gray-100 dark:border-slate-800 p-6">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 dark:border-slate-800 pb-5">
+    <div className="w-full max-w-4xl mx-auto flex-1 flex flex-col space-y-3.5 relative pb-0">
+      
+      {/* =================================================================== */}
+      {/* 1. TARJETA GRANDE 1: LAYOUT DE 2 COLUMNAS (MÉTRICAS CONSOLIDADAS)   */}
+      {/* =================================================================== */}
+      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-gray-100 dark:border-slate-800 p-4 sm:p-5 shrink-0">
+        <div className="grid grid-cols-12 gap-3.5 items-stretch">
+          
+          {/* 2.1. Columna Izquierda (col-span-5) */}
+          <div className="col-span-5 border border-gray-200 dark:border-slate-700 rounded-3xl p-3.5 sm:p-4 flex flex-col justify-between space-y-3">
+            {/* 1. Ingresos */}
             <div>
-              <h2 className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white tracking-tight flex items-center gap-2">
-                <DollarSign className="text-emerald-600" size={26} />
-                <span>Finanzas y Caja</span>
-              </h2>
-              <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">
-                Control de ingresos y egresos de caja, operaciones comerciales y saldos por cobrar.
-              </p>
+              <div className="text-xs font-normal text-gray-500 dark:text-slate-400">
+                Ingresos
+              </div>
+              <div className="text-lg sm:text-xl font-bold text-gray-600 dark:text-slate-100 leading-tight">
+                ${financialSummary.economicIncome.toLocaleString('es-AR')}
+              </div>
+              <div className="mt-1 flex items-center flex-wrap">
+                <span className={cn(
+                  "rounded-full px-2 py-0.5 text-[10px] font-semibold inline-flex items-center gap-0.5",
+                  incomeTrend.isUp
+                    ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400"
+                    : "bg-red-50 text-red-600 dark:bg-red-950/60 dark:text-red-400"
+                )}>
+                  {incomeTrend.pct} {incomeTrend.isUp ? '↑' : '↓'}
+                </span>
+                <span className="text-[10px] text-gray-500 dark:text-slate-400 ml-1">
+                  {compareLabel}
+                </span>
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setIsManualTxModalOpen(true)}
-                className="px-3.5 py-2 text-xs font-bold text-gray-700 dark:text-slate-300 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
-                title="Carga manual de ingreso o gasto administrativo"
-              >
-                <Plus size={14} />
-                <span>Carga manual</span>
-              </button>
+            {/* 2. Gastos */}
+            <div>
+              <div className="text-xs font-normal text-gray-500 dark:text-slate-400">
+                Gastos
+              </div>
+              <div className="text-lg sm:text-xl font-bold text-gray-600 dark:text-slate-100 leading-tight">
+                ${financialSummary.economicExpense.toLocaleString('es-AR')}
+              </div>
+            </div>
+
+            {/* 3. Neto */}
+            <div>
+              <div className="text-xs font-normal text-gray-500 dark:text-slate-400">
+                Neto
+              </div>
+              <div className="text-lg sm:text-xl font-bold text-gray-600 dark:text-slate-100 leading-tight">
+                ${financialSummary.netResult.toLocaleString('es-AR')}
+              </div>
             </div>
           </div>
 
-          {/* Métricas consolidadas clave: 7 tarjetas claramente separadas */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7 gap-3 pt-4">
-            {/* 1. Ingresos Económicos */}
-            <div className="bg-emerald-50/70 dark:bg-emerald-950/30 p-3.5 rounded-2xl border border-emerald-100 dark:border-emerald-900/40 flex flex-col justify-between">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 block">
-                  Ingresos
-                </span>
-                <span className="text-[11px] text-emerald-600/80 dark:text-emerald-400/80">
-                  Ventas y reservas
-                </span>
+          {/* 2.2. Columna Derecha (col-span-7) */}
+          <div className="col-span-7 flex flex-col justify-between space-y-3.5">
+            {/* Arriba: Sub-tarjeta Verde de Caja */}
+            <div className="bg-[#0BA70B] text-white rounded-3xl p-3.5 sm:p-4 shadow-sm flex items-center justify-between gap-2">
+              {/* Izquierda: Caja */}
+              <div className="min-w-0">
+                <div className="text-xs font-normal text-white/90">
+                  Caja
+                </div>
+                <div className="text-2xl sm:text-3xl font-bold text-white leading-tight my-0.5 truncate">
+                  {financialSummary.cashAvailable.toLocaleString('es-AR')}
+                </div>
+                <div className="flex items-center flex-wrap">
+                  <span className="bg-emerald-100 text-[#0BA70B] rounded-full px-2 py-0.5 text-[10px] font-bold inline-flex items-center gap-0.5">
+                    {cashTrend.pct} {cashTrend.isUp ? '↑' : '↓'}
+                  </span>
+                  <span className="text-[10px] text-white/90 ml-1">
+                    {compareLabel}
+                  </span>
+                </div>
               </div>
-              <div>
-                <span className="text-xl sm:text-2xl font-black text-emerald-600 dark:text-emerald-400 font-mono mt-2 block">
-                  +${financialSummary.economicIncome.toLocaleString()}
-                </span>
 
-                {/* Barra horizontal bicolor de progreso */}
-                <div className="w-full h-2 rounded-full overflow-hidden bg-emerald-100/80 dark:bg-slate-800 flex mt-2.5">
-                  <div 
-                    className="bg-emerald-600 transition-all duration-300"
-                    style={{ width: `${financialSummary.reservasIncomePct}%` }}
-                  />
-                  <div 
-                    className="bg-sky-500 transition-all duration-300"
-                    style={{ width: `${financialSummary.mostradorIncomePct}%` }}
-                  />
+              {/* Derecha: Por cobrar y Por pagar */}
+              <div className="space-y-1.5 shrink-0 text-right">
+                <div>
+                  <div className="flex items-center justify-end gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-emerald-300 shrink-0" />
+                    <span className="text-[11px] font-bold text-white">Por cobrar ({porCobrarPct}%)</span>
+                  </div>
+                  <div className="text-[11px] font-normal text-white/95 pl-3.5">
+                    ${financialSummary.pendingToCollect.toLocaleString('es-AR')}
+                  </div>
                 </div>
 
-                {/* Desglose en 2 filas compactas */}
-                <div className="mt-2 space-y-1 text-[10px] font-mono">
-                  <div className="flex items-center justify-between text-gray-700 dark:text-slate-300">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="w-2 h-2 rounded-full bg-emerald-600 shrink-0" />
-                      <span className="truncate">Reservas ({financialSummary.reservasIncomePct}%)</span>
-                    </div>
-                    <span className="font-bold text-gray-900 dark:text-white shrink-0">
-                      ${financialSummary.reservasIncome.toLocaleString()}
-                    </span>
+                <div>
+                  <div className="flex items-center justify-end gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
+                    <span className="text-[11px] font-bold text-white">Por pagar ({porPagarPct}%)</span>
                   </div>
-
-                  <div className="flex items-center justify-between text-gray-700 dark:text-slate-300">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="w-2 h-2 rounded-full bg-sky-500 shrink-0" />
-                      <span className="truncate">Mostrador ({financialSummary.mostradorIncomePct}%)</span>
-                    </div>
-                    <span className="font-bold text-gray-900 dark:text-white shrink-0">
-                      ${financialSummary.mostradorIncome.toLocaleString()}
-                    </span>
+                  <div className="text-[11px] font-normal text-white/95 pl-3.5">
+                    ${financialSummary.pendingToPay.toLocaleString('es-AR')}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* 2. Egresos Económicos */}
-            <div className="bg-red-50/70 dark:bg-red-950/30 p-3.5 rounded-2xl border border-red-100 dark:border-red-900/40 flex flex-col justify-between">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-red-800 dark:text-red-300 block">
-                  Egresos
-                </span>
-                <span className="text-[11px] text-red-600/80 dark:text-red-400/80">
-                  Gastos y compras
-                </span>
+            {/* Abajo: Mostrador y Agenda flotando sobre fondo blanco */}
+            <div className="space-y-2 pt-0.5">
+              {/* Fila Mostrador */}
+              <div className="flex items-center justify-between px-1">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-[#1d63b8] text-white flex items-center justify-center shrink-0">
+                    <ShoppingBasket size={18} />
+                  </div>
+                  <div>
+                    <div className="text-xs sm:text-sm font-bold text-gray-600 dark:text-slate-200 leading-tight">
+                      Mostrador
+                    </div>
+                    <div className="text-[10px] text-gray-400">
+                      {distinctProductsCount} {distinctProductsCount === 1 ? 'producto' : 'productos'}
+                    </div>
+                  </div>
+                </div>
+                <div className="text-xs sm:text-sm font-bold text-gray-600 dark:text-slate-200">
+                  ${financialSummary.mostradorIncome.toLocaleString('es-AR')}
+                </div>
               </div>
-              <span className="text-xl sm:text-2xl font-black text-red-600 dark:text-red-400 font-mono mt-2 block">
-                -${financialSummary.economicExpense.toLocaleString()}
-              </span>
+
+              {/* Fila Agenda */}
+              <div className="flex items-center justify-between px-1">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 rounded-xl bg-[#0BA70B] text-white flex items-center justify-center shrink-0">
+                    <Calendar size={18} />
+                  </div>
+                  <div>
+                    <div className="text-xs sm:text-sm font-bold text-gray-600 dark:text-slate-200 leading-tight">
+                      Agenda
+                    </div>
+                    <div className="text-[10px] text-gray-400">
+                      {periodBookingsCount} {periodBookingsCount === 1 ? 'reserva' : 'reservas'}
+                    </div>
+                  </div>
+                </div>
+                <div className="text-xs sm:text-sm font-bold text-gray-600 dark:text-slate-200">
+                  ${financialSummary.reservasIncome.toLocaleString('es-AR')}
+                </div>
+              </div>
             </div>
 
-            {/* 3. Resultado Neto */}
-            <div className="bg-blue-50/70 dark:bg-blue-950/30 p-3.5 rounded-2xl border border-blue-100 dark:border-blue-900/40 flex flex-col justify-between">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-blue-800 dark:text-blue-300 block">
-                  Resultado Neto
-                </span>
-                <span className="text-[11px] text-blue-600/80 dark:text-blue-400/80">
-                  Ingresos - Egresos
-                </span>
-              </div>
-              <span className={cn(
-                "text-xl sm:text-2xl font-black font-mono mt-2 block",
-                financialSummary.netResult >= 0 ? "text-blue-600 dark:text-blue-400" : "text-red-600 dark:text-red-400"
-              )}>
-                {financialSummary.netResult >= 0 ? '+' : '-'}${Math.abs(financialSummary.netResult).toLocaleString()}
-              </span>
-            </div>
-
-            {/* 4. Cobrado */}
-            <div className="bg-teal-50/70 dark:bg-teal-950/30 p-3.5 rounded-2xl border border-teal-100 dark:border-teal-900/40 flex flex-col justify-between">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-teal-800 dark:text-teal-300 block">
-                  Cobrado
-                </span>
-                <span className="text-[11px] text-teal-600/80 dark:text-teal-400/80">
-                  Cobranzas a clientes
-                </span>
-              </div>
-              <span className="text-xl sm:text-2xl font-black text-teal-600 dark:text-teal-400 font-mono mt-2 block">
-                +${financialSummary.totalCollectedFromClients.toLocaleString()}
-              </span>
-            </div>
-
-            {/* 5. Caja / Disponible */}
-            <div className="bg-slate-50 dark:bg-slate-800/80 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-700/80 flex flex-col justify-between">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-800 dark:text-slate-300 block">
-                  Caja / Disponible
-                </span>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-mono block truncate">
-                  +${financialSummary.cashInflows.toLocaleString()} / -${financialSummary.cashOutflows.toLocaleString()}
-                </span>
-              </div>
-              <span className={cn(
-                "text-xl sm:text-2xl font-black font-mono mt-2 block",
-                financialSummary.cashAvailable >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"
-              )}>
-                {financialSummary.cashAvailable >= 0 ? '+' : '-'}${Math.abs(financialSummary.cashAvailable).toLocaleString()}
-              </span>
-            </div>
-
-            {/* 6. Por cobrar */}
-            <div className="bg-amber-50/70 dark:bg-amber-950/30 p-3.5 rounded-2xl border border-amber-100 dark:border-amber-900/40 flex flex-col justify-between">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-amber-800 dark:text-amber-300 block">
-                  Por cobrar
-                </span>
-                <span className="text-[11px] text-amber-600/80 dark:text-amber-400/80">
-                  Saldos de clientes
-                </span>
-              </div>
-              <span className="text-xl sm:text-2xl font-black text-amber-600 dark:text-amber-400 font-mono mt-2 block">
-                ${financialSummary.pendingToCollect.toLocaleString()}
-              </span>
-            </div>
-
-            {/* 7. Por pagar */}
-            <div className="bg-rose-50/70 dark:bg-rose-950/30 p-3.5 rounded-2xl border border-rose-100 dark:border-rose-900/40 flex flex-col justify-between">
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-wider text-rose-800 dark:text-rose-300 block">
-                  Por pagar
-                </span>
-                <span className="text-[11px] text-rose-600/80 dark:text-rose-400/80">
-                  Saldos de compras
-                </span>
-              </div>
-              <span className="text-xl sm:text-2xl font-black text-rose-600 dark:text-rose-400 font-mono mt-2 block">
-                ${financialSummary.pendingToPay.toLocaleString()}
-              </span>
-            </div>
           </div>
+
         </div>
       </div>
 
-      {/* 2. Selector de Secciones Principales (Movimientos, Operaciones, Pendientes) y Filtros */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 p-4 sm:p-6 shadow-sm space-y-4">
+      {/* =================================================================== */}
+      {/* 2. TARJETA GRANDE 2: MOVIMIENTOS & OPERACIONES, FILTRO Y TIMELINE   */}
+      {/* =================================================================== */}
+      <div className="bg-white dark:bg-slate-900 rounded-t-3xl rounded-b-none border-t border-x border-b-0 border-gray-100 dark:border-slate-800 p-4 sm:p-5 pb-36 shadow-sm flex-1 flex flex-col space-y-4">
         
-        {/* Barra superior de pestañas */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 dark:border-slate-800 pb-3">
-          <div className="flex items-center gap-1.5 p-1 bg-gray-100 dark:bg-slate-800 rounded-2xl w-fit">
+        {/* Fila Superior: Selector de sección y Filtro desplegable a la derecha */}
+        <div className="flex items-center justify-between">
+          {/* Izquierda: Movimientos | Operaciones */}
+          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={() => setActiveSection('movements')}
               className={cn(
-                "px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5",
+                "transition-all cursor-pointer",
                 activeSection === 'movements'
-                  ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm"
-                  : "text-gray-500 dark:text-slate-400 hover:text-gray-900"
+                  ? "bg-gray-200/90 dark:bg-slate-800 text-gray-700 dark:text-white font-bold rounded-full px-4 py-1 text-xs sm:text-sm shadow-2xs"
+                  : "text-gray-400 hover:text-gray-600 dark:text-slate-400 font-semibold px-3 py-1 text-xs sm:text-sm"
               )}
             >
-              <span>1. Movimientos</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-emerald-100 text-emerald-800 font-mono">
-                {combinedMovements.length}
-              </span>
+              Movimientos
             </button>
-
             <button
               type="button"
               onClick={() => setActiveSection('operations')}
               className={cn(
-                "px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5",
+                "transition-all cursor-pointer",
                 activeSection === 'operations'
-                  ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-sm"
-                  : "text-gray-500 dark:text-slate-400 hover:text-gray-900"
+                  ? "bg-gray-200/90 dark:bg-slate-800 text-gray-700 dark:text-white font-bold rounded-full px-4 py-1 text-xs sm:text-sm shadow-2xs"
+                  : "text-gray-400 hover:text-gray-600 dark:text-slate-400 font-semibold px-3 py-1 text-xs sm:text-sm"
               )}
             >
-              <span>2. Operaciones</span>
-              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-100 text-blue-800 font-mono">
-                {combinedOperations.length}
-              </span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setActiveSection('pendings')}
-              className={cn(
-                "px-4 py-2 rounded-xl text-xs font-black transition-all cursor-pointer flex items-center gap-1.5",
-                activeSection === 'pendings'
-                  ? "bg-white dark:bg-slate-700 text-amber-600 dark:text-amber-400 shadow-sm"
-                  : "text-gray-500 dark:text-slate-400 hover:text-gray-900"
-              )}
-            >
-              <span>3. Pendientes</span>
-              {pendingDebts.length > 0 && (
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 font-bold font-mono">
-                  {pendingDebts.length}
-                </span>
-              )}
+              Operaciones
             </button>
           </div>
 
-          {/* Filtros a la derecha según la sección activa */}
-          <div className="flex items-center gap-2">
-            {activeSection === 'movements' && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-gray-400">Filtrar:</span>
-                <select
-                  value={movementFilter}
-                  onChange={(e) => setMovementFilter(e.target.value as any)}
-                  className="h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-gray-800 dark:text-slate-200 outline-none cursor-pointer"
-                >
-                  <option value="all">Total ({combinedMovements.length})</option>
-                  <option value="income">Ingresos ({combinedMovements.filter(m => m.flow === 'income').length})</option>
-                  <option value="expense">Egresos ({combinedMovements.filter(m => m.flow === 'expense').length})</option>
-                </select>
-              </div>
-            )}
-
-            {activeSection === 'operations' && (
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-gray-400">Filtrar:</span>
-                <select
-                  value={operationFilter}
-                  onChange={(e) => setOperationFilter(e.target.value as any)}
-                  className="h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-gray-800 dark:text-slate-200 outline-none cursor-pointer"
-                >
-                  <option value="all">Total ({combinedOperations.length})</option>
-                  <option value="income">Ingresos ({combinedOperations.filter(o => !o.isExpense).length})</option>
-                  <option value="expense">Egresos ({combinedOperations.filter(o => o.isExpense).length})</option>
-                </select>
-              </div>
-            )}
-
-            {activeSection === 'pendings' && (
-              <span className="text-xs font-bold text-gray-400 bg-gray-50 dark:bg-slate-800 px-3 py-1.5 rounded-xl border border-gray-200 dark:border-slate-700">
-                Filtro: Total ({pendingDebts.length})
-              </span>
-            )}
+          {/* Derecha: Filtro desplegable Todo > */}
+          <div className="relative inline-flex items-center gap-1 text-gray-500 dark:text-slate-400 font-medium text-xs sm:text-sm cursor-pointer hover:text-gray-700 dark:hover:text-slate-200">
+            <span>
+              {activeSection === 'movements'
+                ? (movementFilter === 'all' ? 'Todo' : movementFilter === 'reservas' ? 'Reservas' : movementFilter === 'mostrador' ? 'Mostrador' : movementFilter === 'income' ? 'Ingreso' : 'Egreso')
+                : (operationFilter === 'all' ? 'Todo' : operationFilter === 'pending' ? 'Pendientes' : operationFilter === 'mostrador' ? 'Mostrador' : operationFilter === 'reservas' ? 'Reservas' : operationFilter === 'income' ? 'Ingreso' : 'Egreso')}
+            </span>
+            <ChevronRight size={14} className="text-gray-400" />
+            <select
+              value={activeSection === 'movements' ? movementFilter : operationFilter}
+              onChange={(e) => {
+                if (activeSection === 'movements') {
+                  setMovementFilter(e.target.value as any);
+                } else {
+                  setOperationFilter(e.target.value as any);
+                }
+              }}
+              className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+              title="Filtrar registros"
+            >
+              {activeSection === 'movements' ? (
+                <>
+                  <option value="all" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Todo</option>
+                  <option value="reservas" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Reservas</option>
+                  <option value="mostrador" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Mostrador</option>
+                  <option value="income" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Ingreso</option>
+                  <option value="expense" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Egreso</option>
+                </>
+              ) : (
+                <>
+                  <option value="all" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Todo</option>
+                  <option value="pending" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Pendientes</option>
+                  <option value="mostrador" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Mostrador</option>
+                  <option value="reservas" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Reservas</option>
+                  <option value="income" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Ingreso</option>
+                  <option value="expense" className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100">Egreso</option>
+                </>
+              )}
+            </select>
           </div>
         </div>
 
-        {/* =================================================================== */}
-        {/* SECCIÓN 1: MOVIMIENTOS (Libro diario de dinero real)                 */}
-        {/* =================================================================== */}
-        {activeSection === 'movements' && (
-          <div className="space-y-3">
-            <div className="text-xs text-gray-500 flex items-center justify-between">
-              <span>Mostrando ingresos y egresos reales de caja</span>
-              <span className="font-mono font-bold">{filteredMovements.length} movimientos</span>
-            </div>
+        {/* Buscador debajo de las pestañas */}
+        <div className="relative w-full">
+          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-300 dark:text-slate-500 pointer-events-none" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Buscar ticket, usuario o categoría"
+            className="w-full rounded-full border border-gray-200 dark:border-slate-700 py-2 pl-9 pr-8 text-xs sm:text-sm text-gray-700 dark:text-slate-200 placeholder:text-gray-300 dark:placeholder:text-slate-500 outline-none bg-white dark:bg-slate-800/50 focus:border-emerald-500 transition-colors"
+          />
+          {searchQuery && (
+            <button
+              type="button"
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-0.5 cursor-pointer"
+              title="Borrar búsqueda"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
 
-            {filteredMovements.length === 0 ? (
-              <div className="text-center py-12 text-gray-400">
-                <Coins size={36} className="mx-auto mb-2 opacity-30" />
-                <p className="text-sm font-bold text-gray-700 dark:text-slate-300">No hay movimientos en este filtro</p>
-              </div>
-            ) : (
-              <div className="divide-y divide-gray-100 dark:divide-slate-800">
-                {filteredMovements.map((m) => (
-                  <div
-                    key={`mov-row-${m.id}`}
-                    className="py-3.5 flex items-center justify-between gap-3 hover:bg-gray-50/60 dark:hover:bg-slate-800/40 rounded-xl px-2 transition-colors"
-                  >
-                    <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <div className={cn(
-                        "w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs shrink-0",
-                        m.flow === 'income' 
-                          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
-                          : "bg-red-100 text-red-700 dark:bg-red-950 dark:text-red-300"
-                      )}>
-                        {m.flow === 'income' ? '+' : '-'}
-                      </div>
-
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-bold text-xs sm:text-sm text-gray-900 dark:text-white">
-                            {m.category}
-                          </span>
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300">
-                            {m.paymentMethod}
-                          </span>
-                          {m.responsibleName && m.responsibleName !== 'NN' && (
-                            <span className="text-[10px] font-medium text-gray-500">
-                              • {m.responsibleName}
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-3 text-[11px] text-gray-400 font-mono mt-0.5">
-                          <span>{safeFormatDate(m.date, "dd/MM/yyyy HH:mm", { locale: es })}</span>
-                          {m.notes && <span className="truncate max-w-[200px]">• {m.notes}</span>}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-3 shrink-0">
-                      <div className="text-right">
-                        <span className={cn(
-                          "font-black text-xs sm:text-sm font-mono block",
-                          m.flow === 'income' ? "text-emerald-600" : "text-red-600"
-                        )}>
-                          {m.flow === 'income' ? '+' : '-'}${m.amount.toLocaleString()}
-                        </span>
-                      </div>
-
-                      {/* Atajo para ir a la operación asociada */}
-                      {m.operationId && (
-                        <button
-                          type="button"
-                          onClick={() => handleOpenTicketFromMovement(m.operationId)}
-                          className="px-2.5 py-1 text-[11px] font-bold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
-                          title="Ver ticket de la operación comercial asociada"
-                        >
-                          <Receipt size={13} />
-                          <span className="hidden sm:inline">Operación</span>
-                        </button>
-                      )}
-
-                      {/* Botón Eliminar definitivamente */}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteTarget({
-                            type: 'movement',
-                            id: m.id,
-                            movementId: m.id,
-                            operationId: m.operationId,
-                            title: m.category,
-                            client: m.responsibleName && m.responsibleName !== 'NN' ? m.responsibleName : 'Mostrador',
-                            amount: m.amount,
-                            isIncome: m.flow === 'income'
-                          });
-                        }}
-                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
-                        title="Eliminar definitivamente"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+        {/* Timeline agrupado por fecha con badges cuadrados redondeados y línea vertical conectora */}
+        {groupedTimelineItems.length === 0 ? (
+          <div className="text-center py-16 text-gray-400">
+            <Receipt size={36} className="mx-auto mb-2 opacity-30" />
+            <p className="text-sm font-bold text-gray-700 dark:text-slate-300">
+              No hay {activeSection === 'movements' ? 'movimientos' : 'operaciones'} en esta vista
+            </p>
+            {searchQuery && (
+              <p className="text-xs text-gray-400 mt-1">Intenta con otro término de búsqueda.</p>
             )}
           </div>
-        )}
-
-        {/* =================================================================== */}
-        {/* SECCIÓN 2: OPERACIONES (1 fila por venta / reserva comercial)         */}
-        {/* =================================================================== */}
-        {activeSection === 'operations' && (
-          <div className="space-y-3">
-            <div className="text-xs text-gray-500 flex items-center justify-between">
-              <span>Cada venta o reserva se visualiza una única vez con sus saldos y ticket</span>
-              <span className="font-mono font-bold">{filteredOperations.length} operaciones</span>
-            </div>
-
-            {filteredOperations.length === 0 ? (
-              <div className="text-center py-12 text-gray-400">
-                <Receipt size={36} className="mx-auto mb-2 opacity-30" />
-                <p className="text-sm font-bold text-gray-700 dark:text-slate-300">No hay operaciones registradas</p>
-              </div>
-            ) : (
-              <div className="divide-y divide-gray-100 dark:divide-slate-800">
-                {filteredOperations.map((op) => (
-                  <div
-                    key={`op-row-${op.id}`}
-                    onClick={() => op.originalDoc && handleOpenTicket(op.originalDoc)}
-                    className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-gray-50/70 dark:hover:bg-slate-800/40 rounded-xl px-2 transition-colors cursor-pointer"
-                  >
-                    <div className="space-y-1 min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono text-xs font-black text-gray-900 dark:text-white">
-                          #{op.ticketCode}
-                        </span>
-                        <span className="font-bold text-xs sm:text-sm text-gray-800 dark:text-slate-200">
-                          {op.concept}
-                        </span>
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-gray-100 dark:bg-slate-800 text-gray-600 dark:text-slate-300">
-                          Cliente: {op.clientName}
-                        </span>
-                        <span className={cn(
-                          "text-[10px] font-bold px-2 py-0.5 rounded-full",
-                          op.paymentStatus === 'paid' ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300" :
-                          op.paymentStatus === 'partial' ? "bg-blue-100 text-blue-800 dark:bg-blue-950 dark:text-blue-300" :
-                          "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                        )}>
-                          {op.paymentStatus === 'paid' ? 'Pagado' : op.paymentStatus === 'partial' ? 'Parcial' : 'Pendiente'}
-                        </span>
-                      </div>
-
-                      <div className="text-[11px] text-gray-400 font-mono">
-                        {safeFormatDate(op.date, "dd/MM/yyyy HH:mm", { locale: es })}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between sm:justify-end gap-4 shrink-0 font-mono text-xs">
-                      <div className="text-right">
-                        <span className="text-gray-400 text-[10px] block">Total</span>
-                        <span className="font-black text-gray-900 dark:text-white sm:text-sm">
-                          ${op.contractualAmount.toLocaleString()}
-                        </span>
-                      </div>
-
-                      <div className="text-right">
-                        <span className="text-gray-400 text-[10px] block">Cobrado</span>
-                        <span className="font-bold text-emerald-600">
-                          ${op.totalCollected.toLocaleString()}
-                        </span>
-                      </div>
-
-                      {op.amountPending > 0 && (
-                        <div className="text-right">
-                          <span className="text-gray-400 text-[10px] block">Pendiente</span>
-                          <span className="font-bold text-amber-600">
-                            ${op.amountPending.toLocaleString()}
-                          </span>
-                        </div>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (op.originalDoc) handleOpenTicket(op.originalDoc);
-                        }}
-                        className="px-2.5 py-1.5 bg-gray-100 dark:bg-slate-800 hover:bg-emerald-600 hover:text-white text-gray-700 dark:text-slate-300 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
-                        title="Ver comprobante de venta"
-                      >
-                        <Receipt size={14} />
-                        <span>Ticket</span>
-                      </button>
-
-                      {/* Botón Eliminar definitivamente */}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setDeleteTarget({
-                            type: 'operation',
-                            id: op.id,
-                            operationId: op.id,
-                            bookingId: op.originalDoc?.bookingId || (op.id.endsWith('-booking') ? op.id.replace('-booking', '') : undefined),
-                            title: `${op.concept} (#${op.ticketCode})`,
-                            client: op.clientName || 'Cliente',
-                            amount: op.contractualAmount,
-                            isIncome: !op.isExpense
-                          });
-                        }}
-                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
-                        title="Eliminar definitivamente"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* =================================================================== */}
-        {/* SECCIÓN 3: PENDIENTES (Por cobrar: ingresos / Por pagar: egresos)    */}
-        {/* =================================================================== */}
-        {activeSection === 'pendings' && (
+        ) : (
           <div className="space-y-4">
-            {/* Switcher de Pendientes: Todos | Por Cobrar | Por Pagar */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 dark:border-slate-800 pb-3">
-              <div className="flex items-center gap-1.5 p-1 bg-gray-100 dark:bg-slate-800 rounded-2xl">
-                <button
-                  type="button"
-                  onClick={() => setPendingFilter('all')}
-                  className={cn(
-                    "px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer",
-                    pendingFilter === 'all'
-                      ? "bg-white dark:bg-slate-900 text-gray-900 dark:text-white shadow-xs"
-                      : "text-gray-500 hover:text-gray-900 dark:text-slate-400"
-                  )}
-                >
-                  Todos ({pendingDebts.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPendingFilter('receivable')}
-                  className={cn(
-                    "px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1",
-                    pendingFilter === 'receivable'
-                      ? "bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-xs"
-                      : "text-gray-500 hover:text-gray-900 dark:text-slate-400"
-                  )}
-                >
-                  <span>Por Cobrar</span>
-                  <span className="font-mono">({pendingDebts.filter(d => !d.isExpense).length})</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPendingFilter('payable')}
-                  className={cn(
-                    "px-3 py-1.5 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1",
-                    pendingFilter === 'payable'
-                      ? "bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-xs"
-                      : "text-gray-500 hover:text-gray-900 dark:text-slate-400"
-                  )}
-                >
-                  <span>Por Pagar</span>
-                  <span className="font-mono">({pendingDebts.filter(d => d.isExpense).length})</span>
-                </button>
+            {groupedTimelineItems.map((group) => (
+              <div key={`group-${group.key}`} className="space-y-1">
+                {/* Encabezado de Fecha: Hoy, Ayer, 23 Octubre */}
+                <div className="text-xs sm:text-sm font-bold text-gray-500 dark:text-slate-400 pt-2 pb-1 px-1">
+                  {group.label}
+                </div>
+
+                <div className="space-y-1">
+                  {group.items.map((item, idx) => {
+                    const isFirst = idx === 0;
+                    const isLast = idx === group.items.length - 1;
+                    const hasMultiple = group.items.length > 1;
+
+                    return (
+                      <div
+                        key={`timeline-row-${item.id}`}
+                        onClick={item.onClick}
+                        className="relative flex items-center justify-between gap-3 py-2 cursor-pointer group hover:bg-gray-50/70 dark:hover:bg-slate-800/40 rounded-2xl px-2 transition-colors select-none"
+                      >
+                        {/* Columna Izquierda con Badge e Hilo conector vertical */}
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <div className="relative flex items-center justify-center w-11 h-11 shrink-0">
+                            {/* Línea vertical conectora centrada detrás del badge */}
+                            {hasMultiple && (
+                              <div
+                                className={cn(
+                                  "absolute left-1/2 -translate-x-1/2 w-[1.5px] bg-gray-200 dark:bg-slate-700 pointer-events-none z-0",
+                                  isFirst ? "top-1/2 bottom-0" : isLast ? "top-0 bottom-1/2" : "top-0 bottom-0"
+                                )}
+                              />
+                            )}
+
+                            {/* Badge cuadrado con bordes redondeados, fondo blanco y borde/sombra difuminada suave */}
+                            <div className="w-11 h-11 rounded-2xl bg-white dark:bg-slate-800 border border-gray-200/80 dark:border-slate-700 shadow-2xs flex items-center justify-center shrink-0 z-10 transition-transform group-hover:scale-105">
+                              {item.icon}
+                            </div>
+                          </div>
+
+                          {/* Textos del ítem: Arriba nombre, abajo usuario o concepto */}
+                          <div className="min-w-0 flex-1">
+                            <div className="font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-100 truncate leading-snug">
+                              {item.title}
+                            </div>
+                            <div className="text-xs text-gray-400 dark:text-slate-400 truncate mt-0.5">
+                              {item.subtitle}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Columna Derecha con Monto y Hora */}
+                        <div className="text-right shrink-0">
+                          <div className={cn(
+                            "font-bold text-sm sm:text-base leading-tight",
+                            item.amountPending > 0 ? "text-red-600 dark:text-red-400" : "text-gray-600 dark:text-slate-200"
+                          )}>
+                            ${item.amount.toLocaleString('es-AR')}
+                          </div>
+                          <div className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
+                            {item.time}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-
-              <div className="text-xs text-gray-500 dark:text-slate-400 font-medium">
-                {pendingFilter === 'receivable' && 'Ventas de mostrador y reservas adeudadas'}
-                {pendingFilter === 'payable' && 'Compras de mercadería y gastos pendientes de pago'}
-                {pendingFilter === 'all' && 'Total de cuentas corrientes y saldos pendientes'}
-              </div>
-            </div>
-
-            {filteredPendingDebts.length === 0 ? (
-              <div className="text-center py-12 text-gray-400">
-                <CheckCircle2 size={40} className="mx-auto text-emerald-500 mb-2 opacity-80" />
-                <p className="text-sm font-bold text-gray-800 dark:text-slate-200">
-                  {pendingFilter === 'receivable' ? '¡Sin cobros pendientes!' : pendingFilter === 'payable' ? '¡Sin pagos a proveedores pendientes!' : '¡Al día! No hay cuentas pendientes'}
-                </p>
-                <p className="text-xs text-gray-500 mt-1">Todas las operaciones de esta sección han sido canceladas en su totalidad.</p>
-              </div>
-            ) : (
-              <div className="divide-y divide-gray-100 dark:divide-slate-800">
-                {filteredPendingDebts.map((debt) => (
-                  <div
-                    key={`debt-row-${debt.id}`}
-                    className="py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-gray-50/60 dark:hover:bg-slate-800/40 rounded-xl px-2 transition-colors"
-                  >
-                    <div className="space-y-1 min-w-0 flex-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-mono text-xs font-bold text-gray-900 dark:text-white">
-                          #{debt.ticketCode}
-                        </span>
-                        <span className="font-bold text-xs sm:text-sm text-gray-900 dark:text-white">
-                          {debt.isExpense ? 'Proveedor:' : 'Cliente:'} {debt.clientName}
-                        </span>
-                        <span className={cn(
-                          "text-[10px] font-bold px-2 py-0.5 rounded-full",
-                          debt.isExpense
-                            ? "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300"
-                            : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
-                        )}>
-                          {debt.isExpense ? 'Por Pagar (Acreedor)' : 'Por Cobrar (Deudor)'}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2 text-xs text-gray-600 dark:text-slate-300">
-                        <span className="font-semibold text-gray-400">Concepto:</span>
-                        <span className="truncate max-w-[280px] font-medium">{debt.concept}</span>
-                      </div>
-
-                      <div className="flex items-center gap-3 text-[11px] text-gray-400 font-mono">
-                        <span>Fecha: {safeFormatDate(debt.date, "dd/MM/yyyy HH:mm", { locale: es })}</span>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between sm:justify-end gap-3 sm:gap-4 shrink-0 font-mono text-xs flex-wrap">
-                      <div className="text-right">
-                        <span className="text-gray-400 text-[10px] block font-sans">Total</span>
-                        <span className="font-bold text-gray-700 dark:text-slate-300">
-                          ${debt.contractualAmount.toLocaleString()}
-                        </span>
-                      </div>
-
-                      <div className="text-right">
-                        <span className="text-gray-400 text-[10px] block font-sans">
-                          {debt.isExpense ? 'Pagado' : 'Cobrado'}
-                        </span>
-                        <span className="font-bold text-emerald-600">
-                          ${debt.totalCollected.toLocaleString()}
-                        </span>
-                      </div>
-
-                      <div className="text-right">
-                        <span className="text-gray-400 text-[10px] block font-sans">Pendiente</span>
-                        <span className={cn(
-                          "font-black text-sm",
-                          debt.isExpense ? "text-amber-600 dark:text-amber-400" : "text-amber-600 dark:text-amber-400"
-                        )}>
-                          ${debt.amountPending.toLocaleString()}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        {/* Ver ticket de la operación */}
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (debt.originalDoc) handleOpenTicket(debt.originalDoc);
-                          }}
-                          className="px-2.5 py-2 bg-gray-100 hover:bg-gray-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 font-bold text-xs rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
-                          title="Ver ticket de la operación"
-                        >
-                          <Receipt size={14} />
-                          <span className="hidden sm:inline">Ticket</span>
-                        </button>
-
-                        {/* Registrar cobro o pago */}
-                        <button
-                          type="button"
-                          onClick={() => setSettleModalTarget(debt)}
-                          className={cn(
-                            "px-3.5 py-2 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center gap-1.5",
-                            debt.isExpense
-                              ? "bg-amber-600 hover:bg-amber-700"
-                              : "bg-emerald-600 hover:bg-emerald-700"
-                          )}
-                          title={debt.isExpense ? "Registrar pago de compra o gasto pendiente" : "Registrar cobro de deuda pendiente"}
-                        >
-                          <Coins size={14} />
-                          <span>{debt.isExpense ? 'Pagar' : 'Cobrar'}</span>
-                        </button>
-
-                        {/* Botón Eliminar definitivamente */}
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDeleteTarget({
-                              type: 'pending',
-                              id: debt.id,
-                              operationId: debt.id,
-                              bookingId: debt.originalDoc?.bookingId || (debt.id.endsWith('-booking') ? debt.id.replace('-booking', '') : undefined),
-                              title: `${debt.concept} (#${debt.ticketCode})`,
-                              client: debt.clientName || 'Cliente',
-                              amount: debt.amountPending,
-                              isIncome: !debt.isExpense
-                            });
-                          }}
-                          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
-                          title="Eliminar definitivamente"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+            ))}
           </div>
         )}
 
       </div>
 
-      {/* 4. Botón Flotante (+): Abre directamente el Mostrador (POS) */}
+      {/* =================================================================== */}
+      {/* 4. BOTÓN FLOTANTE (FAB): EJE, TAMAÑO Y COLOR VERDE (#0BA70B)       */}
+      {/* =================================================================== */}
       <button 
         type="button" 
         onClick={() => setIsPOSModalOpen(true)}
-        className="fixed bottom-24 right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-xl shadow-emerald-900/30 flex items-center justify-center hover:bg-emerald-700 transition-transform hover:scale-105 z-40 cursor-pointer"
+        className="fixed bottom-20 right-4 sm:right-6 lg:bottom-8 lg:right-8 z-30 w-13 h-13 sm:w-14 sm:h-14 bg-[#0BA70B] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
         title="Abrir Mostrador (POS)"
+        aria-label="Abrir Mostrador (POS)"
       >
-        <Plus size={28} />
+        <div className="relative flex items-center justify-center">
+          <Store size={26} strokeWidth={2.2} />
+          <span className="absolute -bottom-1 -right-1 text-white font-black text-xs leading-none">+</span>
+        </div>
       </button>
 
       {/* Modal del Mostrador (POS) */}
@@ -8568,7 +8886,7 @@ const FinanceView = ({
                     "font-black text-sm",
                     deleteTarget.isIncome ? "text-emerald-600" : "text-red-600"
                   )}>
-                    ${deleteTarget.amount.toLocaleString()}
+                    ${deleteTarget.amount.toLocaleString('es-AR')}
                   </span>
                 </div>
               </div>
@@ -8648,166 +8966,181 @@ const FinanceView = ({
               
               <form className="space-y-6" onSubmit={handleSaveTx}>
                 <div className="flex bg-gray-100 p-1 rounded-xl">
-                  <button 
-                    type="button" 
-                    onClick={() => setNewTx({...newTx, type: 'income', category: 'Alquiler de Cancha'})}
-                    className={cn("flex-1 py-3 rounded-lg text-sm font-bold transition-all", newTx.type === 'income' ? "bg-white text-emerald-600 shadow-sm" : "text-gray-500 hover:text-gray-700")}
-                  >Ingreso</button>
-                  <button 
-                    type="button" 
-                    onClick={() => setNewTx({...newTx, type: 'expense', category: 'Mantenimiento'})}
-                    className={cn("flex-1 py-3 rounded-lg text-sm font-bold transition-all", newTx.type === 'expense' ? "bg-white text-red-600 shadow-sm" : "text-gray-500 hover:text-gray-700")}
-                  >Egreso</button>
+                  <button
+                    type="button"
+                    onClick={() => setNewTx({ ...newTx, type: 'income', category: 'Alquiler de Cancha' })}
+                    className={cn(
+                      "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
+                      newTx.type === 'income' ? "bg-white text-emerald-600 shadow-sm" : "text-gray-500"
+                    )}
+                  >
+                    Ingreso
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const firstCat = expenseCategories[0]?.id || 'Servicios';
+                      setNewTx({ ...newTx, type: 'expense', category: firstCat });
+                    }}
+                    className={cn(
+                      "flex-1 py-2 rounded-lg font-bold text-sm transition-all",
+                      newTx.type === 'expense' ? "bg-white text-red-600 shadow-sm" : "text-gray-500"
+                    )}
+                  >
+                    Gasto
+                  </button>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-2">Monto</label>
-                  <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl font-bold text-gray-400">$</span>
-                    <input 
-                      type="number" 
-                      value={newTx.amount}
-                      onChange={e => setNewTx({...newTx, amount: e.target.value})}
-                      className="w-full pl-10 pr-4 py-4 bg-gray-50 rounded-2xl text-3xl font-bold text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500" 
-                      placeholder="0" 
-                      required
-                    />
-                  </div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Monto ($)</label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    value={newTx.amount}
+                    onChange={(e) => setNewTx({ ...newTx, amount: e.target.value })}
+                    placeholder="0"
+                    className="w-full text-3xl font-black text-gray-900 border-b-2 border-gray-200 focus:border-emerald-500 outline-none pb-2"
+                  />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-2">Categoría</label>
-                  <select 
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Categoría / Rubro</label>
+                  <select
                     value={newTx.category}
-                    onChange={e => {
-                      setNewTx({...newTx, category: e.target.value});
+                    onChange={(e) => {
+                      const selectedVal = e.target.value;
+                      setNewTx({ ...newTx, category: selectedVal });
+                      if (selectedVal !== 'Otro') {
+                        setCustomCategory('');
+                      }
                       setSelectedExpenseItemName('');
                     }}
-                    className="w-full p-4 bg-gray-50 rounded-xl font-medium text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 appearance-none mb-2"
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl font-medium text-gray-700 outline-none focus:border-emerald-500"
                   >
                     {newTx.type === 'income' ? (
                       <>
-                        <option>Alquiler de Cancha</option>
-                        <option>Venta Buffet/Kiosco</option>
-                        <option>Torneos</option>
-                        <option>Clases / Escuelita</option>
-                        <option>Otro</option>
+                        <option value="Alquiler de Cancha">Alquiler de Cancha</option>
+                        <option value="Venta Mostrador">Venta Mostrador</option>
+                        <option value="Escuelita / Clases">Escuelita / Clases</option>
+                        <option value="Torneo">Inscripción Torneo</option>
+                        <option value="Otro">Otro Ingreso (Especificar)</option>
                       </>
                     ) : (
                       <>
-                        {expenseCategories.filter(c => c.status !== 'inactivo').length > 0 ? (
-                          expenseCategories.filter(c => c.status !== 'inactivo').map(c => (
-                            <option key={`exp-opt-cat-${c.id}`} value={c.name}>
-                              {c.name}
+                        {expenseCategories.length > 0 ? (
+                          expenseCategories.map(cat => (
+                            <option key={`exp-cat-${cat.id}`} value={cat.name}>
+                              {cat.name}
                             </option>
                           ))
                         ) : (
                           <>
-                            <option>Mantenimiento</option>
-                            <option>Mercadería / Buffet</option>
-                            <option>Servicios (Luz, Agua)</option>
-                            <option>Personal / Sueldos</option>
-                            <option>Insumos</option>
+                            <option value="Servicios">Servicios (Luz, Agua, Gas, Internet)</option>
+                            <option value="Mantenimiento">Mantenimiento de Canchas / Instalaciones</option>
+                            <option value="Sueldos">Personal / Sueldos</option>
+                            <option value="Mercadería">Compra de Bebidas / Insumos Mostrador</option>
+                            <option value="Alquiler del Predio">Alquiler del Predio</option>
+                            <option value="Impuestos">Impuestos / Tasas</option>
                           </>
                         )}
-                        <option>Otro</option>
+                        <option value="Otro">Otro Egreso (Especificar)</option>
                       </>
                     )}
                   </select>
 
-                  {/* Selector de concepto / ítem predefinido cuando es Egreso */}
-                  {newTx.type === 'expense' && (
-                    <div className="mt-2 space-y-2">
-                      {(() => {
-                        const itemsForCat = expenseItems.filter(it => it.categoryId === newTx.category && it.status !== 'inactivo');
-                        if (itemsForCat.length > 0) {
-                          return (
-                            <div>
-                              <label className="block text-[11px] font-bold text-gray-500 mb-1">
-                                Concepto predefinido de "{newTx.category}"
-                              </label>
-                              <select
-                                value={selectedExpenseItemName}
-                                onChange={e => {
-                                  const val = e.target.value;
-                                  setSelectedExpenseItemName(val);
-                                  const found = itemsForCat.find(i => i.name === val);
-                                  if (found && Number(found.purchasePrice || 0) > 0) {
-                                    setNewTx(prev => ({ ...prev, amount: String(found.purchasePrice) }));
-                                  }
-                                }}
-                                className="w-full p-3 bg-gray-50 rounded-xl text-xs font-semibold text-gray-800 outline-none focus:ring-2 focus:ring-emerald-500"
-                              >
-                                <option value="">-- Seleccionar concepto predefinido (o escribir abajo) --</option>
-                                {itemsForCat.map(it => (
-                                  <option key={`exp-it-opt-${it.id}`} value={it.name}>
-                                    {it.name} {Number(it.purchasePrice || 0) > 0 ? `($${Number(it.purchasePrice).toLocaleString()})` : ''}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          );
-                        }
-                        return null;
-                      })()}
+                  {/* Campo para especificar rubro personalizado si elige Otro */}
+                  {newTx.category === 'Otro' && (
+                    <div className="mt-2.5">
+                      <input
+                        type="text"
+                        required
+                        value={customCategory}
+                        onChange={(e) => setCustomCategory(e.target.value)}
+                        placeholder="Escribe el nombre del rubro / categoría..."
+                        className="w-full p-3 bg-white border border-emerald-500 rounded-xl font-medium text-gray-700 outline-none text-sm"
+                        autoFocus
+                      />
                     </div>
                   )}
 
-                  {newTx.category === 'Otro' && (
-                    <input 
-                      type="text"
-                      className="w-full p-4 bg-gray-50 rounded-xl font-medium text-gray-900 outline-none focus:ring-2 focus:ring-emerald-500 mt-2"
-                      placeholder="Escribe la categoría..."
-                      value={customCategory}
-                      onChange={e => setCustomCategory(e.target.value)}
-                      required
-                    />
-                  )}
+                  {/* Selector de concepto / ítem predefinido cuando es Egreso */}
+                  {newTx.type === 'expense' && newTx.category !== 'Otro' && (() => {
+                    const itemsForCat = expenseItems.filter(it => it.categoryId === newTx.category && it.status !== 'inactivo');
+                    if (itemsForCat.length === 0) return null;
+                    return (
+                      <div className="mt-2.5">
+                        <label className="block text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-1">
+                          Concepto predefinido de "{newTx.category}"
+                        </label>
+                        <select
+                          value={selectedExpenseItemName}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setSelectedExpenseItemName(val);
+                            const found = itemsForCat.find(i => i.name === val);
+                            if (found && Number(found.purchasePrice || 0) > 0) {
+                              setNewTx(prev => ({ ...prev, amount: String(found.purchasePrice) }));
+                            }
+                          }}
+                          className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-xs font-semibold text-gray-700 outline-none"
+                        >
+                          <option value="">Seleccionar concepto frecuente (opcional)...</option>
+                          {itemsForCat.map(it => (
+                            <option key={`exp-it-opt-${it.id}`} value={it.name}>
+                              {it.name} {Number(it.purchasePrice || 0) > 0 ? `($${Number(it.purchasePrice).toLocaleString('es-AR')})` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-2">Método de Pago</label>
-                  <div className="grid grid-cols-2 gap-3">
-                    {['Efectivo', 'Transferencia', 'Tarjeta', 'MercadoPago'].map((m, mIdx) => (
-                      <button 
-                        key={`payment-method-btn-${m}-${mIdx}`} 
-                        type="button" 
-                        onClick={() => setNewTx({...newTx, paymentMethod: m})}
-                        className={cn(
-                          "py-3 px-4 rounded-xl border text-sm font-medium transition-all",
-                          newTx.paymentMethod === m 
-                            ? "border-emerald-500 text-emerald-600 bg-emerald-50" 
-                            : "border-gray-200 text-gray-600 hover:border-emerald-500 hover:text-emerald-600 hover:bg-emerald-50"
-                        )}
-                      >
-                        {m}
-                      </button>
-                    ))}
-                  </div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Método de Pago</label>
+                  <select
+                    value={newTx.paymentMethod}
+                    onChange={(e) => setNewTx({ ...newTx, paymentMethod: e.target.value })}
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl font-medium text-gray-700 outline-none focus:border-emerald-500"
+                  >
+                    <option value="Efectivo">Efectivo</option>
+                    <option value="Transferencia">Transferencia Bancaria</option>
+                    <option value="Tarjeta">Tarjeta de Débito/Crédito</option>
+                    <option value="MercadoPago">Mercado Pago</option>
+                  </select>
                 </div>
 
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-2">Notas (Opcional)</label>
-                  <textarea 
+                  <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Descripción (Opcional)</label>
+                  <input
+                    type="text"
                     value={newTx.description}
-                    onChange={e => setNewTx({...newTx, description: e.target.value})}
-                    className="w-full p-4 bg-gray-50 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 resize-none" 
-                    rows={2} 
-                    placeholder="Detalles adicionales..."
-                  ></textarea>
+                    onChange={(e) => setNewTx({ ...newTx, description: e.target.value })}
+                    placeholder="Detalle o nota interna..."
+                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl font-medium text-gray-700 outline-none focus:border-emerald-500"
+                  />
                 </div>
 
-                <button type="submit" className="w-full bg-emerald-600 text-white py-4 rounded-xl font-bold text-lg shadow-lg shadow-emerald-900/20 hover:bg-emerald-700 transform active:scale-95 transition-all">
-                  Guardar Transacción
+                <button
+                  type="submit"
+                  className={cn(
+                    "w-full py-4 text-white font-bold rounded-xl shadow-lg transition-transform active:scale-95 cursor-pointer",
+                    newTx.type === 'income' ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-200" : "bg-red-600 hover:bg-red-700 shadow-red-200"
+                  )}
+                >
+                  Registrar {newTx.type === 'income' ? 'Ingreso' : 'Gasto'}
                 </button>
               </form>
             </motion.div>
           </div>
         )}
       </AnimatePresence>
+
     </div>
   );
 };
+
 
 const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = 'complejo_central' }: { onDataChange?: () => void, isDarkMode?: boolean, onToggleDarkMode?: () => void, complexId?: string }) => {
   const { user, activeComplex, collaboratorData, logout } = useFirebase();
@@ -10596,6 +10929,12 @@ export default function App() {
   const [users, setUsers] = useState<User[]>([]);
   const [activeBookings, setActiveBookings] = useState<Match[]>([]);
   const [dayBookingsCount, setDayBookingsCount] = useState<number>(0);
+  const [financePeriod, setFinancePeriod] = useState<FinancePeriod>('today');
+
+  const capitalizedTodayDate = useMemo(() => {
+    const raw = format(new Date(), "EEEE, d 'de' MMMM", { locale: es });
+    return raw.charAt(0).toUpperCase() + raw.slice(1);
+  }, []);
 
   // Sincronización en tiempo real estrictamente ligada al complejo asignado del operador autenticado
   useEffect(() => {
@@ -10982,7 +11321,7 @@ export default function App() {
         {/* Header */}
         <header className={cn(
           "h-16 md:h-20 flex items-center justify-between px-4 md:px-6 z-20 relative transition-colors",
-          (activeTab === 'users' || activeTab === 'schedule')
+          (activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance')
             ? "bg-[#f4f5f7] dark:bg-slate-900 text-slate-800 dark:text-slate-100 border-b border-transparent"
             : "bg-[#0BA70B] dark:bg-[#0BA70B] text-white"
         )}>
@@ -10992,25 +11331,28 @@ export default function App() {
               onClick={() => setSidebarOpen(true)} 
               className={cn(
                 "lg:hidden p-1 -ml-1 cursor-pointer transition-colors",
-                (activeTab === 'users' || activeTab === 'schedule') ? "text-slate-800 dark:text-slate-100 hover:text-slate-600" : "text-white hover:text-white/80"
+                (activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance') ? "text-slate-600 dark:text-slate-100 hover:text-slate-800" : "text-white hover:text-white/80"
               )} 
               aria-label="Abrir menú lateral"
             >
-              <Menu size={(activeTab === 'users' || activeTab === 'schedule') ? 30 : 32} strokeWidth={2.5} />
+              <Menu size={(activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance') ? 30 : 32} strokeWidth={2.5} />
             </button>
             <div className="flex flex-col">
               <h2 className={cn(
-                "text-[22px] md:text-[26px] font-bold tracking-tight leading-tight",
-                (activeTab === 'users' || activeTab === 'schedule') ? "text-slate-800 dark:text-slate-100" : "text-white"
+                activeTab === 'finance'
+                  ? "text-xl sm:text-2xl font-bold text-slate-600 dark:text-slate-100 tracking-tight leading-tight"
+                  : (activeTab === 'users' || activeTab === 'schedule') 
+                    ? "text-[22px] md:text-[26px] font-bold tracking-tight leading-tight text-slate-800 dark:text-slate-100" 
+                    : "text-[22px] md:text-[26px] font-bold tracking-tight leading-tight text-white"
               )}>
                 { 
+                 activeTab === 'finance' ? capitalizedTodayDate :
                  activeTab === 'schedule' ? 'Agenda' :
                  activeTab === 'users' ? 'Usuarios' :
-                 activeTab === 'finance' ? 'Finanzas' :
                  activeTab === 'profile' ? 'Perfil' : 
                  activeTab === 'analytics' ? 'Analíticas' : activeTab}
               </h2>
-              {activeTab !== 'users' && activeTab !== 'schedule' && authorizedComplexes.length > 1 ? (
+              {activeTab !== 'users' && activeTab !== 'schedule' && activeTab !== 'finance' && authorizedComplexes.length > 1 ? (
                 <div className="relative inline-block mt-0.5">
                   <select
                     value={activeComplexId || ''}
@@ -11026,7 +11368,7 @@ export default function App() {
                   </select>
                   <ChevronDown size={11} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-white/80 pointer-events-none" />
                 </div>
-              ) : (activeTab !== 'users' && activeTab !== 'schedule' && activeComplex?.name) ? (
+              ) : (activeTab !== 'users' && activeTab !== 'schedule' && activeTab !== 'finance' && activeComplex?.name) ? (
                 <div className="flex items-center gap-1.5 text-xs text-emerald-100 font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-200 animate-pulse" />
                   <span className="truncate max-w-[200px]">{activeComplex.name}</span>
@@ -11044,6 +11386,23 @@ export default function App() {
               <div className="flex items-center gap-1.5 text-slate-800 dark:text-slate-100 font-bold text-2xl md:text-3xl mr-1">
                 <Calendar size={26} strokeWidth={2.4} />
                 <span>{dayBookingsCount}</span>
+              </div>
+            ) : activeTab === 'finance' ? (
+              <div className="relative inline-flex items-center gap-1 text-slate-600 dark:text-slate-200 font-bold text-lg sm:text-xl cursor-pointer">
+                <span>{FINANCE_PERIOD_OPTIONS.find(p => p.id === financePeriod)?.label || 'Hoy'}</span>
+                <ChevronRight size={20} className="text-slate-400" />
+                <select
+                  value={financePeriod}
+                  onChange={(e) => setFinancePeriod(e.target.value as FinancePeriod)}
+                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                  title="Seleccionar período de finanzas"
+                >
+                  {FINANCE_PERIOD_OPTIONS.map(opt => (
+                    <option key={opt.id} value={opt.id} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-sm">
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
               </div>
             ) : (
               <>
@@ -11106,9 +11465,9 @@ export default function App() {
             "flex-1 relative pt-0", 
             activeTab === 'users' 
               ? "bg-[#f4f5f7] dark:bg-slate-900 px-2 sm:px-4 md:px-6 pb-16 lg:pb-3 flex flex-col min-h-0 overflow-hidden" 
-              : activeTab === 'schedule'
+              : (activeTab === 'schedule' || activeTab === 'finance')
                 ? "bg-[#f4f5f7] dark:bg-slate-900 px-3 md:px-6 pb-0 overflow-y-auto flex flex-col"
-                : "bg-[#f0f2f5] dark:bg-slate-900 px-3 md:px-6 pb-24 lg:pb-6 overflow-y-auto"
+                : "bg-[#f0f2f5] dark:bg-slate-900 px-3 md:px-6 pb-24 lg:pb-6 overflow-y-auto" 
           )}
         >
           {activationSuccessBanner && (
@@ -11134,7 +11493,7 @@ export default function App() {
           )}
 
           <ErrorBoundary key={`section-boundary-${activeTab}`} sectionName={activeTab}>
-            <div className={cn("w-full", activeTab === 'users' ? "flex-1 flex flex-col min-h-0 pt-1.5 sm:pt-3" : activeTab === 'schedule' ? "flex-1 flex flex-col pt-3 md:pt-5" : "pt-3 md:pt-5")}>
+            <div className={cn("w-full", activeTab === 'users' ? "flex-1 flex flex-col min-h-0 pt-1.5 sm:pt-3" : (activeTab === 'schedule' || activeTab === 'finance') ? "flex-1 flex flex-col pt-3 md:pt-5" : "pt-3 md:pt-5")}>
               {activeTab === 'schedule' && (
                 <ScheduleView 
                   key="view-schedule"
@@ -11178,7 +11537,10 @@ export default function App() {
                   key="view-finance" 
                   complexId={activeComplexId} 
                   bookings={activeBookings}
+                  courts={courts}
                   onNavigateToUserProfile={handleUserClick} 
+                  financePeriod={financePeriod}
+                  onPeriodChange={setFinancePeriod}
                 />
               )}
               {activeTab === 'profile' && (
