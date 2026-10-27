@@ -5713,8 +5713,7 @@ const ScheduleView = ({
   }, [matches, currentTime]);
 
   return (
-    <div className="flex flex-col space-y-4 pb-32 relative">
-      {/* 1.2. Selector de Vista: Montado directamente sobre fondo blanco limpio, centrado horizontalmente */}
+    <div className="w-full max-w-4xl mx-auto flex-1 flex flex-col space-y-3.5 relative pb-0">
       {/* 1.2. Selector de Vista: Montado directamente sobre el fondo general, alineado a la izquierda */}
       <div className="flex items-center justify-between px-1 relative">
         <div className="flex items-center gap-2">
@@ -5770,82 +5769,6 @@ const ScheduleView = ({
         )}
       </div>
 
-      {/* 2.1. Supresión del Calendario en Lista: El bloque semanal solo se renderiza en modo Calendario */}
-      {viewMode === 'calendar' && (
-        <div className="bg-white dark:bg-slate-900 p-4 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm space-y-3">
-          <div className="flex items-center justify-between px-1">
-            <button
-              type="button"
-              onClick={() => setSelectedDateStr(prev => shiftDateYMD(prev, -7))}
-              className="p-2 text-gray-400 hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-300 rounded-full transition-colors cursor-pointer"
-              title="Semana anterior"
-              aria-label="Semana anterior"
-            >
-              <ChevronLeft size={20} />
-            </button>
-
-            <div className="text-center">
-              <h3 className="font-bold text-base sm:text-lg text-gray-700 dark:text-white capitalize">
-                {formatMonthYearHeading(selectedDateStr)}
-              </h3>
-              <p className="text-xs text-gray-500 dark:text-slate-400">
-                {dayBookingsCount === 0 
-                  ? 'Sin reservas confirmadas' 
-                  : `${dayBookingsCount} ${dayBookingsCount === 1 ? 'reserva confirmada' : 'reservas confirmadas'}`}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setSelectedDateStr(prev => shiftDateYMD(prev, 7))}
-              className="p-2 text-gray-400 hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-300 rounded-full transition-colors cursor-pointer"
-              title="Semana siguiente"
-              aria-label="Semana siguiente"
-            >
-              <ChevronRight size={20} />
-            </button>
-          </div>
-
-          {/* 7 Columnas: Lun a Dom */}
-          <div className="grid grid-cols-7 gap-1 sm:gap-2">
-            {weekDays.map((day) => {
-              const isSelected = day.dateStr === selectedDateStr;
-              return (
-                <button
-                  type="button"
-                  key={`weekday-${day.dateStr}`}
-                  onClick={() => setSelectedDateStr(day.dateStr)}
-                  className={cn(
-                    "flex flex-col items-center justify-center rounded-2xl transition-all cursor-pointer relative py-2",
-                    isSelected
-                      ? "bg-[#0BA70B] text-white shadow-sm"
-                      : "hover:bg-gray-50 dark:hover:bg-slate-800/80"
-                  )}
-                >
-                  <span className={cn(
-                    "text-xs font-medium mb-0.5",
-                    isSelected ? "text-white" : "text-gray-400 dark:text-slate-400"
-                  )}>
-                    {day.dayLabel}
-                  </span>
-                  <span className={cn(
-                    "text-xl sm:text-2xl font-semibold leading-tight",
-                    isSelected ? "text-white font-bold" : "text-gray-300 dark:text-slate-500"
-                  )}>
-                    {day.dayNumber}
-                  </span>
-                  {isSelected ? (
-                    <span className="w-1.5 h-1.5 rounded-full bg-white mt-1" />
-                  ) : (
-                    <span className="w-1.5 h-1.5 mt-1" />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Manejo de Canchas Vacías */}
       {courts.length === 0 ? (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 md:p-12 text-center my-4 shadow-sm">
@@ -5868,11 +5791,88 @@ const ScheduleView = ({
         </div>
       ) : viewMode === 'calendar' ? (
         /* =================================================================== */
-        /* 3. VISTA CALENDARIO (GRILLA HORARIA TRADICIONAL CON MULTISELECCIÓN) */
+        /* 3. VISTA CALENDARIO: 3 TARJETAS CON ESPACIADO VERTICAL UNIFORME    */
         /* =================================================================== */
-        <div className="space-y-3">
-          {/* 1.1. Barra de Canchas en Calendario tipo cápsula */}
-          <div className="bg-white dark:bg-slate-900 rounded-full border border-gray-100 dark:border-slate-800 shadow-sm p-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+        <div className="flex-1 flex flex-col space-y-3.5 pb-0">
+          {/* 1. Tarjeta de Calendario Semanal */}
+          <div className="shrink-0 bg-white dark:bg-slate-900 p-4 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm space-y-3">
+            <div className="flex items-center justify-between px-1">
+              <button
+                type="button"
+                onClick={() => setSelectedDateStr(prev => shiftDateYMD(prev, -7))}
+                className="p-2 text-gray-400 hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-300 rounded-full transition-colors cursor-pointer"
+                title="Semana anterior"
+                aria-label="Semana anterior"
+              >
+                <ChevronLeft size={20} />
+              </button>
+
+              <div className="text-center">
+                <h3 className="font-bold text-base sm:text-lg text-gray-700 dark:text-white capitalize">
+                  {formatMonthYearHeading(selectedDateStr)}
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-slate-400">
+                  {dayBookingsCount === 0 
+                    ? 'Sin reservas confirmadas' 
+                    : `${dayBookingsCount} ${dayBookingsCount === 1 ? 'reserva confirmada' : 'reservas confirmadas'}`}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setSelectedDateStr(prev => shiftDateYMD(prev, 7))}
+                className="p-2 text-gray-400 hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-300 rounded-full transition-colors cursor-pointer"
+                title="Semana siguiente"
+                aria-label="Semana siguiente"
+              >
+                <ChevronRight size={20} />
+              </button>
+            </div>
+
+            {/* 7 Columnas: Lun a Dom */}
+            <div className="grid grid-cols-7 gap-1 sm:gap-2">
+              {weekDays.map((day) => {
+                const isSelected = day.dateStr === selectedDateStr;
+                return (
+                  <button
+                    type="button"
+                    key={`weekday-${day.dateStr}`}
+                    onClick={() => setSelectedDateStr(day.dateStr)}
+                    className={cn(
+                      "flex flex-col items-center justify-center rounded-2xl transition-all cursor-pointer relative py-2",
+                      isSelected
+                        ? "bg-[#0BA70B] text-white shadow-sm"
+                        : "hover:bg-gray-50 dark:hover:bg-slate-800/80"
+                    )}
+                  >
+                    <span className={cn(
+                      "text-xs font-medium mb-0.5",
+                      isSelected ? "text-white" : "text-gray-400 dark:text-slate-400"
+                    )}>
+                      {day.dayLabel}
+                    </span>
+                    <span className={cn(
+                      "text-xl sm:text-2xl font-semibold leading-tight",
+                      isSelected ? "text-white font-bold" : "text-gray-300 dark:text-slate-500"
+                    )}>
+                      {day.dayNumber}
+                    </span>
+                    {day.isToday ? (
+                      <span className={cn(
+                        "w-1.5 h-1.5 rounded-full mt-1 animate-pulse",
+                        isSelected ? "bg-white" : "bg-[#0BA70B]"
+                      )} />
+                    ) : (
+                      <span className="w-1.5 h-1.5 mt-1" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 2. Barra de Canchas en Calendario tipo cápsula (sin viñetas decorativas) */}
+          <div className="shrink-0 bg-white dark:bg-slate-900 rounded-full border border-gray-100 dark:border-slate-800 shadow-sm p-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
             {courts.map((court, cIdx) => {
               const isSelected = selectedCourtIds.some(id => String(id) === String(court.id));
               return (
@@ -5881,21 +5881,20 @@ const ScheduleView = ({
                   key={`sched-court-tab-${court.id || cIdx}-${cIdx}`}
                   onClick={() => toggleCourtSelection(court.id)}
                   className={cn(
-                    "flex-1 py-2 px-4 rounded-full text-xs sm:text-sm whitespace-nowrap flex items-center justify-center gap-1.5 cursor-pointer transition-colors",
+                    "flex-1 py-2 px-4 rounded-full text-xs sm:text-sm whitespace-nowrap flex items-center justify-center cursor-pointer transition-colors",
                     isSelected
                       ? "bg-[#0BA70B] text-white font-bold shadow-xs"
                       : "bg-transparent text-gray-400 hover:text-gray-600 dark:text-slate-400 font-semibold"
                   )}
                   title={isSelected ? "Toca para ocultar columna" : "Toca para comparar columna"}
                 >
-                  <span>•</span>
-                  <span>{court.name}</span>
+                  <span className="truncate">{court.name}</span>
                 </button>
               );
             })}
           </div>
 
-          {/* 1.3. Grilla Horaria Proyectada en Paralelo con Multiselección y Pinch-to-zoom */}
+          {/* 3. Grilla Horaria Proyectada en Paralelo con Multiselección, Degradado Sutil y Expansión Vertical */}
           <div
             id="reservations-grid-viewport"
             ref={viewportRef}
@@ -5903,8 +5902,12 @@ const ScheduleView = ({
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
             style={{ touchAction: 'pan-x pan-y' }}
-            className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm p-3 sm:p-4 overflow-hidden select-none"
+            className="flex-1 bg-white dark:bg-slate-900 rounded-t-3xl rounded-b-none border-t border-x border-b-0 border-gray-100 dark:border-slate-800 shadow-sm p-3 sm:p-4 pb-36 sm:pb-40 overflow-hidden select-none relative flex flex-col"
           >
+            {/* Bordes con degradado sutil difuminado */}
+            <div className="pointer-events-none absolute top-0 left-0 right-0 h-4 bg-gradient-to-b from-white dark:from-slate-900 to-transparent z-10 opacity-70" />
+            <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-6 bg-gradient-to-t from-white dark:from-slate-900 to-transparent z-10 opacity-80" />
+
             {!isOpenDay || timeSlots.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 text-gray-400">
                 <Moon size={48} className="mb-4 opacity-50 text-gray-300 dark:text-slate-600" />
@@ -5913,7 +5916,7 @@ const ScheduleView = ({
               </div>
             ) : (
               <div className="relative">
-                {/* 5.2. Cabecera de Nombres de Cancha arriba de las columnas (siempre visible incluso con 1 sola cancha) */}
+                {/* Cabecera de Nombres de Cancha arriba de las columnas */}
                 <div className="flex items-center pb-2">
                   <div className="w-14 shrink-0" />
                   <div className="flex-1 flex gap-2">
@@ -5930,7 +5933,7 @@ const ScheduleView = ({
 
                 {/* Área de Grilla (Horas y Columnas de Canchas) */}
                 <div className="relative flex">
-                  {/* 5.3. Columna izquierda de Horas ubicadas ENTRE medio de un bloque y otro */}
+                  {/* Columna izquierda de Horas ubicadas ENTRE medio de un bloque y otro (legibilidad mejorada) */}
                   <div 
                     className="w-14 shrink-0 relative"
                     style={{ height: `${timeSlots.length * slotHeight}px` }}
@@ -5940,7 +5943,7 @@ const ScheduleView = ({
                       return (
                         <div
                           key={`hour-slot-lbl-${rawHour}-${i}`}
-                          className="absolute left-0 -translate-y-1/2 text-xs font-normal text-gray-300 dark:text-slate-500 font-sans select-none"
+                          className="absolute left-0 -translate-y-1/2 text-xs font-medium text-gray-400 dark:text-slate-400 font-sans select-none"
                           style={{ top: `${i * slotHeight}px` }}
                         >
                           {hourLabel}
@@ -5954,7 +5957,7 @@ const ScheduleView = ({
                       return (
                         <div
                           key="hour-slot-lbl-closing"
-                          className="absolute left-0 -translate-y-1/2 text-xs font-normal text-gray-300 dark:text-slate-500 font-sans select-none"
+                          className="absolute left-0 -translate-y-1/2 text-xs font-medium text-gray-400 dark:text-slate-400 font-sans select-none"
                           style={{ top: `${timeSlots.length * slotHeight}px` }}
                         >
                           {closingLabel}
@@ -5965,7 +5968,7 @@ const ScheduleView = ({
 
                   {/* Área de Canchas */}
                   <div className="flex-1 relative">
-                    {/* 5.5. Línea roja de hora actual */}
+                    {/* Línea roja de hora actual */}
                     {currentTimePos !== null && (
                       <div 
                         className="absolute -left-14 right-0 z-20 flex items-center pointer-events-none -translate-y-1/2"
@@ -6005,7 +6008,9 @@ const ScheduleView = ({
                                       const totalPrice = Number(match.price_total ?? match.price ?? 0);
                                       const paidAmount = match.payment_status === 'paid' ? totalPrice : Number(match.amount_paid ?? match.deposit ?? 0);
                                       const isFullyPaid = (totalPrice > 0 && paidAmount >= totalPrice) || match.payment_status === 'paid' || (match as any).paymentStatus === 'pagado';
-                                      const isNarrowLayout = displayedCourts.length >= 3 || slotHeight < 48;
+                                      
+                                      // Regla estricta: 1 o 2 canchas = 1 sola línea; 3 o más canchas = 2 líneas
+                                      const isNarrowLayout = displayedCourts.length >= 3;
 
                                       return (
                                         <div
@@ -6022,26 +6027,26 @@ const ScheduleView = ({
                                           )}
                                         >
                                           {isNarrowLayout ? (
-                                            <div className="flex flex-col justify-center items-start px-2 py-1 h-full w-full rounded-2xl leading-tight">
+                                            <div className="flex flex-col justify-center items-start px-2 py-1 h-full w-full rounded-2xl leading-tight min-w-0">
                                               <div className="flex items-center gap-1 w-full min-w-0">
                                                 <UserIcon size={11} className="shrink-0 opacity-80" />
                                                 <span className="truncate text-[10px] sm:text-[11px] font-medium">
                                                   {getMatchHostDisplayName(match)}
                                                 </span>
                                               </div>
-                                              <div className="text-[10px] font-bold pl-3.5">
+                                              <div className="text-[10px] font-bold pl-3.5 whitespace-nowrap">
                                                 ${paidAmount.toLocaleString('es-AR')}
                                               </div>
                                             </div>
                                           ) : (
-                                            <div className="flex items-center justify-between gap-2 px-3.5 h-full w-full rounded-2xl">
-                                              <div className="flex items-center gap-1.5 min-w-0 truncate">
+                                            <div className="flex items-center justify-between gap-2 px-3.5 h-full w-full rounded-2xl min-w-0">
+                                              <div className="flex items-center gap-1.5 min-w-0 flex-1 truncate">
                                                 <UserIcon size={14} className="shrink-0 opacity-80" />
                                                 <span className="truncate font-medium text-xs sm:text-sm">
                                                   {getMatchHostDisplayName(match)}
                                                 </span>
                                               </div>
-                                              <span className="font-semibold text-xs sm:text-sm shrink-0">
+                                              <span className="font-semibold text-xs sm:text-sm shrink-0 whitespace-nowrap">
                                                 ${paidAmount.toLocaleString('es-AR')}
                                               </span>
                                             </div>
@@ -6050,7 +6055,7 @@ const ScheduleView = ({
                                       );
                                     })()
                                   ) : (
-                                    /* 5.4. Hueco libre con fondo gris suave y esquinas redondeadas */
+                                    /* Hueco libre con fondo gris suave y esquinas redondeadas */
                                     <div
                                       onClick={() => {
                                         onNewBooking({
@@ -6085,7 +6090,7 @@ const ScheduleView = ({
         /* =================================================================== */
         /* 2. VISTA LISTA: CONSOLA UNIFICADA DE PARTIDOS EN 4 BLOQUES         */
         /* =================================================================== */
-        <div className="space-y-4">
+        <div className="space-y-4 pb-28">
           {/* 2.2. Sección 1: En juego - Título plano sin pastillas ni punto titilante */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden">
             <button
@@ -11102,7 +11107,7 @@ export default function App() {
             activeTab === 'users' 
               ? "bg-[#f4f5f7] dark:bg-slate-900 px-2 sm:px-4 md:px-6 pb-16 lg:pb-3 flex flex-col min-h-0 overflow-hidden" 
               : activeTab === 'schedule'
-                ? "bg-[#f4f5f7] dark:bg-slate-900 px-3 md:px-6 pb-24 lg:pb-6 overflow-y-auto"
+                ? "bg-[#f4f5f7] dark:bg-slate-900 px-3 md:px-6 pb-0 overflow-y-auto flex flex-col"
                 : "bg-[#f0f2f5] dark:bg-slate-900 px-3 md:px-6 pb-24 lg:pb-6 overflow-y-auto"
           )}
         >
@@ -11129,7 +11134,7 @@ export default function App() {
           )}
 
           <ErrorBoundary key={`section-boundary-${activeTab}`} sectionName={activeTab}>
-            <div className={cn("w-full", activeTab === 'users' ? "flex-1 flex flex-col min-h-0 pt-1.5 sm:pt-3" : "pt-3 md:pt-5")}>
+            <div className={cn("w-full", activeTab === 'users' ? "flex-1 flex flex-col min-h-0 pt-1.5 sm:pt-3" : activeTab === 'schedule' ? "flex-1 flex flex-col pt-3 md:pt-5" : "pt-3 md:pt-5")}>
               {activeTab === 'schedule' && (
                 <ScheduleView 
                   key="view-schedule"
