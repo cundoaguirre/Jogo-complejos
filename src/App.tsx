@@ -1,7 +1,7 @@
 import React, { Component, useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from 'motion/react';
 import { 
-  LayoutDashboard, Users, Calendar, TrendingUp, TrendingDown, DollarSign, CalendarCheck, Percent, Clock, 
+  LayoutDashboard, Users, Calendar, CalendarPlus, TrendingUp, TrendingDown, DollarSign, CalendarCheck, Percent, Clock, 
   Search, Bell, Menu, X, Phone, MapPin, Star, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, List, Plus, Sparkles,
   ArrowLeft, ArrowRight, Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
   Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, ShoppingBasket, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, UserCheck, UserPlus, BarChart2, MoreVertical, FileText, Download,
@@ -167,7 +167,7 @@ export interface NavItemDef {
 
 export const MAIN_NAV_ITEMS: NavItemDef[] = [
   { id: 'finance', label: 'Finanzas', icon: DollarSign },
-  { id: 'schedule', label: 'Reservas', icon: Calendar },
+  { id: 'schedule', label: 'Agenda', icon: Calendar },
   { id: 'users', label: 'Usuarios', icon: Users },
   { id: 'profile', label: 'Perfil', icon: Store },
 ];
@@ -5324,7 +5324,8 @@ const ScheduleView = ({
   refreshKey,
   complexId = 'complejo_central',
   onNavigate,
-  users
+  users,
+  onDayBookingsCountChange
 }: { 
   onMatchClick: (match: Match) => void, 
   onNewBooking: (prefillData?: any) => void, 
@@ -5332,7 +5333,8 @@ const ScheduleView = ({
   refreshKey?: number,
   complexId?: string,
   onNavigate?: (tab: NavTabId | string) => void,
-  users?: User[]
+  users?: User[],
+  onDayBookingsCountChange?: (count: number) => void
 }) => {
   // 1. Selector Dual de Vista: Calendario vs. Lista
   const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
@@ -5626,6 +5628,10 @@ const ScheduleView = ({
     }).length;
   }, [matches, selectedDateStr]);
 
+  useEffect(() => {
+    onDayBookingsCountChange?.(dayBookingsCount);
+  }, [dayBookingsCount, onDayBookingsCountChange]);
+
   // 4.1. Clasificación estricta de partidos para la Vista Lista
   const { enJuego, proximos, jugados, cancelados } = useMemo(() => {
     const nowMs = currentTime.getTime();
@@ -5709,43 +5715,42 @@ const ScheduleView = ({
   return (
     <div className="flex flex-col space-y-4 pb-32 relative">
       {/* 1.2. Selector de Vista: Montado directamente sobre fondo blanco limpio, centrado horizontalmente */}
-      <div className="bg-white dark:bg-slate-900 p-2 sm:p-2.5 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm flex items-center justify-between relative">
-        <div className="flex items-center justify-center gap-2 mx-auto">
+      {/* 1.2. Selector de Vista: Montado directamente sobre el fondo general, alineado a la izquierda */}
+      <div className="flex items-center justify-between px-1 relative">
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => setViewMode('calendar')}
             className={cn(
-              "py-1.5 px-4 rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer",
+              "transition-all cursor-pointer",
               viewMode === 'calendar'
-                ? "bg-emerald-600 text-white shadow-sm"
-                : "bg-transparent text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-200 border-none shadow-none"
+                ? "bg-gray-200/90 dark:bg-slate-800 text-gray-700 dark:text-white font-bold rounded-full px-5 py-1.5 text-xs sm:text-sm shadow-2xs"
+                : "bg-transparent text-gray-400 hover:text-gray-600 dark:text-slate-400 font-semibold px-4 py-1.5 text-xs sm:text-sm"
             )}
           >
-            <Calendar size={15} />
-            <span>Calendario</span>
+            Calendario
           </button>
           <button
             type="button"
             onClick={() => setViewMode('list')}
             className={cn(
-              "py-1.5 px-4 rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer",
+              "transition-all cursor-pointer",
               viewMode === 'list'
-                ? "bg-emerald-600 text-white shadow-sm"
-                : "bg-transparent text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-200 border-none shadow-none"
+                ? "bg-gray-200/90 dark:bg-slate-800 text-gray-700 dark:text-white font-bold rounded-full px-5 py-1.5 text-xs sm:text-sm shadow-2xs"
+                : "bg-transparent text-gray-400 hover:text-gray-600 dark:text-slate-400 font-semibold px-4 py-1.5 text-xs sm:text-sm"
             )}
           >
-            <List size={15} />
-            <span>Lista</span>
+            Lista
           </button>
         </div>
 
         {/* Zoom Controls (para escritorio / accesibilidad en vista Calendario) */}
         {viewMode === 'calendar' && (
-          <div className="hidden sm:flex items-center gap-1 absolute right-3 top-1/2 -translate-y-1/2 bg-gray-50 dark:bg-slate-800 rounded-xl px-2 py-1 border border-gray-200/60 dark:border-slate-700">
+          <div className="hidden sm:flex items-center gap-1 bg-white dark:bg-slate-800 rounded-xl px-2 py-1 border border-gray-200/60 dark:border-slate-700 shadow-xs">
             <button 
               type="button" 
               onClick={() => updateZoomStep(-8)}
-              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white dark:hover:bg-slate-700 text-gray-600 dark:text-slate-300 text-sm font-bold cursor-pointer transition-colors"
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700 text-gray-600 dark:text-slate-300 text-sm font-bold cursor-pointer transition-colors"
               title="Reducir altura (Zoom Out)"
             >
               -
@@ -5756,7 +5761,7 @@ const ScheduleView = ({
             <button 
               type="button" 
               onClick={() => updateZoomStep(8)}
-              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white dark:hover:bg-slate-700 text-gray-600 dark:text-slate-300 text-sm font-bold cursor-pointer transition-colors"
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-gray-100 dark:hover:bg-slate-700 text-gray-600 dark:text-slate-300 text-sm font-bold cursor-pointer transition-colors"
               title="Aumentar altura (Zoom In)"
             >
               +
@@ -5767,12 +5772,12 @@ const ScheduleView = ({
 
       {/* 2.1. Supresión del Calendario en Lista: El bloque semanal solo se renderiza en modo Calendario */}
       {viewMode === 'calendar' && (
-        <div className="bg-white dark:bg-slate-900 p-3 sm:p-4 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm space-y-3">
+        <div className="bg-white dark:bg-slate-900 p-4 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm space-y-3">
           <div className="flex items-center justify-between px-1">
             <button
               type="button"
               onClick={() => setSelectedDateStr(prev => shiftDateYMD(prev, -7))}
-              className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full text-gray-600 dark:text-slate-400 transition-colors cursor-pointer"
+              className="p-2 text-gray-400 hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-300 rounded-full transition-colors cursor-pointer"
               title="Semana anterior"
               aria-label="Semana anterior"
             >
@@ -5780,10 +5785,10 @@ const ScheduleView = ({
             </button>
 
             <div className="text-center">
-              <h3 className="font-bold text-base sm:text-lg text-gray-900 dark:text-white capitalize">
+              <h3 className="font-bold text-base sm:text-lg text-gray-700 dark:text-white capitalize">
                 {formatMonthYearHeading(selectedDateStr)}
               </h3>
-              <p className="text-[11px] text-gray-500 dark:text-slate-400">
+              <p className="text-xs text-gray-500 dark:text-slate-400">
                 {dayBookingsCount === 0 
                   ? 'Sin reservas confirmadas' 
                   : `${dayBookingsCount} ${dayBookingsCount === 1 ? 'reserva confirmada' : 'reservas confirmadas'}`}
@@ -5793,7 +5798,7 @@ const ScheduleView = ({
             <button
               type="button"
               onClick={() => setSelectedDateStr(prev => shiftDateYMD(prev, 7))}
-              className="p-2 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full text-gray-600 dark:text-slate-400 transition-colors cursor-pointer"
+              className="p-2 text-gray-400 hover:text-gray-600 dark:text-slate-500 dark:hover:text-slate-300 rounded-full transition-colors cursor-pointer"
               title="Semana siguiente"
               aria-label="Semana siguiente"
             >
@@ -5811,26 +5816,28 @@ const ScheduleView = ({
                   key={`weekday-${day.dateStr}`}
                   onClick={() => setSelectedDateStr(day.dateStr)}
                   className={cn(
-                    "flex flex-col items-center justify-center py-2 sm:py-2.5 rounded-xl transition-all cursor-pointer relative",
+                    "flex flex-col items-center justify-center rounded-2xl transition-all cursor-pointer relative py-2",
                     isSelected
-                      ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/20 font-bold"
-                      : "hover:bg-gray-50 dark:hover:bg-slate-800/80 text-gray-600 dark:text-slate-400"
+                      ? "bg-[#0BA70B] text-white shadow-sm"
+                      : "hover:bg-gray-50 dark:hover:bg-slate-800/80"
                   )}
                 >
                   <span className={cn(
-                    "text-[10px] sm:text-xs font-medium uppercase tracking-wider mb-0.5",
-                    isSelected ? "text-emerald-100" : "text-gray-500 dark:text-slate-400"
+                    "text-xs font-medium mb-0.5",
+                    isSelected ? "text-white" : "text-gray-400 dark:text-slate-400"
                   )}>
                     {day.dayLabel}
                   </span>
                   <span className={cn(
-                    "text-base sm:text-lg font-bold leading-none",
-                    isSelected ? "text-white" : "text-gray-800 dark:text-slate-200"
+                    "text-xl sm:text-2xl font-semibold leading-tight",
+                    isSelected ? "text-white font-bold" : "text-gray-300 dark:text-slate-500"
                   )}>
                     {day.dayNumber}
                   </span>
-                  {day.isToday && !isSelected && (
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mt-1" />
+                  {isSelected ? (
+                    <span className="w-1.5 h-1.5 rounded-full bg-white mt-1" />
+                  ) : (
+                    <span className="w-1.5 h-1.5 mt-1" />
                   )}
                 </button>
               );
@@ -5864,8 +5871,8 @@ const ScheduleView = ({
         /* 3. VISTA CALENDARIO (GRILLA HORARIA TRADICIONAL CON MULTISELECCIÓN) */
         /* =================================================================== */
         <div className="space-y-3">
-          {/* 1.1. Barra de Canchas en Calendario: Sin fondo gris perimetral en no seleccionadas, selectores planos */}
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm p-1.5 flex gap-1 overflow-x-auto no-scrollbar">
+          {/* 1.1. Barra de Canchas en Calendario tipo cápsula */}
+          <div className="bg-white dark:bg-slate-900 rounded-full border border-gray-100 dark:border-slate-800 shadow-sm p-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
             {courts.map((court, cIdx) => {
               const isSelected = selectedCourtIds.some(id => String(id) === String(court.id));
               return (
@@ -5874,14 +5881,14 @@ const ScheduleView = ({
                   key={`sched-court-tab-${court.id || cIdx}-${cIdx}`}
                   onClick={() => toggleCourtSelection(court.id)}
                   className={cn(
-                    "flex-1 py-1.5 px-3.5 rounded-xl text-xs sm:text-sm font-bold transition-all whitespace-nowrap flex items-center justify-center gap-1.5 cursor-pointer",
+                    "flex-1 py-2 px-4 rounded-full text-xs sm:text-sm whitespace-nowrap flex items-center justify-center gap-1.5 cursor-pointer transition-colors",
                     isSelected
-                      ? "bg-emerald-600 text-white shadow-sm"
-                      : "bg-transparent text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-200 border-none shadow-none"
+                      ? "bg-[#0BA70B] text-white font-bold shadow-xs"
+                      : "bg-transparent text-gray-400 hover:text-gray-600 dark:text-slate-400 font-semibold"
                   )}
                   title={isSelected ? "Toca para ocultar columna" : "Toca para comparar columna"}
                 >
-                  {isSelected && <div className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />}
+                  <span>•</span>
                   <span>{court.name}</span>
                 </button>
               );
@@ -5896,7 +5903,7 @@ const ScheduleView = ({
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
             style={{ touchAction: 'pan-x pan-y' }}
-            className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden select-none"
+            className="bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm p-3 sm:p-4 overflow-hidden select-none"
           >
             {!isOpenDay || timeSlots.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-20 text-gray-400">
@@ -5906,145 +5913,169 @@ const ScheduleView = ({
               </div>
             ) : (
               <div className="relative">
-                {/* Cabecera de Columnas si hay 2 o más canchas seleccionadas */}
-                {displayedCourts.length > 1 && (
-                  <div className="flex border-b border-gray-100 dark:border-slate-800 bg-gray-50/80 dark:bg-slate-800/80 sticky top-0 z-20">
-                    <div className="w-16 flex-shrink-0 border-r border-gray-100 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-800/50" />
-                    {displayedCourts.map((c, idx) => (
+                {/* 5.2. Cabecera de Nombres de Cancha arriba de las columnas (siempre visible incluso con 1 sola cancha) */}
+                <div className="flex items-center pb-2">
+                  <div className="w-14 shrink-0" />
+                  <div className="flex-1 flex gap-2">
+                    {displayedCourts.map((c) => (
                       <div 
                         key={`col-header-${c.id}`} 
-                        className={cn(
-                          "flex-1 py-2 px-2 text-center text-xs font-bold text-gray-700 dark:text-slate-200 border-r border-gray-100 dark:border-slate-800 last:border-r-0 truncate",
-                          idx % 2 === 1 ? "bg-gray-50/40 dark:bg-slate-800/40" : ""
-                        )}
+                        className="flex-1 text-center text-sm font-medium text-gray-600 dark:text-slate-300 truncate"
                       >
                         {c.name}
                       </div>
                     ))}
                   </div>
-                )}
+                </div>
 
-                {/* Línea de hora actual */}
-                {currentTimePos !== null && (
+                {/* Área de Grilla (Horas y Columnas de Canchas) */}
+                <div className="relative flex">
+                  {/* 5.3. Columna izquierda de Horas ubicadas ENTRE medio de un bloque y otro */}
                   <div 
-                    className="absolute left-0 right-0 z-20 flex items-center pointer-events-none"
-                    style={{ top: `${currentTimePos + (displayedCourts.length > 1 ? 33 : 0)}px` }}
+                    className="w-14 shrink-0 relative"
+                    style={{ height: `${timeSlots.length * slotHeight}px` }}
                   >
-                    <div className="w-16 text-right pr-2 text-[10px] font-bold text-red-500 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm rounded-r sticky left-0 z-30">
-                      {format(currentTime, 'HH:mm')}
-                    </div>
-                    <div className="flex-1 h-[2px] bg-red-500 shadow-sm relative">
-                      <div className="absolute right-0 -top-1 w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                    </div>
-                  </div>
-                )}
-
-                {/* Slots Horarios */}
-                <div className="divide-y divide-gray-100 dark:divide-slate-800">
-                  {timeSlots.map((rawHour, hIdx) => {
-                    const hourLabel = rawHour === 24 ? "00:00" : `${String(rawHour % 24).padStart(2, '0')}:00`;
-
-                    return (
-                      <div
-                        key={`grid-slot-row-${rawHour}-${hIdx}`}
-                        className="flex items-stretch hover:bg-gray-50/40 dark:hover:bg-slate-800/40 transition-colors"
-                        style={{ height: `${slotHeight}px` }}
-                      >
-                        {/* Columna Horaria */}
-                        <div className="w-16 flex-shrink-0 border-r border-gray-100 dark:border-slate-800 flex items-start justify-center pt-2 text-xs font-mono font-medium text-gray-400 dark:text-slate-500 bg-gray-50/30 dark:bg-slate-800/30 sticky left-0 z-10">
+                    {timeSlots.map((rawHour, i) => {
+                      const hourLabel = rawHour === 24 ? "00:00" : `${String(rawHour % 24).padStart(2, '0')}:00`;
+                      return (
+                        <div
+                          key={`hour-slot-lbl-${rawHour}-${i}`}
+                          className="absolute left-0 -translate-y-1/2 text-xs font-normal text-gray-300 dark:text-slate-500 font-sans select-none"
+                          style={{ top: `${i * slotHeight}px` }}
+                        >
                           {hourLabel}
                         </div>
+                      );
+                    })}
+                    {timeSlots.length > 0 && (() => {
+                      const lastHour = timeSlots[timeSlots.length - 1];
+                      const closingHour = (lastHour + 1) % 24;
+                      const closingLabel = `${String(closingHour).padStart(2, '0')}:00`;
+                      return (
+                        <div
+                          key="hour-slot-lbl-closing"
+                          className="absolute left-0 -translate-y-1/2 text-xs font-normal text-gray-300 dark:text-slate-500 font-sans select-none"
+                          style={{ top: `${timeSlots.length * slotHeight}px` }}
+                        >
+                          {closingLabel}
+                        </div>
+                      );
+                    })()}
+                  </div>
 
-                        {/* Celdas para cada cancha seleccionada en paralelo */}
-                        {displayedCourts.map((court, cIdx) => {
-                          const match = getMatchForCourtSlot(court.id, rawHour);
-                          const isCompact = slotHeight < 46 || displayedCourts.length > 2;
-
-                          return (
-                            <div 
-                              key={`grid-cell-${court.id}-${rawHour}`}
-                              className={cn(
-                                "flex-1 p-1 sm:p-1.5 relative border-r border-gray-100 dark:border-slate-800 last:border-r-0 min-w-0",
-                                displayedCourts.length > 1 && cIdx % 2 === 1 ? "bg-gray-50/20 dark:bg-slate-800/20" : ""
-                              )}
-                            >
-                              {match ? (
-                                /* Tarjeta de Partido Reservado en Grilla */
-                                <div
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    onMatchClick(match);
-                                  }}
-                                  className={cn(
-                                    "h-full w-full rounded-xl cursor-pointer shadow-xs transition-all hover:shadow-md flex flex-col justify-between overflow-hidden p-2 border",
-                                    match.payment_status === 'paid' 
-                                      ? "bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800 text-emerald-950 dark:text-emerald-200" 
-                                      : match.payment_status === 'partial'
-                                      ? "bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-950 dark:text-amber-200"
-                                      : "bg-red-50 dark:bg-red-950/40 border-red-200 dark:border-red-800 text-red-950 dark:text-red-200"
-                                  )}
-                                >
-                                  <div className="flex items-center justify-between gap-1">
-                                    <div className="font-bold text-xs truncate flex items-center gap-1 min-w-0">
-                                      <span className="truncate">{getMatchHostDisplayName(match)}</span>
-                                    </div>
-                                    <div className="text-[10px] font-mono font-bold shrink-0">
-                                      ${Number(match.price_total ?? match.price ?? 0).toLocaleString()}
-                                    </div>
-                                  </div>
-
-                                  {!isCompact && (
-                                    <div className="flex items-center justify-between text-[10px] font-medium pt-1 border-t border-black/5 dark:border-white/5">
-                                      <span className={cn(
-                                        "px-1.5 py-0.5 rounded font-bold uppercase text-[9px]",
-                                        match.payment_status === 'paid' ? "bg-emerald-200/80 dark:bg-emerald-800 text-emerald-900 dark:text-emerald-100" :
-                                        match.payment_status === 'partial' ? "bg-amber-200/80 dark:bg-amber-800 text-amber-900 dark:text-amber-100" :
-                                        "bg-red-200/80 dark:bg-red-800 text-red-900 dark:text-red-100"
-                                      )}>
-                                        {match.payment_status === 'paid' ? 'Pagado' : match.payment_status === 'partial' ? 'Seña' : 'Pendiente'}
-                                      </span>
-                                      {Number(match.deposit || match.amount_paid || 0) > 0 && (
-                                        <span className="text-emerald-700 dark:text-emerald-400 font-mono text-[9px] truncate">
-                                          Seña: ${Number(match.deposit || match.amount_paid || 0).toLocaleString()}
-                                        </span>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              ) : (
-                                /* 3.3. Creación Rápida por Clic Contextual en Espacio Libre */
-                                <div
-                                  onClick={() => {
-                                    const hourStr = rawHour === 24 ? "00:00" : `${String(rawHour % 24).padStart(2, '0')}:00`;
-                                    const nextHour = (rawHour + 1) % 24;
-                                    const endHourStr = `${String(nextHour).padStart(2, '0')}:00`;
-                                    onNewBooking({
-                                      court_id: court.id,
-                                      courtId: court.id,
-                                      courtName: court.name,
-                                      date: selectedDateStr,
-                                      startTime: hourStr,
-                                      time: hourStr,
-                                      endTime: endHourStr,
-                                      isPrefilledFromSlot: true
-                                    });
-                                  }}
-                                  className="h-full w-full rounded-xl border border-dashed border-gray-200 dark:border-slate-800 hover:border-emerald-400 dark:hover:border-emerald-600 hover:bg-emerald-50/30 dark:hover:bg-emerald-950/20 transition-all cursor-pointer flex items-center justify-center group"
-                                  title={`Tocar para reservar ${court.name} a las ${hourLabel}`}
-                                >
-                                  <div className="opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 text-emerald-600 dark:text-emerald-400 text-[11px] font-semibold">
-                                    <Plus size={13} />
-                                    <span>Reservar</span>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
+                  {/* Área de Canchas */}
+                  <div className="flex-1 relative">
+                    {/* 5.5. Línea roja de hora actual */}
+                    {currentTimePos !== null && (
+                      <div 
+                        className="absolute -left-14 right-0 z-20 flex items-center pointer-events-none -translate-y-1/2"
+                        style={{ top: `${currentTimePos}px` }}
+                      >
+                        <div className="w-14 shrink-0 text-left pl-0 text-[10px] font-semibold text-red-500">
+                          {format(currentTime, 'HH:mm')}
+                        </div>
+                        <div className="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0" />
+                        <div className="flex-1 h-[1.5px] bg-red-500" />
                       </div>
-                    );
-                  })}
+                    )}
+
+                    {/* Filas de slots horarios sin líneas divisorias de tabla */}
+                    <div className="flex flex-col">
+                      {timeSlots.map((rawHour, hIdx) => {
+                        const hourLabel = rawHour === 24 ? "00:00" : `${String(rawHour % 24).padStart(2, '0')}:00`;
+                        const nextHour = (rawHour + 1) % 24;
+                        const endHourLabel = `${String(nextHour).padStart(2, '0')}:00`;
+
+                        return (
+                          <div
+                            key={`grid-slot-row-${rawHour}-${hIdx}`}
+                            className="flex items-stretch gap-2 py-1"
+                            style={{ height: `${slotHeight}px` }}
+                          >
+                            {displayedCourts.map((court) => {
+                              const match = getMatchForCourtSlot(court.id, rawHour);
+
+                              return (
+                                <div 
+                                  key={`grid-cell-${court.id}-${rawHour}`}
+                                  className="flex-1 h-full min-w-0"
+                                >
+                                  {match ? (
+                                    (() => {
+                                      const totalPrice = Number(match.price_total ?? match.price ?? 0);
+                                      const paidAmount = match.payment_status === 'paid' ? totalPrice : Number(match.amount_paid ?? match.deposit ?? 0);
+                                      const isFullyPaid = (totalPrice > 0 && paidAmount >= totalPrice) || match.payment_status === 'paid' || (match as any).paymentStatus === 'pagado';
+                                      const isNarrowLayout = displayedCourts.length >= 3 || slotHeight < 48;
+
+                                      return (
+                                        <div
+                                          onClick={(e) => {
+                                            e.preventDefault();
+                                            e.stopPropagation();
+                                            onMatchClick(match);
+                                          }}
+                                          className={cn(
+                                            "h-full w-full rounded-2xl cursor-pointer transition-all hover:shadow-xs overflow-hidden select-none",
+                                            isFullyPaid
+                                              ? "bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300"
+                                              : "bg-red-50/70 dark:bg-red-950/30 border border-red-100 dark:border-red-900/40 text-red-800 dark:text-red-300"
+                                          )}
+                                        >
+                                          {isNarrowLayout ? (
+                                            <div className="flex flex-col justify-center items-start px-2 py-1 h-full w-full rounded-2xl leading-tight">
+                                              <div className="flex items-center gap-1 w-full min-w-0">
+                                                <UserIcon size={11} className="shrink-0 opacity-80" />
+                                                <span className="truncate text-[10px] sm:text-[11px] font-medium">
+                                                  {getMatchHostDisplayName(match)}
+                                                </span>
+                                              </div>
+                                              <div className="text-[10px] font-bold pl-3.5">
+                                                ${paidAmount.toLocaleString('es-AR')}
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <div className="flex items-center justify-between gap-2 px-3.5 h-full w-full rounded-2xl">
+                                              <div className="flex items-center gap-1.5 min-w-0 truncate">
+                                                <UserIcon size={14} className="shrink-0 opacity-80" />
+                                                <span className="truncate font-medium text-xs sm:text-sm">
+                                                  {getMatchHostDisplayName(match)}
+                                                </span>
+                                              </div>
+                                              <span className="font-semibold text-xs sm:text-sm shrink-0">
+                                                ${paidAmount.toLocaleString('es-AR')}
+                                              </span>
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })()
+                                  ) : (
+                                    /* 5.4. Hueco libre con fondo gris suave y esquinas redondeadas */
+                                    <div
+                                      onClick={() => {
+                                        onNewBooking({
+                                          court_id: court.id,
+                                          courtId: court.id,
+                                          courtName: court.name,
+                                          date: selectedDateStr,
+                                          startTime: hourLabel,
+                                          time: hourLabel,
+                                          endTime: endHourLabel,
+                                          isPrefilledFromSlot: true
+                                        });
+                                      }}
+                                      className="h-full w-full rounded-2xl bg-[#eeeeef] dark:bg-slate-800/70 hover:bg-gray-200/80 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                                      title={`Tocar para reservar ${court.name} a las ${hourLabel}`}
+                                    />
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
@@ -6209,7 +6240,7 @@ const ScheduleView = ({
         </div>
       )}
 
-      {/* 3. Botón Flotante de Acción (FAB +) - Coordenadas homologadas idénticas con Finanzas */}
+      {/* 3. Botón Flotante de Acción (FAB +) - Coordenadas y diseño homologados idénticos con Usuarios */}
       <button
         type="button"
         onClick={() => {
@@ -6222,11 +6253,11 @@ const ScheduleView = ({
             isPrefilledFromSlot: false
           });
         }}
-        className="fixed bottom-24 right-6 w-14 h-14 bg-emerald-600 text-white rounded-full shadow-xl shadow-emerald-900/30 flex items-center justify-center hover:bg-emerald-700 transition-transform hover:scale-105 z-40 active:scale-95 cursor-pointer"
-        title="Crear Nueva Reserva"
         aria-label="Crear Nueva Reserva"
+        title="Crear Nueva Reserva"
+        className="fixed bottom-20 right-4 sm:right-6 lg:bottom-8 lg:right-8 z-30 w-13 h-13 sm:w-14 sm:h-14 bg-[#0BA70B] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
       >
-        <Plus size={28} strokeWidth={2.5} />
+        <CalendarPlus size={26} strokeWidth={2.4} />
       </button>
     </div>
   );
@@ -10272,7 +10303,7 @@ const BottomNav = ({ active, onNavigate }: { active: NavTabId | string, onNaviga
     >
       {MAIN_NAV_ITEMS.map(item => {
         const isCurrent = active === item.id;
-        const displayLabel = item.id === 'schedule' ? 'Reservas' : item.label;
+        const displayLabel = item.label;
         return (
           <button
             type="button"
@@ -10559,6 +10590,7 @@ export default function App() {
   const [courts, setCourts] = useState<Court[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [activeBookings, setActiveBookings] = useState<Match[]>([]);
+  const [dayBookingsCount, setDayBookingsCount] = useState<number>(0);
 
   // Sincronización en tiempo real estrictamente ligada al complejo asignado del operador autenticado
   useEffect(() => {
@@ -10945,7 +10977,7 @@ export default function App() {
         {/* Header */}
         <header className={cn(
           "h-16 md:h-20 flex items-center justify-between px-4 md:px-6 z-20 relative transition-colors",
-          activeTab === 'users'
+          (activeTab === 'users' || activeTab === 'schedule')
             ? "bg-[#f4f5f7] dark:bg-slate-900 text-slate-800 dark:text-slate-100 border-b border-transparent"
             : "bg-[#0BA70B] dark:bg-[#0BA70B] text-white"
         )}>
@@ -10955,16 +10987,16 @@ export default function App() {
               onClick={() => setSidebarOpen(true)} 
               className={cn(
                 "lg:hidden p-1 -ml-1 cursor-pointer transition-colors",
-                activeTab === 'users' ? "text-slate-800 dark:text-slate-100 hover:text-slate-600" : "text-white hover:text-white/80"
+                (activeTab === 'users' || activeTab === 'schedule') ? "text-slate-800 dark:text-slate-100 hover:text-slate-600" : "text-white hover:text-white/80"
               )} 
               aria-label="Abrir menú lateral"
             >
-              <Menu size={activeTab === 'users' ? 30 : 32} strokeWidth={2.5} />
+              <Menu size={(activeTab === 'users' || activeTab === 'schedule') ? 30 : 32} strokeWidth={2.5} />
             </button>
             <div className="flex flex-col">
               <h2 className={cn(
                 "text-[22px] md:text-[26px] font-bold tracking-tight leading-tight",
-                activeTab === 'users' ? "text-slate-800 dark:text-slate-100" : "text-white"
+                (activeTab === 'users' || activeTab === 'schedule') ? "text-slate-800 dark:text-slate-100" : "text-white"
               )}>
                 { 
                  activeTab === 'schedule' ? 'Agenda' :
@@ -10973,7 +11005,7 @@ export default function App() {
                  activeTab === 'profile' ? 'Perfil' : 
                  activeTab === 'analytics' ? 'Analíticas' : activeTab}
               </h2>
-              {activeTab !== 'users' && authorizedComplexes.length > 1 ? (
+              {activeTab !== 'users' && activeTab !== 'schedule' && authorizedComplexes.length > 1 ? (
                 <div className="relative inline-block mt-0.5">
                   <select
                     value={activeComplexId || ''}
@@ -10989,7 +11021,7 @@ export default function App() {
                   </select>
                   <ChevronDown size={11} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-white/80 pointer-events-none" />
                 </div>
-              ) : (activeTab !== 'users' && activeComplex?.name) ? (
+              ) : (activeTab !== 'users' && activeTab !== 'schedule' && activeComplex?.name) ? (
                 <div className="flex items-center gap-1.5 text-xs text-emerald-100 font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-200 animate-pulse" />
                   <span className="truncate max-w-[200px]">{activeComplex.name}</span>
@@ -11002,6 +11034,11 @@ export default function App() {
               <div className="flex items-center gap-1.5 text-slate-800 dark:text-slate-100 font-bold text-2xl md:text-3xl mr-1">
                 <UserIcon size={26} strokeWidth={2.4} />
                 <span>{unifiedCrmUsers.length}</span>
+              </div>
+            ) : activeTab === 'schedule' ? (
+              <div className="flex items-center gap-1.5 text-slate-800 dark:text-slate-100 font-bold text-2xl md:text-3xl mr-1">
+                <Calendar size={26} strokeWidth={2.4} />
+                <span>{dayBookingsCount}</span>
               </div>
             ) : (
               <>
@@ -11064,7 +11101,9 @@ export default function App() {
             "flex-1 relative pt-0", 
             activeTab === 'users' 
               ? "bg-[#f4f5f7] dark:bg-slate-900 px-2 sm:px-4 md:px-6 pb-16 lg:pb-3 flex flex-col min-h-0 overflow-hidden" 
-              : "bg-[#f0f2f5] dark:bg-slate-900 px-3 md:px-6 pb-24 lg:pb-6 overflow-y-auto"
+              : activeTab === 'schedule'
+                ? "bg-[#f4f5f7] dark:bg-slate-900 px-3 md:px-6 pb-24 lg:pb-6 overflow-y-auto"
+                : "bg-[#f0f2f5] dark:bg-slate-900 px-3 md:px-6 pb-24 lg:pb-6 overflow-y-auto"
           )}
         >
           {activationSuccessBanner && (
@@ -11114,6 +11153,7 @@ export default function App() {
                   onUpdateStatus={handleUpdateStatus}
                   refreshKey={refreshKey}
                   onNavigate={handleNavigate}
+                  onDayBookingsCountChange={setDayBookingsCount}
                 />
               )}
               {activeTab === 'users' && (
