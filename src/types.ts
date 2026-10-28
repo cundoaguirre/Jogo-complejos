@@ -190,6 +190,9 @@ export interface ProductBatch {
   expenseCategoryName?: string | null;
   expenseConceptId?: string | null;
   expenseConceptName?: string | null;
+  entityId?: string | null;
+  entityName?: string | null;
+  entityType?: ExpenseEntityType | string | null;
   createdAt: any;
 }
 
@@ -685,3 +688,21 @@ export interface ExpenseEntity {
   createdAt?: any;
   updatedAt?: any;
 }
+
+export const getExpenseEntityTypeBadgeClass = (type?: ExpenseEntityType | string | null): string => {
+  switch (type) {
+    case 'Empresa':
+      return 'bg-[#2563eb] text-white';
+    case 'Sector Público':
+      return 'bg-[#eab308] text-slate-900';
+    case 'Persona':
+      return 'bg-[#e2e8f0] text-slate-700 dark:bg-slate-700 dark:text-slate-200';
+    case 'ONG':
+      return 'bg-[#9333ea] text-white';
+    case 'Otro':
+      return 'bg-[#ef4444] text-white';
+    default:
+      return 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300';
+  }
+};
+

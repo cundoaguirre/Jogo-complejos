@@ -5352,7 +5352,9 @@ const ScheduleView = ({
   complexId = 'complejo_central',
   onNavigate,
   users,
-  onDayBookingsCountChange
+  onDayBookingsCountChange,
+  initialCourts,
+  initialBookings
 }: { 
   onMatchClick: (match: Match) => void, 
   onNewBooking: (prefillData?: any) => void, 
@@ -5361,7 +5363,9 @@ const ScheduleView = ({
   complexId?: string,
   onNavigate?: (tab: NavTabId | string) => void,
   users?: User[],
-  onDayBookingsCountChange?: (count: number) => void
+  onDayBookingsCountChange?: (count: number) => void,
+  initialCourts?: Court[],
+  initialBookings?: Match[]
 }) => {
   // 1. Selector Dual de Vista: Calendario vs. Lista
   const [viewMode, setViewMode] = useState<'calendar' | 'list'>('calendar');
@@ -5387,9 +5391,21 @@ const ScheduleView = ({
   // 2. Navegación Temporal Semanal: Fecha seleccionada manejada estrictamente como string YYYY-MM-DD local
   const [selectedDateStr, setSelectedDateStr] = useState<string>(() => getTodayLocalYMD());
 
-  // Firestore snapshots in memory
-  const [matches, setMatches] = useState<Match[]>([]);
-  const [courts, setCourts] = useState<Court[]>([]);
+  // Firestore snapshots in memory - Inicializados con props para eliminar parpadeo
+  const [matches, setMatches] = useState<Match[]>(() => Array.isArray(initialBookings) ? initialBookings : []);
+  const [courts, setCourts] = useState<Court[]>(() => Array.isArray(initialCourts) ? initialCourts : []);
+  const [isCourtsLoaded, setIsCourtsLoaded] = useState<boolean>(() => Array.isArray(initialCourts) && initialCourts.length > 0);
+
+  // Sincronizar en memoria si llegan initialCourts/initialBookings
+  useEffect(() => {
+    if (Array.isArray(initialCourts) && initialCourts.length > 0 && courts.length === 0) {
+      setCourts(initialCourts);
+      setIsCourtsLoaded(true);
+    }
+    if (Array.isArray(initialBookings) && initialBookings.length > 0 && matches.length === 0) {
+      setMatches(initialBookings);
+    }
+  }, [initialCourts, initialBookings]);
   
   // 1.3. Multiselección de Canchas en Grilla persistida en localStorage
   const [selectedCourtIds, setSelectedCourtIds] = useState<(string | number)[]>(() => {
@@ -5401,6 +5417,9 @@ const ScheduleView = ({
           if (Array.isArray(parsed) && parsed.length > 0) return parsed;
         }
       } catch (e) {}
+    }
+    if (Array.isArray(initialCourts) && initialCourts.length > 0) {
+      return [initialCourts[0].id];
     }
     return [];
   });
@@ -5493,6 +5512,7 @@ const ScheduleView = ({
     const unsubCourts = subscribeToCourts(complexId, (courtsList) => {
       const validCourts = Array.isArray(courtsList) ? courtsList : [];
       setCourts(validCourts);
+      setIsCourtsLoaded(true);
       if (validCourts.length > 0) {
         setSelectedCourtIds(prev => {
           const valid = prev.filter(id => validCourts.some(c => String(c.id) === String(id)));
@@ -5818,7 +5838,7 @@ const ScheduleView = ({
       </div>
 
       {/* Manejo de Canchas Vacías */}
-      {courts.length === 0 ? (
+      {isCourtsLoaded && courts.length === 0 ? (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-8 md:p-12 text-center my-4 shadow-sm">
           <div className="w-16 h-16 rounded-3xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 flex items-center justify-center mx-auto mb-4 border border-amber-200/60 dark:border-amber-800/40">
             <AlertCircle size={32} />
@@ -11286,6 +11306,8 @@ export default function App() {
                 <ScheduleView 
                   key="view-schedule"
                   complexId={activeComplexId}
+                  initialCourts={courts}
+                  initialBookings={activeBookings}
                   users={unifiedCrmUsers}
                   onMatchClick={setSelectedMatch} 
                   onNewBooking={(prefillData?: any) => {

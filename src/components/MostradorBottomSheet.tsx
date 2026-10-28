@@ -241,6 +241,13 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
 
   const rubroDropdownRef = useRef<HTMLDivElement>(null);
   const conceptDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Selector de Entidad para Compra de Mercadería (Arquitectura de 3 Dimensiones)
+  const [selectedPurchaseEntity, setSelectedPurchaseEntity] = useState<ExpenseEntity | null>(null);
+  const [purchaseEntitySearch, setPurchaseEntitySearch] = useState('');
+  const [isPurchaseEntityDropdownOpen, setIsPurchaseEntityDropdownOpen] = useState(false);
+  const entityPurchaseDropdownRef = useRef<HTMLDivElement>(null);
+
   const [isSupplierSuggestionsOpen, setIsSupplierSuggestionsOpen] = useState(false);
   const [isRegisteringPurchase, setIsRegisteringPurchase] = useState(false);
 
@@ -357,6 +364,9 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
       }
       if (conceptDropdownRef.current && !conceptDropdownRef.current.contains(e.target as Node)) {
         setIsPurchaseConceptDropdownOpen(false);
+      }
+      if (entityPurchaseDropdownRef.current && !entityPurchaseDropdownRef.current.contains(e.target as Node)) {
+        setIsPurchaseEntityDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -514,6 +524,50 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
     setIsExpenseItemModalOpen(true);
   };
 
+  const activeExpenseEntities = useMemo(() => {
+    return expenseEntities.filter(e => e.status !== 'inactivo');
+  }, [expenseEntities]);
+
+  const filteredPurchaseEntities = useMemo(() => {
+    const q = purchaseEntitySearch.trim().toLowerCase();
+    if (!q) return activeExpenseEntities;
+    return activeExpenseEntities.filter(e =>
+      e.name.toLowerCase().includes(q) ||
+      (e.cuit && e.cuit.includes(q)) ||
+      (e.phone && e.phone.includes(q)) ||
+      (e.type && e.type.toLowerCase().includes(q))
+    );
+  }, [activeExpenseEntities, purchaseEntitySearch]);
+
+  const handleSelectPurchaseEntity = (ent: ExpenseEntity) => {
+    setSelectedPurchaseEntity(ent);
+    setPurchaseEntitySearch(ent.name);
+    setIsPurchaseEntityDropdownOpen(false);
+  };
+
+  const handleClearPurchaseEntity = () => {
+    setSelectedPurchaseEntity(null);
+    setPurchaseEntitySearch('');
+    setIsPurchaseEntityDropdownOpen(false);
+  };
+
+  const handleOpenAddEntityFromPurchase = () => {
+    setEntityForm({
+      id: undefined,
+      name: purchaseEntitySearch.trim(),
+      type: 'Empresa',
+      location: '',
+      cuit: '',
+      phone: '',
+      email: '',
+      notes: '',
+      status: 'activo'
+    });
+    setEntityFormError(null);
+    setEntityModalMode('create');
+    setIsEntityModalOpen(true);
+  };
+
   // Handlers for Categories
   const handleCreateCategory = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -585,6 +639,10 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
     setSelectedPurchaseConcept(null);
     setPurchaseConceptSearch('');
     setIsPurchaseConceptDropdownOpen(false);
+
+    setSelectedPurchaseEntity(null);
+    setPurchaseEntitySearch('');
+    setIsPurchaseEntityDropdownOpen(false);
 
     setPurchaseForm({
       quantity: initQty,
@@ -794,11 +852,14 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
         quantity: qty,
         unitCost: cost,
         purchasePlace: purchaseForm.purchasePlace.trim() || 'Mayorista',
-        supplierId: purchaseForm.supplierId,
+        supplierId: selectedPurchaseEntity?.id || purchaseForm.supplierId,
         expenseCategoryId: selectedPurchaseRubro?.id,
         expenseCategoryName: selectedPurchaseRubro?.name,
         expenseConceptId: selectedPurchaseConcept?.id,
-        expenseConceptName: selectedPurchaseConcept?.name,
+        expenseConceptName: selectedPurchaseConcept?.name || purchaseForm.purchasePlace.trim(),
+        entityId: selectedPurchaseEntity?.id || null,
+        entityName: selectedPurchaseEntity?.name || null,
+        entityType: selectedPurchaseEntity?.type || null,
         payments: paidPayments,
         operatorId: 'admin_mostrador',
         notes: purchaseForm.notes.trim() || undefined
@@ -817,6 +878,9 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
         purchasePrice: cost,
         batches: result.batches
       });
+
+      setSelectedPurchaseEntity(null);
+      setPurchaseEntitySearch('');
 
       // Close edit modal, stay on product detail sheet
       setIsProductModalOpen(false);
@@ -1181,7 +1245,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
     setIsSavingEntity(true);
     setEntityFormError(null);
     try {
-      await saveExpenseEntityInFirestore(targetId, {
+      const savedEntity = await saveExpenseEntityInFirestore(targetId, {
         id: entityForm.id,
         name: entityForm.name.trim(),
         type: entityForm.type,
@@ -1194,6 +1258,10 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
       });
       setIsEntityModalOpen(false);
       showToast(entityForm.id ? 'Entidad actualizada' : 'Entidad creada exitosamente');
+      if (isProductModalOpen && editProductSubTab === 'compras') {
+        setSelectedPurchaseEntity(savedEntity);
+        setPurchaseEntitySearch(savedEntity.name);
+      }
     } catch (err: any) {
       setEntityFormError(err.message || 'Error al guardar la entidad');
     } finally {
@@ -2471,8 +2539,13 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                       {bIdx + 1}
                                     </span>
                                     <span className="font-bold text-xs text-slate-900 dark:text-white">
-                                      {batch.purchasePlace || 'Proveedor'}
+                                      {batch.entityName || (batch.expenseConceptName ? batch.expenseConceptName.replace(/^.*?\s*-\s*/, '') : (batch.purchasePlace ? batch.purchasePlace.replace(/^.*?\s*-\s*/, '') : 'Proveedor'))}
                                     </span>
+                                    {batch.entityType && (
+                                      <span className={cn("px-1.5 py-0.2 rounded-full text-[9px] font-bold shrink-0", getEntityTypeBadgeClass(batch.entityType))}>
+                                        {batch.entityType}
+                                      </span>
+                                    )}
                                     {bIdx === 0 && (
                                       <span className="px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 text-[9px] font-black uppercase tracking-wider">
                                         Próxima a salir
@@ -3076,6 +3149,131 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                             )}
                           </div>
 
+                          {/* Selector 3: Entidad (opcional) - Arquitectura de 3 Dimensiones */}
+                          <div className="relative" ref={entityPurchaseDropdownRef}>
+                            <div className="flex items-center justify-between mb-1">
+                              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                                <span>Entidad (opcional)</span>
+                                {selectedPurchaseEntity && (
+                                  <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-1", getEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
+                                    <span>{selectedPurchaseEntity.type}</span>
+                                  </span>
+                                )}
+                              </label>
+                              <button
+                                type="button"
+                                onClick={handleOpenAddEntityFromPurchase}
+                                className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:text-emerald-800 dark:hover:text-emerald-200 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
+                                title="Crear nueva entidad"
+                              >
+                                <Plus size={13} className="stroke-[3]" />
+                                <span>+ Entidad</span>
+                              </button>
+                            </div>
+
+                            {/* Si hay entidad seleccionada, mostrar Chip/Pill con X para deseleccionar */}
+                            {selectedPurchaseEntity ? (
+                              <div className="flex items-center justify-between p-2.5 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-950/40">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <Building2 size={16} className="text-emerald-700 dark:text-emerald-400 shrink-0" />
+                                  <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                                    {selectedPurchaseEntity.name}
+                                  </span>
+                                  <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full shrink-0", getEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
+                                    {selectedPurchaseEntity.type}
+                                  </span>
+                                  {selectedPurchaseEntity.cuit && (
+                                    <span className="text-[10px] text-slate-500 font-mono hidden sm:inline">
+                                      {selectedPurchaseEntity.cuit}
+                                    </span>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={handleClearPurchaseEntity}
+                                  className="p-1 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
+                                  title="Quitar entidad"
+                                >
+                                  <X size={15} />
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="relative">
+                                <input
+                                  type="text"
+                                  placeholder="Elegir o buscar «Entidad» (empresa, proveedor, persona)..."
+                                  value={purchaseEntitySearch}
+                                  onFocus={() => setIsPurchaseEntityDropdownOpen(true)}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setPurchaseEntitySearch(val);
+                                    setIsPurchaseEntityDropdownOpen(true);
+                                  }}
+                                  className="w-full px-3.5 py-2.5 pr-8 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                                />
+                                {purchaseEntitySearch ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setPurchaseEntitySearch('');
+                                    }}
+                                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                ) : (
+                                  <ChevronDown size={15} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                                )}
+                              </div>
+                            )}
+
+                            {/* Dropdown Entidades */}
+                            {isPurchaseEntityDropdownOpen && !selectedPurchaseEntity && (
+                              <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700/50">
+                                {filteredPurchaseEntities.length > 0 ? (
+                                  filteredPurchaseEntities.map((ent) => {
+                                    const isSelected = selectedPurchaseEntity?.id === ent.id;
+                                    return (
+                                      <button
+                                        key={`purch-bs-ent-${ent.id}`}
+                                        type="button"
+                                        onClick={() => handleSelectPurchaseEntity(ent)}
+                                        className={`w-full text-left px-3.5 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
+                                          isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-slate-700 dark:text-slate-200'
+                                        }`}
+                                      >
+                                        <div className="flex flex-col min-w-0 pr-2">
+                                          <div className="flex items-center gap-1.5">
+                                            <span className="font-semibold truncate">{ent.name}</span>
+                                            <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full", getEntityTypeBadgeClass(ent.type))}>
+                                              {ent.type}
+                                            </span>
+                                          </div>
+                                          <span className="text-[10px] text-slate-400 mt-0.5">
+                                            {ent.cuit ? `CUIT: ${ent.cuit}` : ''} {ent.phone ? `· Tel: ${ent.phone}` : ''}
+                                          </span>
+                                        </div>
+                                        {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
+                                      </button>
+                                    );
+                                  })
+                                ) : (
+                                  <div className="p-3 text-center text-xs text-slate-400 dark:text-slate-400">
+                                    <p className="mb-1.5">No se encontraron entidades con "{purchaseEntitySearch}".</p>
+                                    <button
+                                      type="button"
+                                      onClick={handleOpenAddEntityFromPurchase}
+                                      className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
+                                    >
+                                      <Plus size={12} />
+                                      <span>Crear "{purchaseEntitySearch || 'nueva'}" como Entidad</span>
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
                           {/* Resumen previo de compra */}
                           <div className="p-3 bg-emerald-50/60 dark:bg-emerald-950/20 rounded-xl border border-emerald-100 dark:border-emerald-800/40 flex items-center justify-between text-xs">
                             <span className="text-slate-600 dark:text-slate-300">
@@ -3133,11 +3331,22 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                               </div>
                             </div>
 
-                            <div className="pt-2 border-t border-emerald-200/50 dark:border-emerald-800/40 flex items-center justify-between text-[11px] text-slate-600 dark:text-slate-300">
-                              <span>Proveedor: <strong className="text-slate-900 dark:text-white">{purchaseForm.purchasePlace.trim() || 'Mayorista'}</strong></span>
-                              <span className="font-mono text-slate-500">
-                                Asignado: ${totalAssignedPurchasePayments.toLocaleString()}
-                              </span>
+                            <div className="pt-2 border-t border-emerald-200/50 dark:border-emerald-800/40 flex flex-col gap-1 text-[11px] text-slate-600 dark:text-slate-300">
+                              <div className="flex items-center justify-between">
+                                <span>Concepto: <strong className="text-slate-900 dark:text-white">{selectedPurchaseConcept?.name || purchaseForm.purchasePlace.trim() || 'Mayorista'}</strong></span>
+                                <span className="font-mono text-slate-500">
+                                  Asignado: ${totalAssignedPurchasePayments.toLocaleString()}
+                                </span>
+                              </div>
+                              {selectedPurchaseEntity && (
+                                <div className="flex items-center gap-1.5 text-[11px]">
+                                  <span className="text-slate-500">Entidad:</span>
+                                  <strong className="text-slate-900 dark:text-white">{selectedPurchaseEntity.name}</strong>
+                                  <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full", getEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
+                                    {selectedPurchaseEntity.type}
+                                  </span>
+                                </div>
+                              )}
                             </div>
                           </div>
 

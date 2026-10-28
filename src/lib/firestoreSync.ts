@@ -3374,6 +3374,9 @@ export async function registerMerchandisePurchaseInFirestore(params: {
       expenseCategoryName: cleanExpenseCategory || null,
       expenseConceptId: cleanExpenseConceptId,
       expenseConceptName: cleanPurchasePlace,
+      entityId: cleanEntityId,
+      entityName: cleanEntityName,
+      entityType: cleanEntityType as any,
       createdAt: new Date().toISOString()
     };
     currentBatches.push(newBatch);

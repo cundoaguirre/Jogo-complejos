@@ -22,6 +22,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import type { Product, ProductCategory, FinancialPaymentMethod, ExpenseEntity, ExpenseEntityType } from '../types';
+import { getExpenseEntityTypeBadgeClass } from '../types';
+import { cn } from '../lib/utils';
 import { 
   subscribeToInventoryCategories, 
   saveInventoryCategories, 
@@ -1535,7 +1537,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                         <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
                           <span>Entidad (opcional)</span>
                           {selectedPurchaseEntity && (
-                            <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                            <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full", getExpenseEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
                               {selectedPurchaseEntity.type}
                             </span>
                           )}
@@ -1560,40 +1562,71 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                         </button>
                       </div>
 
-                      <div className="relative">
-                        <input
-                          type="text"
-                          placeholder="Elegir o buscar «Entidad» (empresa, proveedor, persona)..."
-                          value={purchaseEntitySearch}
-                          onFocus={() => setIsPurchaseEntityDropdownOpen(true)}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setPurchaseEntitySearch(val);
-                            setIsPurchaseEntityDropdownOpen(true);
-                            if (!val) {
-                              setSelectedPurchaseEntity(null);
-                            }
-                          }}
-                          className="w-full h-9.5 pl-3 pr-8 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
-                        />
-                        {purchaseEntitySearch ? (
+                      {/* Si hay entidad seleccionada, mostrar Chip/Pill con X para deseleccionar */}
+                      {selectedPurchaseEntity ? (
+                        <div className="flex items-center justify-between p-2 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-950/40">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Building2 size={15} className="text-emerald-700 dark:text-emerald-400 shrink-0" />
+                            <span className="text-xs font-bold text-gray-900 dark:text-white truncate">
+                              {selectedPurchaseEntity.name}
+                            </span>
+                            <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full shrink-0", getExpenseEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
+                              {selectedPurchaseEntity.type}
+                            </span>
+                            {selectedPurchaseEntity.cuit && (
+                              <span className="text-[10px] text-gray-500 font-mono hidden sm:inline">
+                                {selectedPurchaseEntity.cuit}
+                              </span>
+                            )}
+                          </div>
                           <button
                             type="button"
                             onClick={() => {
                               setSelectedPurchaseEntity(null);
                               setPurchaseEntitySearch('');
                             }}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 cursor-pointer"
+                            className="p-1 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
+                            title="Quitar entidad"
                           >
-                            <X size={13} />
+                            <X size={14} />
                           </button>
-                        ) : (
-                          <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                        )}
-                      </div>
+                        </div>
+                      ) : (
+                        <div className="relative">
+                          <input
+                            type="text"
+                            placeholder="Elegir o buscar «Entidad» (empresa, proveedor, persona)..."
+                            value={purchaseEntitySearch}
+                            onFocus={() => setIsPurchaseEntityDropdownOpen(true)}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setPurchaseEntitySearch(val);
+                              setIsPurchaseEntityDropdownOpen(true);
+                              if (!val) {
+                                setSelectedPurchaseEntity(null);
+                              }
+                            }}
+                            className="w-full h-9.5 pl-3 pr-8 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                          />
+                          {purchaseEntitySearch ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedPurchaseEntity(null);
+                                setPurchaseEntitySearch('');
+                              }}
+                              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 cursor-pointer"
+                            >
+                              <X size={13} />
+                            </button>
+                          ) : (
+                            <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                          )}
+                        </div>
+                      )}
 
                       {/* Dropdown Entidades */}
-                      {isPurchaseEntityDropdownOpen && (
+                      {isPurchaseEntityDropdownOpen && !selectedPurchaseEntity && (
                         <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-52 overflow-y-auto divide-y divide-gray-100 dark:divide-slate-700/50">
                           {filteredPurchaseEntities.length > 0 ? (
                             filteredPurchaseEntities.map((ent) => {
@@ -1610,7 +1643,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                                   <div className="min-w-0 pr-2">
                                     <div className="truncate font-semibold">{ent.name}</div>
                                     <div className="text-[10px] text-gray-400 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
-                                      <span className="px-1.5 py-0.2 rounded bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300">{ent.type}</span>
+                                      <span className={cn("px-1.5 py-0.2 rounded-full font-bold text-[9px]", getExpenseEntityTypeBadgeClass(ent.type))}>{ent.type}</span>
                                       {ent.cuit && <span className="font-mono">{ent.cuit}</span>}
                                       {ent.phone && <span>Tel: {ent.phone}</span>}
                                     </div>
@@ -1718,8 +1751,9 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                           </span>
                         )}
                         {selectedPurchaseEntity && (
-                          <span className="ml-1 text-[10px] text-blue-700 dark:text-blue-400 bg-blue-100 dark:bg-blue-950/70 px-1.5 py-0.5 rounded-md font-semibold">
-                            {selectedPurchaseEntity.name}
+                          <span className={cn("ml-1.5 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.2 rounded-full", getExpenseEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
+                            <span>{selectedPurchaseEntity.name}</span>
+                            <span className="opacity-80">· {selectedPurchaseEntity.type}</span>
                           </span>
                         )}
                       </span>
@@ -2882,19 +2916,26 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                   <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
                     Tipo de Entidad *
                   </label>
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {(['Empresa', 'Sector Público', 'Persona', 'ONG', 'Otro'] as ExpenseEntityType[]).map((t) => (
+                  <div className="grid grid-cols-5 gap-1">
+                    {([
+                      { type: 'Empresa', label: 'Empresa', activeClass: 'bg-[#2563eb] text-white shadow-2xs' },
+                      { type: 'Sector Público', label: 'S. Público', activeClass: 'bg-[#eab308] text-slate-900 shadow-2xs' },
+                      { type: 'Persona', label: 'Persona', activeClass: 'bg-[#cbd5e1] text-slate-800 shadow-2xs' },
+                      { type: 'ONG', label: 'ONG', activeClass: 'bg-[#9333ea] text-white shadow-2xs' },
+                      { type: 'Otro', label: 'Otro', activeClass: 'bg-[#ef4444] text-white shadow-2xs' }
+                    ] as { type: ExpenseEntityType; label: string; activeClass: string }[]).map((t) => (
                       <button
-                        key={`quick-purch-type-${t}`}
+                        key={`quick-purch-type-${t.type}`}
                         type="button"
-                        onClick={() => setQuickEntityForm({ ...quickEntityForm, type: t })}
-                        className={`py-1.5 px-2 rounded-xl text-xs font-bold transition-all truncate cursor-pointer ${
-                          quickEntityForm.type === t
-                            ? 'bg-[#0BA70B] text-white shadow-2xs'
-                            : 'bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300 hover:bg-gray-200'
-                        }`}
+                        onClick={() => setQuickEntityForm({ ...quickEntityForm, type: t.type })}
+                        className={cn(
+                          "py-1.5 px-1 rounded-xl text-[11px] font-bold transition-all truncate cursor-pointer text-center",
+                          quickEntityForm.type === t.type
+                            ? t.activeClass
+                            : "bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300 hover:bg-gray-200"
+                        )}
                       >
-                        {t}
+                        {t.label}
                       </button>
                     ))}
                   </div>
