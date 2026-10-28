@@ -422,6 +422,13 @@ export interface OperationDocument {
   clientPhone?: string;               // Alias unificado para teléfono de cliente
   supplierId?: string | null;         // ID estable del proveedor/concepto si aplica
   supplierName?: string | null;       // Nombre del proveedor si aplica
+  expenseCategoryId?: string | null;
+  expenseCategoryName?: string | null;
+  expenseConceptId?: string | null;
+  expenseConceptName?: string | null;
+  entityId?: string | null;
+  entityName?: string | null;
+  entityType?: ExpenseEntityType | string | null;
 
   // Cuentas contractuales y flujos monetarios
   contractualAmount: number;          // Monto total nominal pactado
@@ -483,6 +490,9 @@ export interface FinancialMovementDocument {
   expenseCategoryName?: string | null;
   expenseConceptId?: string | null;
   expenseConceptName?: string | null;
+  entityId?: string | null;
+  entityName?: string | null;
+  entityType?: ExpenseEntityType | string | null;
   operatorId: string;
   createdAt: any;
 }
@@ -644,6 +654,9 @@ export interface RegisterExpenseOperationParams {
   conceptId?: string;
   supplierId?: string;
   supplierName?: string;
+  entityId?: string | null;
+  entityName?: string | null;
+  entityType?: ExpenseEntityType | string | null;
   amount: number;
   payments: Array<{
     amount: number;
@@ -653,4 +666,22 @@ export interface RegisterExpenseOperationParams {
   operatorId: string;
   notes?: string;
   idempotencyKey?: string;
+}
+
+export type ExpenseEntityType = 'Empresa' | 'Sector Público' | 'Persona' | 'ONG' | 'Otro';
+
+export interface ExpenseEntity {
+  id: string;
+  complejoId: string;
+  complexId: string;
+  name: string;               // Obligatorio
+  type: ExpenseEntityType;    // Obligatorio
+  location?: string;          // Ubicación
+  cuit?: string;              // CUIT / CUIL
+  phone?: string;             // Teléfono de contacto
+  email?: string;             // Correo electrónico
+  notes?: string;             // Observaciones
+  status: 'activo' | 'inactivo'; // Estado
+  createdAt?: any;
+  updatedAt?: any;
 }

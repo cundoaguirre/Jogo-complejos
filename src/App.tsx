@@ -4,7 +4,7 @@ import {
   LayoutDashboard, Users, Calendar, CalendarPlus, TrendingUp, TrendingDown, DollarSign, CalendarCheck, Percent, Clock, 
   Search, Bell, Menu, X, Phone, MapPin, Star, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, List, Plus, Sparkles,
   ArrowLeft, ArrowRight, Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
-  Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, ShoppingBasket, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, UserCheck, UserPlus, BarChart2, MoreVertical, FileText, Download,
+  Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, ShoppingBasket, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, UserCheck, UserPlus, BarChart2, MoreVertical, MoreHorizontal, FileText, Download,
   MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle, AlertTriangle,
   Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard, Info, Pencil, Footprints
 } from 'lucide-react';
@@ -172,6 +172,28 @@ export const MAIN_NAV_ITEMS: NavItemDef[] = [
   { id: 'profile', label: 'Perfil', icon: Store },
 ];
 
+/**
+ * Determina si dos canchas tienen bloqueo mutuo bidireccional por superposición física.
+ */
+export const areCourtsMutuallyBlocked = (
+  courtAId: string | number | undefined | null,
+  courtBId: string | number | undefined | null,
+  courtsList: any[]
+): boolean => {
+  if (!courtAId || !courtBId) return false;
+  const strA = String(courtAId);
+  const strB = String(courtBId);
+  if (strA === strB) return false;
+
+  const courtA = (courtsList || []).find(c => String(c.id) === strA);
+  const courtB = (courtsList || []).find(c => String(c.id) === strB);
+
+  const aBlocksB = Array.isArray(courtA?.blockedCourts) && courtA.blockedCourts.map(String).includes(strB);
+  const bBlocksA = Array.isArray(courtB?.blockedCourts) && courtB.blockedCourts.map(String).includes(strA);
+
+  return Boolean(aBlocksB || bBlocksA);
+};
+
 const Sidebar = ({ 
   active, 
   onNavigate, 
@@ -218,6 +240,7 @@ const Sidebar = ({
         ];
       case 'profile':
         return [
+          { id: 'personal_info', label: 'Información personal', icon: UserIcon, action: 'personal_info' },
           { id: 'support', label: 'Mesa de Ayuda / Soporte', icon: MessageSquare, action: 'support' }
         ];
       default:
@@ -2915,7 +2938,7 @@ const CreateMatchModal = ({
     // Duración de la reserva que se está creando/editando (60 min)
     const newDurationMin = 60;
 
-    // Filtrar turnos activos que ocupan la cancha y fecha elegidas (los cancelados vuelven a estar disponibles)
+    // Filtrar turnos activos que ocupan la cancha y fecha elegidas o canchas superpuestas bloqueadas
     const activeBookingsForCourt = (existingBookings || []).filter(b => {
       if (!b) return false;
       if (data.id && String(b.id) === String(data.id)) return false;
@@ -2923,10 +2946,11 @@ const CreateMatchModal = ({
       const bStatus = String(b.status || '').toLowerCase();
       if (bStatus === 'cancelado' || bStatus === 'cancelled') return false;
 
-      const sameCourt = String(b.court_id) === String(data.court_id) || 
-                        String(b.courtId) === String(data.court_id) ||
+      const bookingCourtId = b.courtId ?? b.court_id;
+      const sameCourt = String(bookingCourtId) === String(data.court_id) || 
                         (selectedCourt && (b.court_name === selectedCourt.name || b.courtName === selectedCourt.name));
-      if (!sameCourt) return false;
+      const isOverlapBlocked = areCourtsMutuallyBlocked(data.court_id, bookingCourtId, courts);
+      if (!sameCourt && !isOverlapBlocked) return false;
 
       const bDate = b.date || (b.start_time ? String(b.start_time).split('T')[0] : '');
       if (bDate !== data.date) return false;
@@ -2957,12 +2981,12 @@ const CreateMatchModal = ({
     }
 
     return result;
-  }, [venue, data.date, data.court_id, data.id, existingBookings, selectedCourt]);
+  }, [venue, data.date, data.court_id, data.id, existingBookings, selectedCourt, courts]);
 
   const availableHours = getAvailableHours();
   const displayHours = availableHours;
 
-  // Evalúa si una cancha específica está ocupada para el día (data.date) y horario (data.time) actual
+  // Evalúa si una cancha específica está ocupada para el día (data.date) y horario (data.time) actual (incluyendo bloqueo mutuo)
   const isCourtOccupiedForTime = useCallback((courtId: string | number) => {
     if (!data.date || !data.time) return false;
     const [h, m] = data.time.split(':').map(Number);
@@ -2977,10 +3001,11 @@ const CreateMatchModal = ({
       if (bStatus === 'cancelado' || bStatus === 'cancelled') return false;
 
       const currentCourtObj = courts.find(c => String(c.id) === String(courtId));
-      const sameCourt = String(b.court_id) === String(courtId) || 
-                        String(b.courtId) === String(courtId) ||
+      const bookingCourtId = b.court_id ?? b.courtId;
+      const sameCourt = String(bookingCourtId) === String(courtId) || 
                         (currentCourtObj && (b.court_name === currentCourtObj.name || b.courtName === currentCourtObj.name));
-      if (!sameCourt) return false;
+      const isOverlapBlocked = areCourtsMutuallyBlocked(courtId, bookingCourtId, courts);
+      if (!sameCourt && !isOverlapBlocked) return false;
 
       const bDate = b.date || (b.start_time ? String(b.start_time).split('T')[0] : '');
       if (bDate !== data.date) return false;
@@ -3498,14 +3523,16 @@ const CreateMatchModal = ({
                 >
                   {courts.map((court, cIdx) => {
                     const isOccupied = isCourtOccupiedForTime(court.id);
+                    const isInactive = court.status === 'inactiva';
+                    const isDisabled = isOccupied || isInactive;
                     return (
                       <option 
                         key={`court-opt-${court.id || cIdx}`} 
                         value={String(court.id)}
-                        disabled={isOccupied}
-                        className={isOccupied ? "text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-slate-800" : ""}
+                        disabled={isDisabled}
+                        className={isDisabled ? "text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-slate-800" : ""}
                       >
-                        {court.name} - ${Number(court.price_per_hour ?? court.price ?? 0).toLocaleString()} {isOccupied ? '(Ocupada)' : ''}
+                        {court.name} - ${Number(court.price_per_hour ?? court.price ?? 0).toLocaleString()} {isInactive ? '(Inactiva)' : isOccupied ? '(Ocupada)' : ''}
                       </option>
                     );
                   })}
@@ -5595,6 +5622,27 @@ const ScheduleView = ({
     });
   };
 
+  // Lookup de reserva que bloquee a esta cancha por superposición mutua (bloqueo bidireccional)
+  const getBlockingMatchForCourtSlot = (courtId: string | number, rawHour: number) => {
+    const targetHour = rawHour % 24;
+    return matches.find(m => {
+      if (!m) return false;
+      const status = String(m.status || '').toLowerCase();
+      if (status === 'cancelado' || status === 'cancelled') return false;
+
+      const otherCourtId = (m as any).courtId || m.court_id;
+      if (!areCourtsMutuallyBlocked(courtId, otherCourtId, courts)) return false;
+
+      const matchDateStr = m.date || (m.start_time ? String(m.start_time).split('T')[0] : '');
+      if (matchDateStr !== selectedDateStr) return false;
+
+      const startTimeStr = m.startTime || (m.start_time && m.start_time.includes('T') ? m.start_time.split('T')[1].substring(0, 5) : '');
+      const matchHour = startTimeStr ? parseInt(startTimeStr.split(':')[0], 10) : (m.start_time ? new Date(m.start_time).getHours() : -1);
+
+      return matchHour === targetHour;
+    });
+  };
+
   // Posición de la línea de hora actual
   const getCurrentTimePosition = () => {
     const todayYMD = getTodayLocalYMD();
@@ -5997,6 +6045,7 @@ const ScheduleView = ({
                           >
                             {displayedCourts.map((court) => {
                               const match = getMatchForCourtSlot(court.id, rawHour);
+                              const blockingMatch = !match ? getBlockingMatchForCourtSlot(court.id, rawHour) : null;
 
                               return (
                                 <div 
@@ -6054,6 +6103,16 @@ const ScheduleView = ({
                                         </div>
                                       );
                                     })()
+                                  ) : blockingMatch ? (
+                                    /* Celda bloqueada por superposición mutua con otra cancha */
+                                    <div 
+                                      className="h-full w-full rounded-2xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200/60 dark:border-amber-900/40 flex items-center justify-center px-2 text-center select-none cursor-not-allowed"
+                                      title={`Bloqueada por turno confirmado en ${blockingMatch.courtName || blockingMatch.court_name || 'cancha superpuesta'}`}
+                                    >
+                                      <span className="text-[10px] sm:text-[11px] font-semibold text-amber-700 dark:text-amber-400 truncate">
+                                        Bloqueada ({blockingMatch.courtName || blockingMatch.court_name || 'Superpuesta'})
+                                      </span>
+                                    </div>
                                   ) : (
                                     /* Hueco libre con fondo gris suave y esquinas redondeadas */
                                     <div
@@ -9432,6 +9491,26 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
 
   const [isSaving, setIsSaving] = useState(false);
   const [isMostradorOpen, setIsMostradorOpen] = useState(false);
+  const [mostradorMode, setMostradorMode] = useState<'mostrador' | 'gastos'>('mostrador');
+  const [courtMenuOpen, setCourtMenuOpen] = useState(false);
+
+  // Formato del badge de deporte para las píldoras de canchas
+  const formatCourtSportBadge = (court: Court) => {
+    const typeStr = (court.type || (court as any).sport || 'Fútbol 5').toLowerCase();
+    if (typeStr.includes('fútbol') || typeStr.includes('futbol')) {
+      const numMatch = typeStr.match(/\d+/);
+      return numMatch ? `Fut ${numMatch[0]}` : 'Fut 5';
+    }
+    if (typeStr.includes('pádel') || typeStr.includes('padel')) return 'Pádel';
+    if (typeStr.includes('tenis')) return 'Tenis';
+    if (typeStr.includes('vóley') || typeStr.includes('voley')) return 'Vóley';
+    if (typeStr.includes('básquet') || typeStr.includes('basquet')) return 'Básquet';
+    if (typeStr.includes('squash')) return 'Squash';
+    if (typeStr.includes('pickleball')) return 'Pickleball';
+    if (typeStr.includes('hockey')) return 'Hockey';
+    if (typeStr.includes('handball')) return 'Handball';
+    return court.type || 'Fut 5';
+  };
 
   const handleSaveProfile = async () => {
     setIsSaving(true);
@@ -9450,15 +9529,20 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
   const handleSaveCourt = async (court: any) => {
     setIsSaving(true);
     try {
+      const parsedPrice = court.price_per_hour !== '' && court.price_per_hour !== undefined
+        ? Number(court.price_per_hour)
+        : (court.price !== '' && court.price !== undefined ? Number(court.price) : 0);
+
       const courtPayload = {
         ...court,
         id: court.id ? String(court.id) : `c_${Date.now()}`,
         name: (court.name || 'Cancha').trim(),
-        sport: court.sport || court.type || 'fútbol 5',
+        sport: court.sport || court.type || 'Fútbol',
+        type: court.sport === 'Fútbol' ? (court.type || 'fútbol 5') : (court.sport || court.type || 'fútbol 5'),
         surface: court.surface || 'sintético',
-        price: Number(court.price ?? court.price_per_hour ?? 0),
-        price_per_hour: Number(court.price ?? court.price_per_hour ?? 0),
-        status: court.status === 'maintenance' || court.status === 'mantenimiento' ? 'mantenimiento' : (court.status === 'inactiva' ? 'inactiva' : 'activa'),
+        price: parsedPrice,
+        price_per_hour: parsedPrice,
+        status: court.status === 'inactiva' ? 'inactiva' : 'activa',
         is_roofed: Boolean(court.is_roofed),
         blockedCourts: court.blockedCourts || []
       };
@@ -9474,874 +9558,334 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
     if (onDataChange) onDataChange();
   };
 
-  const handleToggleCourtStatus = async (court: Court) => {
-    const newStatus: 'available' | 'maintenance' = court.status === 'maintenance' ? 'available' : 'maintenance';
-    const updatedCourt: Court = { ...court, status: newStatus };
-    
-    setCourts(courts.map(c => c.id === court.id ? updatedCourt : c));
-    try {
-      await saveCourtInFirestore(complexId, updatedCourt);
-    } catch (e) {
-      console.warn('Error updating court in Firestore:', e);
-    }
-  };
-
   const handleDeleteCourt = async (id: number | string) => {
     try {
       await deleteCourtInFirestore(id, complexId);
     } catch (e) {
       console.warn('Error deleting court in Firestore:', e);
     }
+    setEditingCourt(null);
+    setEditSection(null);
     fetchData();
     if (onDataChange) onDataChange();
   };
 
-  const handleGenerateInvite = async () => {
-    if (!complexId) return;
-    setIsGeneratingInvite(true);
-    try {
-      const res = await createSaasInvitation({
-        complexId,
-        complexName: profile?.name || activeComplex?.name || 'Mi Complejo',
-        role: 'admin',
-        durationHours: 24
-      });
-      setCreatedInviteUrl(res.inviteUrl);
-    } catch (e: any) {
-      console.warn('Error generating invite link:', e);
-      alert('Error generando enlace de invitación: ' + (e?.message || 'Error desconocido'));
-    } finally {
-      setIsGeneratingInvite(false);
-    }
-  };
-
-  const authUser = auth.currentUser || user;
-  const displayName = authUser?.displayName || collaboratorData?.name || authUser?.email?.split('@')[0] || 'Administrador';
-  const email = authUser?.email || collaboratorData?.email || 'admin@cololoco.com';
-  const photoURL = authUser?.photoURL || collaboratorData?.photoURL;
-  const complexDisplayName = activeComplex?.name || profile?.name || 'Colo loco';
-
   return (
-    <div className="bg-gray-50 min-h-full pb-24">
-      {/* Top action row */}
-      <div className="pt-6 px-4 md:px-6 pb-2 flex justify-between items-center gap-3">
-        <div>
-          <h1 className="text-xl font-black text-gray-900 tracking-tight">Perfil del Complejo</h1>
-          <p className="text-xs text-gray-500">Gestioná tu sede, canchas y datos de contacto</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button 
-            type="button" 
-            onClick={() => setIsMostradorOpen(true)}
-            className="px-3.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/60 dark:text-emerald-300 rounded-xl text-xs font-bold border border-emerald-200 dark:border-emerald-800 flex items-center gap-1.5 transition-all cursor-pointer shadow-xs active:scale-95"
-            title="Editar mostrador"
-          >
-            <Store size={15} className="text-emerald-600 dark:text-emerald-400" />
-            <span>Editar mostrador</span>
-          </button>
-          <button type="button" 
+    <div className="bg-[#f4f5f7] dark:bg-slate-900 min-h-full pb-24 px-4 sm:px-6 pt-2 space-y-4 max-w-2xl mx-auto">
+      {/* 1. Tarjeta de Información del Complejo */}
+      <div className="bg-white dark:bg-slate-800 rounded-[28px] border border-gray-200/90 dark:border-slate-700/80 p-5 sm:p-6 shadow-2xs relative">
+        {/* 3 puntos para editar información */}
+        <div className="absolute top-5 right-5">
+          <button
+            type="button"
             onClick={() => setEditSection('info')}
-            className="p-2 bg-white border border-gray-200 rounded-xl text-emerald-600 shadow-xs hover:bg-emerald-50 transition-colors"
+            className="p-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
             title="Editar información"
           >
-            <Edit3 size={18} />
+            <MoreHorizontal size={22} />
           </button>
+        </div>
+
+        <h3 className="text-xl sm:text-2xl font-bold text-slate-700 dark:text-slate-100 tracking-tight leading-tight pr-10">
+          {profile.name || activeComplex?.name || 'El colo loco'}
+        </h3>
+
+        <div className="flex items-center gap-1.5 text-xs sm:text-sm text-slate-500 dark:text-slate-400 mt-1">
+          <MapPin size={16} className="text-slate-400 shrink-0" />
+          <span className="truncate">{profile.address || 'Av. Julián Álvarez 2023'}</span>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 mt-6 pt-1 text-left">
+          <div>
+            <span className="text-[11px] font-medium text-slate-400 block">Alias</span>
+            <div 
+              onClick={handleCopyAlias}
+              className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 truncate mt-0.5 cursor-pointer hover:text-[#0BA70B] transition-colors"
+              title="Tocar para copiar alias"
+            >
+              {aliasCopied ? '¡Copiado!' : (profile.alias || 'Cololocoo')}
+            </div>
+          </div>
+
+          <div>
+            <span className="text-[11px] font-medium text-slate-400 block">Teléfono</span>
+            <div className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 truncate mt-0.5">
+              {profile.phone || '+54 113849598'}
+            </div>
+          </div>
+
+          <div>
+            <span className="text-[11px] font-medium text-slate-400 block">Instagram</span>
+            <div className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 truncate mt-0.5">
+              {profile.instagram || '@elcololoco.ok'}
+            </div>
+          </div>
         </div>
       </div>
 
-      <div className="px-4 md:px-6 space-y-4 mt-2">
-        {/* 1. Tarjeta de Usuario Autenticado / Administrador */}
-        <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-3xl p-5 shadow-md border border-slate-700/50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
-            {photoURL ? (
-              <img 
-                src={photoURL} 
-                alt={displayName} 
-                className="w-14 h-14 rounded-2xl object-cover border-2 border-emerald-400/40 shadow-md shrink-0"
-              />
-            ) : (
-              <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-700 text-white flex items-center justify-center font-bold text-xl shadow-md border border-emerald-300/30 shrink-0">
-                {displayName.charAt(0).toUpperCase()}
-              </div>
-            )}
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 flex-wrap">
-                <h2 className="text-lg font-black tracking-tight truncate">{displayName}</h2>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shrink-0">
-                  Administrador
-                </span>
-              </div>
-              <p className="text-xs text-slate-300 truncate mt-0.5">{email}</p>
-              <div className="flex items-center gap-1.5 mt-2 text-xs text-emerald-400 font-semibold">
-                <Store size={14} className="shrink-0" />
-                <span className="truncate">Complejo Activo: <strong className="text-white">{complexDisplayName}</strong></span>
-              </div>
-            </div>
-          </div>
+      {/* 2. Tarjeta de Canchas */}
+      <div className="bg-white dark:bg-slate-800 rounded-[28px] border border-gray-200/90 dark:border-slate-700/80 p-5 sm:p-6 shadow-2xs relative">
+        <div className="flex items-start justify-between">
+          <h3 className="text-lg sm:text-xl font-bold text-slate-700 dark:text-slate-100 tracking-tight">
+            Canchas
+          </h3>
 
-          <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
-            {authUser && (
-              <button
-                type="button"
-                onClick={logout}
-                className="px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-slate-200 text-xs font-bold transition-all border border-white/10 flex items-center gap-1.5 cursor-pointer active:scale-95"
-                title="Cerrar sesión"
-              >
-                <LogOut size={14} />
-                <span>Salir</span>
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* 1.1. Vincular Operadores / Invitación Oficial SaaS */}
-        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden p-4 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-2.5">
-              <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600 shrink-0">
-                <Sparkles size={18} />
-              </div>
-              <div>
-                <h3 className="font-bold text-gray-900 text-sm">Vincular Operador o Socio</h3>
-                <p className="text-[11px] text-gray-500">Generá un enlace único de invitación para dar acceso oficial a tu sede</p>
-              </div>
-            </div>
+          <div className="flex flex-col items-end relative">
+            {/* 3 puntos con menú contextual para editar horario */}
             <button
               type="button"
-              disabled={isGeneratingInvite}
-              onClick={handleGenerateInvite}
-              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition-all shadow-xs cursor-pointer disabled:opacity-50 shrink-0"
+              onClick={() => setCourtMenuOpen(!courtMenuOpen)}
+              className="p-1.5 -mr-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+              title="Opciones de canchas"
             >
-              {isGeneratingInvite ? 'Generando...' : 'Generar enlace de invitación'}
+              <MoreHorizontal size={22} />
             </button>
-          </div>
 
-          {createdInviteUrl && (
-            <div className="p-3.5 bg-emerald-50/80 rounded-xl border border-emerald-200 space-y-2">
-              <span className="text-[11px] font-bold text-emerald-950 block">
-                Enlace generado (1 solo uso · vigencia 24 horas):
-              </span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  readOnly
-                  value={createdInviteUrl}
-                  className="flex-1 bg-white px-3 py-1.5 rounded-lg border border-emerald-300 font-mono text-xs text-gray-800 select-all outline-none"
-                />
+            {courtMenuOpen && (
+              <div 
+                className="absolute right-0 top-8 z-30 bg-white dark:bg-slate-900 border border-gray-100 dark:border-slate-700 rounded-xl shadow-lg py-1 w-36"
+                onClick={() => setCourtMenuOpen(false)}
+              >
                 <button
                   type="button"
                   onClick={() => {
-                    navigator.clipboard.writeText(createdInviteUrl);
-                    setInviteCopied(true);
-                    setTimeout(() => setInviteCopied(false), 2500);
+                    setCourtMenuOpen(false);
+                    setEditSection('hours');
                   }}
-                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shrink-0"
+                  className="w-full text-left px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
                 >
-                  {inviteCopied ? '✓ Copiado' : 'Copiar'}
+                  Editar horario
                 </button>
               </div>
-              <p className="text-[10px] text-emerald-800 leading-tight">
-                Compartí este enlace con la persona a invitar. Al iniciar sesión con su cuenta de Google quedará autorizada con acceso a esta sede.
-              </p>
+            )}
+
+            {/* Botón + nueva cancha debajo de los 3 puntos */}
+            <button
+              type="button"
+              onClick={() => {
+                setEditingCourt({
+                  name: '',
+                  type: 'fútbol 5',
+                  sport: 'Fútbol',
+                  surface: 'sintético',
+                  price: '',
+                  price_per_hour: '',
+                  is_roofed: false,
+                  status: 'activa',
+                  blockedCourts: []
+                } as any);
+                setEditSection('court');
+              }}
+              className="text-xs sm:text-sm font-bold text-[#0BA70B] hover:text-emerald-700 transition-colors cursor-pointer mt-0.5"
+            >
+              + nueva cancha
+            </button>
+          </div>
+        </div>
+
+        {/* Lista de píldoras de canchas */}
+        <div className="space-y-2.5 mt-3">
+          {courts.map((court, cIdx) => {
+            const priceNum = Number(court.price_per_hour ?? (court as any).price ?? 0);
+            const sportBadgeText = formatCourtSportBadge(court);
+            const isInactive = court.status === 'inactiva';
+
+            return (
+              <div
+                key={`profile-court-pill-${court.id || cIdx}`}
+                onClick={() => {
+                  setEditingCourt({
+                    ...court,
+                    sport: (court as any).sport || (court.type?.toLowerCase().includes('fútbol') ? 'Fútbol' : court.type) || 'Fútbol',
+                    type: court.type || 'fútbol 5',
+                    price: (court as any).price !== undefined && (court as any).price !== null ? (court as any).price : (court.price_per_hour ?? ''),
+                    price_per_hour: court.price_per_hour !== undefined && court.price_per_hour !== null ? court.price_per_hour : ((court as any).price ?? ''),
+                    blockedCourts: (court as any).blockedCourts || []
+                  });
+                  setEditSection('court');
+                }}
+                className="rounded-full border border-gray-200 dark:border-slate-700 px-4 py-2.5 flex items-center justify-between gap-3 hover:border-[#0BA70B]/50 transition-all cursor-pointer bg-white dark:bg-slate-800/60"
+              >
+                {/* Lado izquierdo: Ícono + Nombre + Superficie */}
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="text-slate-400 dark:text-slate-500 shrink-0">
+                    <LayoutDashboard size={18} />
+                  </div>
+                  <div className="flex flex-col min-w-0 text-left">
+                    <div className="flex items-center gap-1.5 truncate">
+                      <span className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">
+                        {court.name}
+                      </span>
+                      {isInactive && (
+                        <span className="text-[11px] text-red-500 font-semibold shrink-0">
+                          (Inactiva)
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[11px] text-slate-400 dark:text-slate-400 capitalize -mt-0.5">
+                      {court.surface || 'Sintético'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Lado derecho: Precio + Pill de Deporte */}
+                <div className="flex flex-col items-end shrink-0">
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                    ${priceNum.toLocaleString('es-AR')}<span className="font-normal text-slate-700 dark:text-slate-300">h</span>
+                  </span>
+                  <span className="px-2.5 py-0.5 rounded-full bg-[#0BA70B] text-white text-[10px] font-bold text-center mt-0.5">
+                    {sportBadgeText}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+
+          {courts.length === 0 && (
+            <div className="py-6 text-center text-xs text-slate-400">
+              Aún no has registrado canchas en esta sede.
             </div>
           )}
         </div>
-
-        {/* 2. Información General */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="p-4 border-b border-gray-100 flex justify-between items-center">
-            <h3 className="font-bold text-gray-900">Información General</h3>
-            <button type="button" onClick={() => setEditSection('info')} className="text-emerald-600 font-bold text-xs cursor-pointer">Editar</button>
-          </div>
-          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="flex items-start gap-3">
-              <Store className="text-gray-400 mt-1 shrink-0" size={18} />
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Nombre</div>
-                <div className="text-sm font-semibold text-gray-900 truncate">{profile.name || 'Sin nombre'}</div>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <MapPin className="text-gray-400 mt-1 shrink-0" size={18} />
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Dirección</div>
-                <div className="text-sm font-semibold text-gray-900 truncate">{profile.address || 'Sin dirección'}</div>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <Phone className="text-gray-400 mt-1 shrink-0" size={18} />
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Teléfono general</div>
-                <div className="text-sm font-semibold text-gray-900 truncate">{profile.phone || 'No registrado'}</div>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <Mail className="text-gray-400 mt-1 shrink-0" size={18} />
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Correo electrónico</div>
-                <div className="text-sm font-semibold text-gray-900 truncate">{profile.email || 'No registrado'}</div>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <Instagram className="text-gray-400 mt-1 shrink-0" size={18} />
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Instagram</div>
-                <div className="text-sm font-semibold text-gray-900 truncate">{profile.instagram || 'No registrado'}</div>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3">
-              <CreditCard className="text-gray-400 mt-1 shrink-0" size={18} />
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Alias bancario del complejo</div>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-sm font-bold text-gray-900 font-mono truncate">
-                    {profile.alias || 'Sin alias configurado'}
-                  </span>
-                  {profile.alias && (
-                    <button
-                      type="button"
-                      onClick={handleCopyAlias}
-                      className="px-2 py-0.5 rounded-lg bg-gray-100 hover:bg-emerald-50 text-gray-600 hover:text-emerald-700 text-xs font-bold transition-all cursor-pointer inline-flex items-center gap-1 shrink-0"
-                      title="Copiar alias"
-                    >
-                      {aliasCopied ? (
-                        <>
-                          <Check size={12} className="text-emerald-600" />
-                          <span className="text-emerald-600">¡Copiado!</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy size={12} />
-                          <span>Copiar</span>
-                        </>
-                      )}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3 md:col-span-2">
-              <FileText className="text-gray-400 mt-1 shrink-0" size={18} />
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Descripción</div>
-                <div className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{profile.description || 'Sin descripción'}</div>
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3 pt-2 border-t border-gray-100">
-              <UserIcon className="text-gray-400 mt-1 shrink-0" size={18} />
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Dueño</div>
-                <div className="text-sm font-semibold text-gray-900">{profile.ownerName || 'No especificado'}</div>
-                {profile.ownerPhone && (
-                  <div className="text-xs text-gray-500 font-mono mt-0.5">{profile.ownerPhone}</div>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-start gap-3 pt-2 border-t border-gray-100">
-              <ShieldCheck className="text-gray-400 mt-1 shrink-0" size={18} />
-              <div className="min-w-0">
-                <div className="text-xs font-bold text-gray-500 uppercase tracking-wider">Encargado</div>
-                <div className="text-sm font-semibold text-gray-900">{profile.managerName || 'No especificado'}</div>
-                {profile.managerPhone && (
-                  <div className="text-xs text-gray-500 font-mono mt-0.5">{profile.managerPhone}</div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* 3. Fotos del Complejo */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="p-4 border-b border-gray-100 flex justify-between items-center">
-            <h3 className="font-bold text-gray-900">Fotos del Complejo</h3>
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              className="hidden" 
-              accept="image/*"
-              onChange={handleUploadPhoto} 
-            />
-            <button type="button" onClick={() => fileInputRef.current?.click()} className="text-emerald-600 font-bold text-xs flex items-center gap-1 cursor-pointer">
-              <Plus size={14} /> Agregar
-            </button>
-          </div>
-          <div className="p-4">
-            <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
-              {photos.map((photo, pIdx) => (
-                <div 
-                  key={`venue-photo-${photo.id || pIdx}-${pIdx}`} 
-                  className="w-32 h-24 rounded-lg bg-gray-100 flex-shrink-0 overflow-hidden border border-gray-200 relative group"
-                >
-                  <img src={photo.url} className="w-full h-full object-cover" alt="Foto del complejo" />
-                  <button type="button" 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDeletePhoto(photo.id);
-                    }}
-                    className="absolute top-1 right-1 bg-black/60 hover:bg-red-600 text-white p-1.5 rounded-full transition-all cursor-pointer shadow-sm"
-                    title="Eliminar foto"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-              ))}
-              <button type="button" 
-                onClick={() => fileInputRef.current?.click()} 
-                className="w-32 h-24 rounded-lg bg-gray-50 flex-shrink-0 border-2 border-dashed border-gray-200 flex flex-col items-center justify-center text-gray-400 hover:bg-gray-100 hover:border-emerald-300 hover:text-emerald-500 transition-all cursor-pointer"
-              >
-                <Camera size={24} />
-                <span className="text-[10px] font-bold mt-1">Subir Foto</span>
-              </button>
-            </div>
-            <p className="text-[10px] text-gray-400 text-center mt-2">Toca el botón con la cruz para eliminar fotos o sube nuevas fotos del complejo.</p>
-          </div>
-        </div>
-
-        {/* 4. Horarios de Apertura */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
-          <div className="p-4 border-b border-gray-100 flex justify-between items-center">
-            <h3 className="font-bold text-gray-900">Horarios de Apertura</h3>
-          </div>
-          <div className="divide-y divide-gray-50">
-            {safeHours.map((h: any, i: number) => (
-              <div 
-                key={`venue-hour-${h.day || 'h'}-${i}`} 
-                className="flex justify-between items-center p-4 hover:bg-gray-50 cursor-pointer transition-colors active:bg-gray-100"
-                onClick={() => {
-                  setEditingHourIndex(i);
-                }}
-              >
-                <span className="font-medium text-gray-700 capitalize w-24">{h.day}</span>
-                
-                {editingHourIndex === i ? (
-                  <div className="flex items-center gap-1.5 flex-1 justify-end" onClick={e => e.stopPropagation()}>
-                    <button type="button" 
-                      onClick={() => {
-                        const newHours = [...safeHours];
-                        newHours[i] = { ...newHours[i], open: !newHours[i]?.open };
-                        setProfile({...profile, hours: newHours});
-                      }}
-                      className={cn("px-2 py-1.5 rounded-md text-[10px] font-bold uppercase transition-colors whitespace-nowrap", h.open ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700")}
-                    >
-                      {h.open ? 'Abi' : 'Cer'}
-                    </button>
-                    
-                    {h.open && (
-                      <div className="flex items-center gap-1 bg-gray-50 p-1 rounded-md border border-gray-200">
-                        <input 
-                          type="time" 
-                          value={h.start} 
-                          onChange={e => {
-                            const newHours = [...safeHours];
-                            newHours[i] = { ...newHours[i], start: e.target.value };
-                            setProfile({...profile, hours: newHours});
-                          }}
-                          className="bg-transparent px-1 py-0.5 text-xs font-medium w-[70px] text-center focus:outline-none text-gray-700"
-                        />
-                        <span className="text-gray-300">-</span>
-                        <input 
-                          type="time" 
-                          value={h.end} 
-                          onChange={e => {
-                            const newHours = [...safeHours];
-                            newHours[i] = { ...newHours[i], end: e.target.value };
-                            setProfile({...profile, hours: newHours});
-                          }}
-                          className="bg-transparent px-1 py-0.5 text-xs font-medium w-[70px] text-center focus:outline-none text-gray-700"
-                        />
-                      </div>
-                    )}
-                    
-                    <button type="button" 
-                      onClick={(e) => { 
-                        e.stopPropagation();
-                        handleSaveProfile(); 
-                        setEditingHourIndex(null); 
-                      }} 
-                      className="bg-emerald-600 text-white p-1.5 rounded-md ml-1 hover:bg-emerald-700 transition-colors shadow-sm"
-                    >
-                      <Check size={14} />
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-end gap-2 flex-1">
-                    {h.open ? (
-                      <span className="font-bold text-gray-900 bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-md text-xs border border-emerald-100">
-                        {h.start} - {h.end}
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-bold text-gray-400 bg-gray-100 px-2 py-1 rounded-md uppercase">Cerrado</span>
-                    )}
-                    <Edit3 size={14} className="text-gray-300 ml-2" />
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 5. Infraestructura (Canchas) */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h3 className="font-bold text-gray-900">Mis Canchas</h3>
-              <p className="text-xs text-gray-500">Toca cualquier cancha para editarla o configurar bloqueo mutuo</p>
-            </div>
-            <button 
-              type="button"
-              onClick={() => { setEditingCourt({ name: '', type: 'Fútbol 5', surface: 'Sintético', price_per_hour: 0, is_roofed: false, status: 'available', blockedCourts: [] } as any); setEditSection('court'); }}
-              className="text-xs font-bold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 px-3 py-1.5 rounded-lg flex items-center gap-1 transition-colors"
-            >
-              <Plus size={14} /> Nueva Cancha
-            </button>
-          </div>
-          <div className="space-y-3">
-            {courts.map((court, cIdx) => (
-              <div 
-                key={`profile-court-${court.id || cIdx}-${cIdx}`} 
-                onClick={() => { setEditingCourt({ ...court, blockedCourts: (court as any).blockedCourts || [] }); setEditSection('court'); }}
-                className="flex items-center gap-3 p-3 border border-gray-100 rounded-xl hover:border-emerald-300 hover:shadow-sm transition-all bg-white cursor-pointer group"
-              >
-                <div className="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600 shrink-0 group-hover:scale-105 transition-transform">
-                  <LayoutDashboard size={20} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="font-bold text-sm text-gray-900 truncate">{court.name}</div>
-                    {court.status === 'maintenance' && (
-                      <span className="text-[10px] font-bold bg-red-100 text-red-600 px-1.5 py-0.5 rounded">Mantenimiento</span>
-                    )}
-                    {Array.isArray((court as any).blockedCourts) && (court as any).blockedCourts.length > 0 && (
-                      <span className="text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded flex items-center gap-1">
-                        <ShieldCheck size={12} /> Bloquea {(court as any).blockedCourts.length} {((court as any).blockedCourts.length === 1 ? 'cancha' : 'canchas')}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-xs text-gray-500 truncate">{court.type} • {court.surface} • ${(court as any).price_per_hour?.toLocaleString()}/h</div>
-                </div>
-                
-                <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
-                  <button 
-                    type="button"
-                    onClick={() => handleToggleCourtStatus(court)}
-                    className={cn(
-                      "p-2 rounded-lg transition-colors",
-                      court.status === 'maintenance' 
-                        ? "bg-red-50 text-red-600 hover:bg-red-100" 
-                        : "bg-emerald-50 text-emerald-600 hover:bg-emerald-100"
-                    )}
-                    title={court.status === 'maintenance' ? "Habilitar cancha" : "Poner en mantenimiento"}
-                  >
-                    <ShieldCheck size={16} />
-                  </button>
-                  <button 
-                    type="button"
-                    onClick={() => { setEditingCourt({ ...court, blockedCourts: (court as any).blockedCourts || [] }); setEditSection('court'); }} 
-                    className="p-2 text-gray-400 hover:text-emerald-600 transition-colors"
-                  >
-                    <Edit3 size={16} />
-                  </button>
-                  <button 
-                    type="button"
-                    onClick={() => handleDeleteCourt(court.id)} 
-                    className="p-2 text-gray-400 hover:text-red-600 transition-colors"
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
-            ))}
-            <button 
-              type="button"
-              onClick={() => { setEditingCourt({ name: '', type: 'Fútbol 5', surface: 'Sintético', price_per_hour: 0, is_roofed: false, status: 'available', blockedCourts: [] } as any); setEditSection('court'); }}
-              className="w-full py-3 rounded-xl border-2 border-dashed border-emerald-200 text-emerald-600 font-bold text-sm hover:bg-emerald-50 transition-colors flex items-center justify-center gap-2"
-            >
-              <Plus size={18} /> Agregar nueva cancha
-            </button>
-          </div>
-        </div>
-
-        {/* 6. Servicios */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
-          <h3 className="font-bold text-gray-900 mb-4">Servicios del complejo</h3>
-          <div className="grid grid-cols-2 gap-3">
-            {[
-              { id: 'showers', label: 'Vestuarios', icon: Shirt },
-              { id: 'parking', label: 'Estacionamiento', icon: Car },
-              { id: 'buffet', label: 'Buffet', icon: Coffee },
-              { id: 'bar', label: 'Bar', icon: Utensils },
-              { id: 'rentals', label: 'Alquileres', icon: ShoppingBag },
-              { id: 'grill', label: 'Parrillas', icon: Flame },
-              { id: 'wifi', label: 'Wi-Fi', icon: Wifi },
-            ].map((s, sIdx) => (
-              <div 
-                key={`venue-service-${s.id}-${sIdx}`}
-                className={cn(
-                  "flex items-center gap-2 p-3 rounded-xl border transition-all cursor-pointer",
-                  ((profile.services || {}) as any)[s.id] 
-                    ? "bg-emerald-50 border-emerald-200 text-emerald-700" 
-                    : "bg-white border-gray-100 text-gray-400 grayscale"
-                )}
-                onClick={() => {
-                  setProfile({...profile, services: {...(profile.services || {}), [s.id]: !((profile.services || {}) as any)[s.id]}});
-                  setHasChanges(true);
-                }}
-              >
-                <div className={cn("p-1.5 rounded-lg", ((profile.services || {}) as any)[s.id] ? "bg-emerald-100" : "bg-gray-100")}>
-                  <s.icon size={16} />
-                </div>
-                <span className="text-xs font-bold">{s.label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Mostrador (Categorías, Productos y Stock) */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-800 p-5 transition-colors">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex items-center gap-3.5">
-              <div className="w-12 h-12 rounded-2xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold shadow-xs shrink-0">
-                <Store size={22} />
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h3 className="font-bold text-gray-900 dark:text-white text-base">
-                    Mostrador
-                  </h3>
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 uppercase tracking-wider">
-                    Configurable
-                  </span>
-                </div>
-                <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
-                  Gestioná tus categorías, catálogo de productos, precios y control de inventario
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setIsMostradorOpen(true)}
-              className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-900/10 flex items-center justify-center gap-2 transition-all cursor-pointer self-start sm:self-center shrink-0"
-            >
-              <Store size={15} />
-              <span>Editar mostrador</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Mostrador Bottom Sheet */}
-        <MostradorBottomSheet
-          isOpen={isMostradorOpen}
-          onClose={() => setIsMostradorOpen(false)}
-          complexId={targetId}
-        />
-
-        {/* 7. Apariencia y Modo Nocturno */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-800 p-4 transition-colors">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className={cn(
-                "w-10 h-10 rounded-xl flex items-center justify-center transition-colors",
-                isDarkMode ? "bg-amber-500/10 text-amber-400" : "bg-emerald-50 text-emerald-600"
-              )}>
-                {isDarkMode ? <Moon size={22} /> : <Sun size={22} />}
-              </div>
-              <div>
-                <h3 className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                  Modo Nocturno
-                  <span className={cn(
-                    "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider",
-                    isDarkMode ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-gray-100 text-gray-600 dark:bg-slate-800 dark:text-gray-400"
-                  )}>
-                    {isDarkMode ? 'Prendido' : 'Apagado'}
-                  </span>
-                </h3>
-                <p className="text-xs text-gray-500 dark:text-slate-400">
-                  {isDarkMode ? 'El tema oscuro está activado para cuidar tu vista' : 'Activa el tema oscuro para reducir el brillo'}
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                if (onToggleDarkMode) onToggleDarkMode();
-              }}
-              className={cn(
-                "relative inline-flex h-7 w-14 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
-                isDarkMode ? "bg-emerald-600" : "bg-gray-200 dark:bg-slate-700"
-              )}
-              role="switch"
-              aria-checked={isDarkMode}
-              title={isDarkMode ? "Apagar modo nocturno" : "Prender modo nocturno"}
-            >
-              <span
-                className={cn(
-                  "pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out flex items-center justify-center text-xs",
-                  isDarkMode ? "translate-x-7 text-emerald-600" : "translate-x-0 text-gray-400"
-                )}
-              >
-                {isDarkMode ? <Moon size={12} strokeWidth={2.5} /> : <Sun size={12} strokeWidth={2.5} />}
-              </span>
-            </button>
-          </div>
-        </div>
-
-        {/* 8. Mesa de Ayuda, Reportes y Sugerencias */}
-        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-gray-100 dark:border-slate-800 p-5 transition-colors space-y-4">
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
-                <MessageSquare size={22} />
-              </div>
-              <div>
-                <h3 className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                  Mesa de Ayuda y Soporte
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 uppercase tracking-wider">
-                    Mensajería Directa
-                  </span>
-                </h3>
-                <p className="text-xs text-gray-500 dark:text-slate-400">
-                  Reporta errores o bugs, sugiere nuevas funciones y comunícate con el equipo vía WhatsApp
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsSupportModalOpen(true);
-              }}
-              className="bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] text-white font-bold p-3.5 rounded-xl flex items-center justify-center gap-2 text-xs shadow-sm transition-all cursor-pointer"
-            >
-              <Send size={15} />
-              Reportar Error / Sugerir Mejora
-            </button>
-
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                const venueNameStr = profile?.name || 'Complejo Jogo';
-                const text = encodeURIComponent(`Hola Soporte Jogo! Me comunico desde el complejo "${venueNameStr}". Necesito asistencia técnica.`);
-                window.open(`https://api.whatsapp.com/send?phone=5491123456789&text=${text}`, '_blank', 'noopener,noreferrer');
-              }}
-              className="bg-gray-100 hover:bg-gray-200 dark:bg-slate-800 dark:hover:bg-slate-700 active:scale-[0.98] text-gray-800 dark:text-slate-200 font-bold p-3.5 rounded-xl flex items-center justify-center gap-2 text-xs transition-all cursor-pointer border border-transparent dark:border-slate-700"
-            >
-              <MessageCircle size={15} className="text-emerald-500" />
-              WhatsApp Directo de Soporte
-            </button>
-          </div>
-
-          <div className="flex items-center justify-between text-[11px] text-gray-400 dark:text-slate-400 pt-2 border-t border-gray-100 dark:border-slate-800">
-            <span className="flex items-center gap-1.5">
-              <ShieldCheck size={14} className="text-emerald-600 dark:text-emerald-400" />
-              Canal oficial de atención para administradores
-            </span>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                setIsSupportModalOpen(true);
-              }}
-              className="text-emerald-600 dark:text-emerald-400 hover:underline font-bold cursor-pointer flex items-center gap-1"
-            >
-              Historial de tickets →
-            </button>
-          </div>
-        </div>
       </div>
 
-      {/* FAB Save Changes (For Services) */}
-      <AnimatePresence>
-        {hasChanges && (
-          <motion.div 
-            key="fab-save-profile-bar"
-            initial={{ y: 100 }}
-            animate={{ y: 0 }}
-            exit={{ y: 100 }}
-            className="fixed bottom-24 left-0 right-0 px-6 z-40"
-          >
-            <button type="button" 
-              onClick={handleSaveProfile}
-              className="w-full bg-slate-900 text-white py-4 rounded-2xl font-bold shadow-xl flex items-center justify-center gap-2"
-            >
-              <Check size={20} /> Guardar Cambios
-            </button>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Dos botones inferiores paralelos */}
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 mt-4">
+        <button
+          type="button"
+          onClick={() => {
+            setMostradorMode('mostrador');
+            setIsMostradorOpen(true);
+          }}
+          className="rounded-2xl border border-gray-200/90 dark:border-slate-700/80 bg-white dark:bg-slate-800 py-3.5 px-4 text-center font-bold text-sm text-slate-700 dark:text-slate-200 hover:bg-gray-50 dark:hover:bg-slate-750 transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-2"
+        >
+          Editar mostrador
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setMostradorMode('gastos');
+            setIsMostradorOpen(true);
+          }}
+          className="rounded-2xl border border-gray-200/90 dark:border-slate-700/80 bg-white dark:bg-slate-800 py-3.5 px-4 text-center font-bold text-sm text-slate-700 dark:text-slate-200 hover:bg-gray-50 dark:hover:bg-slate-750 transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-2"
+        >
+          Editar gastos
+        </button>
+      </div>
+
+      {/* Mostrador & Gastos Bottom Sheet */}
+      <MostradorBottomSheet
+        isOpen={isMostradorOpen}
+        onClose={() => setIsMostradorOpen(false)}
+        complexId={targetId}
+        mode={mostradorMode}
+      />
 
       {/* Edit Info Modal */}
       {editSection === 'info' && (
         <div 
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-sm" 
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setEditSection(null);
-          }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs" 
+          onClick={() => setEditSection(null)}
         >
-          <div className="bg-white w-full max-w-lg rounded-t-3xl p-6 shadow-2xl max-h-[85vh] overflow-y-auto pb-safe" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-xl">Editar Información</h3>
+          <div 
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[28px] border border-gray-100 dark:border-slate-800 p-6 shadow-2xl relative space-y-4 max-h-[85vh] overflow-y-auto" 
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center pb-2 border-b border-gray-100 dark:border-slate-800">
+              <h3 className="font-bold text-xl text-slate-800 dark:text-slate-100">Editar Información</h3>
               <button 
                 type="button" 
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setEditSection(null);
-                }} 
-                className="text-gray-400 hover:text-gray-600 cursor-pointer"
+                onClick={() => setEditSection(null)} 
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
               >
-                <X size={24} />
+                <X size={20} />
               </button>
             </div>
-            <div className="space-y-4">
+            <div className="space-y-3.5">
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Nombre</label>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">Nombre</label>
                 <input 
                   value={profile.name || ''} 
                   onChange={e => setProfile({...profile, name: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: Complejo Jogo"
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Dirección</label>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">Dirección</label>
                 <input 
                   value={profile.address || ''} 
                   onChange={e => setProfile({...profile, address: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: Av. San Martín 1234"
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Teléfono general</label>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">Alias bancario del complejo</label>
+                <input 
+                  value={profile.alias || ''} 
+                  onChange={e => setProfile({...profile, alias: e.target.value})}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  placeholder="Ej: complejo.canchas.mp"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">Teléfono general</label>
                 <input 
                   value={profile.phone || ''} 
                   onChange={e => setProfile({...profile, phone: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: +54 9 11 1234-5678"
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Correo electrónico</label>
-                <input 
-                  type="email"
-                  value={profile.email || ''} 
-                  onChange={e => setProfile({...profile, email: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                  placeholder="Ej: contacto@complejo.com"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Instagram</label>
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">Instagram</label>
                 <input 
                   value={profile.instagram || ''} 
                   onChange={e => setProfile({...profile, instagram: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: @complejojogo"
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Descripción</label>
-                <textarea 
-                  value={profile.description || ''} 
-                  onChange={e => setProfile({...profile, description: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                  rows={3}
-                  placeholder="Descripción del complejo y sus instalaciones..."
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">Correo electrónico</label>
+                <input 
+                  type="email"
+                  value={profile.email || ''} 
+                  onChange={e => setProfile({...profile, email: e.target.value})}
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  placeholder="Ej: contacto@complejo.com"
                 />
               </div>
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-1">Alias bancario del complejo</label>
-                <input 
-                  value={profile.alias || ''} 
-                  onChange={e => setProfile({...profile, alias: e.target.value})}
-                  className="w-full p-3 bg-gray-50 rounded-xl font-mono font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                  placeholder="Ej: complejo.canchas.mp"
+                <label className="block text-xs font-bold text-slate-600 dark:text-slate-300 mb-1">Descripción</label>
+                <textarea 
+                  value={profile.description || ''} 
+                  onChange={e => setProfile({...profile, description: e.target.value})}
+                  className="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  rows={2}
+                  placeholder="Descripción del complejo y sus instalaciones..."
                 />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-100">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Nombre del dueño</label>
-                  <input 
-                    value={profile.ownerName || ''} 
-                    onChange={e => setProfile({...profile, ownerName: e.target.value})}
-                    className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                    placeholder="Nombre y apellido"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Teléfono del dueño</label>
-                  <input 
-                    value={profile.ownerPhone || ''} 
-                    onChange={e => setProfile({...profile, ownerPhone: e.target.value})}
-                    className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                    placeholder="Teléfono directo"
-                  />
-                </div>
+              
+              <div className="pt-2 flex flex-col gap-2">
+                <button 
+                  type="button" 
+                  onClick={handleSaveProfile} 
+                  disabled={isSaving} 
+                  className="w-full bg-[#0BA70B] hover:bg-emerald-700 text-white py-3 rounded-xl font-bold transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {isSaving ? 'Guardando...' : 'Guardar'}
+                </button>
+                <button 
+                  type="button" 
+                  onClick={() => setEditSection(null)} 
+                  className="w-full py-2.5 text-slate-500 hover:text-slate-700 dark:text-slate-400 font-semibold text-sm cursor-pointer"
+                >
+                  Cancelar
+                </button>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2 border-t border-gray-100">
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Nombre del encargado</label>
-                  <input 
-                    value={profile.managerName || ''} 
-                    onChange={e => setProfile({...profile, managerName: e.target.value})}
-                    className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                    placeholder="Nombre y apellido"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-bold text-gray-500 mb-1">Teléfono del encargado</label>
-                  <input 
-                    value={profile.managerPhone || ''} 
-                    onChange={e => setProfile({...profile, managerPhone: e.target.value})}
-                    className="w-full p-3 bg-gray-50 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                    placeholder="Teléfono de contacto"
-                  />
-                </div>
-              </div>
-              <button 
-                type="button" 
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  handleSaveProfile();
-                }} 
-                disabled={isSaving} 
-                className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold mt-4 disabled:opacity-50 cursor-pointer"
-              >
-                {isSaving ? 'Guardando...' : 'Guardar'}
-              </button>
-              <button 
-                type="button" 
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setEditSection(null);
-                }} 
-                className="w-full py-3 text-gray-500 font-bold cursor-pointer"
-              >
-                Cancelar
-              </button>
             </div>
           </div>
         </div>
@@ -10350,91 +9894,100 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
       {/* Edit Hours Modal */}
       {editSection === 'hours' && (
         <div 
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-sm"
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setEditSection(null);
-          }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs"
+          onClick={() => setEditSection(null)}
         >
-          <div className="bg-white w-full max-w-lg rounded-t-3xl p-6 shadow-2xl max-h-[85vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-xl">Editar Horarios</h3>
+          <div 
+            className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[28px] border border-gray-100 dark:border-slate-800 p-6 shadow-2xl relative space-y-5"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
+              <div>
+                <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight">Editar horario</h3>
+                <p className="text-xs text-slate-400 mt-0.5">Días y franjas de apertura del complejo</p>
+              </div>
               <button 
                 type="button" 
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setEditSection(null);
-                }} 
-                className="text-gray-400 hover:text-gray-600 cursor-pointer"
+                onClick={() => setEditSection(null)} 
+                className="p-1 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
               >
-                <X size={24} />
+                <X size={20} />
               </button>
             </div>
-            <div className="space-y-4">
-              {safeHours.map((h: any, i: number) => (
-                <div key={`edit-hour-row-${h.day || i}-${i}`} className="flex items-center gap-2">
-                  <div className="w-20 font-medium text-sm">{h.day}</div>
-                  <button type="button" 
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      const newHours = [...safeHours];
-                      newHours[i] = { ...newHours[i], open: !newHours[i]?.open };
-                      setProfile({...profile, hours: newHours});
-                    }}
-                    className={cn("px-2 py-1 rounded text-xs font-bold w-16 cursor-pointer", h.open ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700")}
-                  >
-                    {h.open ? 'ABIERTO' : 'CERRADO'}
-                  </button>
-                  {h.open && (
-                    <>
-                      <input 
-                        type="time" 
-                        value={h.start} 
-                        onChange={e => {
+
+            <div className="space-y-3.5 max-h-[60vh] overflow-y-auto pr-1">
+              {safeHours.map((h: any, i: number) => {
+                const isOpen = Boolean(h.open);
+                return (
+                  <div key={`edit-hour-row-${h.day || i}-${i}`} className="flex items-center justify-between py-1">
+                    {/* Botón circular verde/rojo + Nombre del día */}
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
                           const newHours = [...safeHours];
-                          newHours[i] = { ...newHours[i], start: e.target.value };
-                          setProfile({...profile, hours: newHours});
+                          newHours[i] = { ...newHours[i], open: !isOpen };
+                          setProfile({ ...profile, hours: newHours });
                         }}
-                        className="bg-gray-50 rounded px-2 py-1 text-sm font-medium outline-none focus:ring-1 focus:ring-emerald-500"
+                        className={cn(
+                          "w-4.5 h-4.5 rounded-full cursor-pointer transition-transform active:scale-90 shadow-2xs",
+                          isOpen ? "bg-[#0BA70B]" : "bg-[#e41e26]"
+                        )}
+                        title={isOpen ? "Abierto (tocar para cerrar)" : "Cerrado (tocar para abrir)"}
                       />
-                      <span>-</span>
-                      <input 
-                        type="time" 
-                        value={h.end} 
-                        onChange={e => {
-                          const newHours = [...safeHours];
-                          newHours[i] = { ...newHours[i], end: e.target.value };
-                          setProfile({...profile, hours: newHours});
-                        }}
-                        className="bg-gray-50 rounded px-2 py-1 text-sm font-medium outline-none focus:ring-1 focus:ring-emerald-500"
-                      />
-                    </>
-                  )}
-                </div>
-              ))}
-              <button 
-                type="button" 
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  handleSaveProfile();
-                }} 
-                disabled={isSaving} 
-                className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold mt-4 disabled:opacity-50 cursor-pointer"
+                      <span className="text-sm font-semibold text-slate-700 dark:text-slate-200 capitalize">
+                        {h.day}
+                      </span>
+                    </div>
+
+                    {/* Horario o Cerrado */}
+                    {isOpen ? (
+                      <div className="flex items-center gap-1.5 border-b border-slate-400 dark:border-slate-500 pb-0.5 text-sm font-semibold text-slate-800 dark:text-slate-100">
+                        <input
+                          type="time"
+                          value={h.start || '18:00'}
+                          onChange={e => {
+                            const newHours = [...safeHours];
+                            newHours[i] = { ...newHours[i], start: e.target.value };
+                            setProfile({ ...profile, hours: newHours });
+                          }}
+                          className="bg-transparent text-xs sm:text-sm font-semibold outline-none w-16 text-center cursor-pointer text-slate-800 dark:text-slate-100"
+                        />
+                        <span className="text-slate-400">-</span>
+                        <input
+                          type="time"
+                          value={h.end || '01:00'}
+                          onChange={e => {
+                            const newHours = [...safeHours];
+                            newHours[i] = { ...newHours[i], end: e.target.value };
+                            setProfile({ ...profile, hours: newHours });
+                          }}
+                          className="bg-transparent text-xs sm:text-sm font-semibold outline-none w-16 text-center cursor-pointer text-slate-800 dark:text-slate-100"
+                        />
+                      </div>
+                    ) : (
+                      <span className="text-sm font-medium text-slate-400">
+                        Cerrado
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={handleSaveProfile}
+                disabled={isSaving}
+                className="w-full py-3 rounded-xl bg-[#0BA70B] hover:bg-emerald-700 text-white font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
               >
                 {isSaving ? 'Guardando...' : 'Guardar'}
               </button>
-              <button 
-                type="button" 
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setEditSection(null);
-                }} 
-                className="w-full py-3 text-gray-500 font-bold cursor-pointer"
+              <button
+                type="button"
+                onClick={() => setEditSection(null)}
+                className="w-full py-2.5 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 font-semibold text-sm cursor-pointer"
               >
                 Cancelar
               </button>
@@ -10446,64 +9999,155 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
       {/* Edit Court Modal */}
       {editSection === 'court' && editingCourt && (
         <div 
-          className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-sm pointer-events-auto" 
-          onClick={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            setEditSection(null);
-          }}
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs" 
+          onClick={() => setEditSection(null)}
         >
-          <div className="bg-white w-full max-w-lg rounded-t-3xl p-6 shadow-2xl max-h-[85vh] overflow-y-auto pb-safe pointer-events-auto" onClick={e => e.stopPropagation()}>
-            <div className="flex justify-between items-center mb-4">
+          <div 
+            className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[28px] border border-gray-100 dark:border-slate-800 p-6 shadow-2xl relative space-y-4 max-h-[90vh] overflow-y-auto" 
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center pb-2 border-b border-gray-100 dark:border-slate-800">
               <div>
-                <h3 className="font-bold text-xl text-gray-900">{editingCourt.id ? 'Editar Cancha' : 'Nueva Cancha'}</h3>
-                <p className="text-xs text-gray-500">Configuración de cancha dentro de la sede activa</p>
+                <h3 className="font-bold text-xl text-slate-800 dark:text-slate-100">
+                  {editingCourt.id ? 'Editar Cancha' : 'Nueva Cancha'}
+                </h3>
+                <p className="text-xs text-slate-400">Configuración de cancha dentro de la sede activa</p>
               </div>
               <button 
                 type="button" 
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setEditSection(null);
-                }} 
-                className="text-gray-400 hover:text-gray-600 cursor-pointer p-1"
+                onClick={() => setEditSection(null)} 
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer p-1"
               >
-                <X size={24} />
+                <X size={20} />
               </button>
             </div>
-            <div className="space-y-4">
+
+            <div className="space-y-3.5">
+              {/* Fila 1: Nombre de Cancha */}
               <div>
-                <label className="block text-xs font-bold text-gray-700 mb-1">Nombre de Cancha *</label>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Nombre de Cancha *</label>
                 <input 
                   value={editingCourt.name || ''} 
                   onChange={e => setEditingCourt({...editingCourt, name: e.target.value})}
-                  className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: Cancha 1"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
+              {/* Fila 2: Deporte y Tipo de Cancha */}
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Deporte *</label>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Deporte *</label>
                   <select 
-                    value={(editingCourt as any).sport || editingCourt.type || 'fútbol 5'} 
-                    onChange={e => setEditingCourt({...editingCourt, sport: e.target.value, type: e.target.value})}
-                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                    value={(editingCourt as any).sport || (editingCourt.type?.toLowerCase().includes('fútbol') ? 'Fútbol' : editingCourt.type) || 'Fútbol'} 
+                    onChange={e => {
+                      const newSport = e.target.value;
+                      setEditingCourt({
+                        ...editingCourt, 
+                        sport: newSport, 
+                        type: newSport === 'Fútbol' ? 'fútbol 5' : newSport
+                      });
+                    }}
+                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
                   >
-                    <option value="fútbol 5">fútbol 5</option>
-                    <option value="fútbol 6">fútbol 6</option>
-                    <option value="fútbol 7">fútbol 7</option>
-                    <option value="fútbol 8">fútbol 8</option>
-                    <option value="fútbol 9">fútbol 9</option>
-                    <option value="fútbol 11">fútbol 11</option>
+                    <option value="Fútbol">Fútbol</option>
+                    <option value="Pádel">Pádel</option>
+                    <option value="Tenis">Tenis</option>
+                    <option value="Pickleball">Pickleball</option>
+                    <option value="Squash">Squash</option>
+                    <option value="Vóley">Vóley</option>
+                    <option value="Básquet">Básquet</option>
+                    <option value="Hockey">Hockey</option>
+                    <option value="Handball">Handball</option>
+                    <option value="Otro">Otro</option>
                   </select>
                 </div>
+
                 <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Superficie *</label>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Tipo de cancha *</label>
+                  {((editingCourt as any).sport === 'Fútbol' || !(editingCourt as any).sport || editingCourt.type?.toLowerCase().includes('fútbol')) ? (
+                    <select 
+                      value={editingCourt.type || 'fútbol 5'} 
+                      onChange={e => setEditingCourt({...editingCourt, type: e.target.value})}
+                      className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                    >
+                      <option value="fútbol 5">fútbol 5</option>
+                      <option value="fútbol 6">fútbol 6</option>
+                      <option value="fútbol 7">fútbol 7</option>
+                      <option value="fútbol 8">fútbol 8</option>
+                      <option value="fútbol 9">fútbol 9</option>
+                      <option value="fútbol 11">fútbol 11</option>
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      readOnly
+                      value={(editingCourt as any).sport || editingCourt.type}
+                      className="w-full px-3.5 py-2.5 bg-slate-100 dark:bg-slate-800/60 border border-gray-200 dark:border-slate-700 rounded-xl font-medium text-sm text-slate-500 dark:text-slate-400 outline-none select-none cursor-default"
+                    />
+                  )}
+                </div>
+              </div>
+
+              {/* Fila 3: Precio por Hora y Estado Operativo */}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Precio por Hora ($) *</label>
+                  <div className="relative">
+                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
+                    <input 
+                      type="number"
+                      placeholder="Ej: 50000"
+                      value={((editingCourt as any).price_per_hour !== undefined && (editingCourt as any).price_per_hour !== null)
+                        ? (editingCourt as any).price_per_hour
+                        : (((editingCourt as any).price !== undefined && (editingCourt as any).price !== null) ? (editingCourt as any).price : '')} 
+                      onChange={e => {
+                        const val = e.target.value;
+                        setEditingCourt({
+                          ...editingCourt, 
+                          price: (val === '' ? '' : Number(val)) as any,
+                          price_per_hour: (val === '' ? '' : Number(val)) as any
+                        });
+                      }}
+                      className="w-full pl-8 pr-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Estado Operativo *</label>
+                  <select 
+                    value={editingCourt.status === 'inactiva' ? 'inactiva' : 'activa'} 
+                    onChange={e => setEditingCourt({...editingCourt, status: e.target.value})}
+                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  >
+                    <option value="activa">activa</option>
+                    <option value="inactiva">inactiva</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Fila 4: ¿Es techada? y Superficie */}
+              <div className="grid grid-cols-2 gap-3 items-center">
+                <div className="flex items-center gap-2.5 p-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl h-full">
+                  <input 
+                    type="checkbox" 
+                    id="is_roofed_checkbox"
+                    checked={Boolean((editingCourt as any).is_roofed)} 
+                    onChange={e => setEditingCourt({...editingCourt, is_roofed: e.target.checked})}
+                    className="w-4.5 h-4.5 text-[#0BA70B] rounded focus:ring-[#0BA70B] cursor-pointer"
+                  />
+                  <label htmlFor="is_roofed_checkbox" className="font-semibold text-slate-700 dark:text-slate-300 text-xs sm:text-sm cursor-pointer select-none">
+                    ¿Es techada?
+                  </label>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Superficie *</label>
                   <select 
                     value={editingCourt.surface || 'sintético'} 
                     onChange={e => setEditingCourt({...editingCourt, surface: e.target.value})}
-                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white capitalize"
                   >
                     <option value="sintético">sintético</option>
                     <option value="cemento">cemento</option>
@@ -10515,122 +10159,87 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Precio por Hora ($) *</label>
-                  <div className="relative">
-                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400 font-bold">$</span>
-                    <input 
-                      type="number"
-                      placeholder="Ej: 70000"
-                      value={(editingCourt as any).price ?? (editingCourt as any).price_per_hour ?? ''} 
-                      onChange={e => setEditingCourt({
-                        ...editingCourt, 
-                        price: e.target.value ? Number(e.target.value) : 0,
-                        price_per_hour: e.target.value ? Number(e.target.value) : 0
-                      })}
-                      className="w-full pl-8 p-3 bg-gray-50 border border-gray-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 mb-1">Estado Operativo *</label>
-                  <select 
-                    value={editingCourt.status === 'maintenance' || editingCourt.status === 'mantenimiento' ? 'mantenimiento' : (editingCourt.status === 'inactiva' ? 'inactiva' : 'activa')} 
-                    onChange={e => setEditingCourt({...editingCourt, status: e.target.value})}
-                    className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl font-medium outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                  >
-                    <option value="activa">activa</option>
-                    <option value="mantenimiento">mantenimiento</option>
-                    <option value="inactiva">inactiva</option>
-                  </select>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-3 p-3 bg-gray-50 border border-gray-200 rounded-xl">
-                <input 
-                  type="checkbox" 
-                  checked={(editingCourt as any).is_roofed || false} 
-                  onChange={e => setEditingCourt({...editingCourt, is_roofed: e.target.checked})}
-                  className="w-5 h-5 text-emerald-600 rounded focus:ring-emerald-500 cursor-pointer"
-                />
-                <label className="font-medium text-gray-700 text-sm cursor-pointer">¿Es techada?</label>
-              </div>
-
-              {/* Bloqueo de Canchas Mutuo (Superpuestas) */}
-              <div className="bg-gray-50 border border-gray-200 p-4 rounded-xl space-y-3">
+              {/* Fila 5: Canchas Superpuestas (Bloqueo Mutuo) */}
+              <div className="bg-slate-50 dark:bg-slate-800/60 border border-gray-200 dark:border-slate-700 p-3.5 rounded-2xl space-y-2.5">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-emerald-600" />
-                  <label className="block text-xs font-bold text-gray-700">Canchas Superpuestas (Bloqueo Mutuo)</label>
+                  <ShieldCheck size={16} className="text-[#0BA70B]" />
+                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">Canchas Superpuestas (Bloqueo Mutuo)</label>
                 </div>
-                <p className="text-[11px] text-gray-500 leading-relaxed">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
                   Seleccioná las canchas que comparten el mismo espacio físico. Si esta cancha tiene un turno confirmado, las seleccionadas quedarán bloqueadas automáticamente en ese horario.
                 </p>
-                <div className="flex flex-wrap gap-2">
-                  {courts.filter(c => !editingCourt.id || c.id !== editingCourt.id).map((c, cIdx) => {
-                    const isBlocked = ((editingCourt as any).blockedCourts || []).includes(c.id);
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {courts.filter(c => !editingCourt.id || String(c.id) !== String(editingCourt.id)).map((c, cIdx) => {
+                    const isBlocked = ((editingCourt as any).blockedCourts || []).map(String).includes(String(c.id));
                     return (
                       <button
                         type="button"
-                        key={`overlap-court-${c.id || cIdx}-${cIdx}`}
+                        key={`overlap-court-${c.id || cIdx}`}
                         onClick={() => {
-                          const currentBlocked = (editingCourt as any).blockedCourts || [];
+                          const currentBlocked = ((editingCourt as any).blockedCourts || []).map(String);
+                          const strCId = String(c.id);
                           const newBlocked = isBlocked 
-                            ? currentBlocked.filter((id: any) => id !== c.id)
-                            : [...currentBlocked, c.id];
+                            ? currentBlocked.filter((id: string) => id !== strCId)
+                            : [...currentBlocked, strCId];
                           setEditingCourt({...editingCourt, blockedCourts: newBlocked});
                         }}
                         className={cn(
-                          "px-3 py-2 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 shadow-sm cursor-pointer",
+                          "px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 shadow-2xs cursor-pointer",
                           isBlocked 
                             ? "bg-amber-500 text-white border-amber-600 shadow-amber-500/20" 
-                            : "bg-white text-gray-600 border-gray-200 hover:bg-gray-100"
+                            : "bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 border-gray-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-600"
                         )}
                       >
-                        <ShieldCheck size={14} className={isBlocked ? "text-white" : "text-gray-400"} />
-                        {c.name}
+                        <ShieldCheck size={13} className={isBlocked ? "text-white" : "text-slate-400"} />
+                        <span>{c.name}</span>
                         {isBlocked && <span className="text-[10px] bg-amber-600 px-1 rounded ml-0.5">Bloqueada</span>}
                       </button>
                     );
                   })}
-                  {courts.filter(c => !editingCourt.id || c.id !== editingCourt.id).length === 0 && (
-                    <div className="text-xs text-gray-400 italic">No hay otras canchas creadas para vincular.</div>
+                  {courts.filter(c => !editingCourt.id || String(c.id) !== String(editingCourt.id)).length === 0 && (
+                    <div className="text-xs text-slate-400 italic">No hay otras canchas creadas para vincular.</div>
                   )}
                 </div>
               </div>
 
-              <button 
-                type="button"
-                onClick={() => handleSaveCourt(editingCourt)} 
-                disabled={isSaving || !editingCourt.name || !((editingCourt as any).price || (editingCourt as any).price_per_hour)} 
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold mt-4 disabled:opacity-50 transition-colors shadow-lg shadow-emerald-900/10 cursor-pointer"
-              >
-                {isSaving ? 'Guardando en complejo...' : 'Guardar Cancha'}
-              </button>
-              <button type="button" onClick={() => setEditSection(null)} className="w-full py-2.5 text-gray-500 font-bold hover:text-gray-700 cursor-pointer">Cancelar</button>
+              {/* Botones de acción del modal de cancha */}
+              <div className="pt-2 flex flex-col gap-2">
+                <button 
+                  type="button"
+                  onClick={() => handleSaveCourt(editingCourt)} 
+                  disabled={isSaving || !editingCourt.name || (editingCourt as any).price_per_hour === ''} 
+                  className="w-full bg-[#0BA70B] hover:bg-emerald-700 text-white py-3 rounded-xl font-bold shadow-md transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+                >
+                  {isSaving ? 'Guardando en complejo...' : 'Guardar Cancha'}
+                </button>
+                {editingCourt.id && (
+                  <button 
+                    type="button" 
+                    onClick={() => {
+                      if (confirm(`¿Estás seguro de eliminar la cancha "${editingCourt.name}"?`)) {
+                        handleDeleteCourt(editingCourt.id);
+                      }
+                    }}
+                    className="w-full py-2.5 text-red-500 hover:text-red-700 font-semibold text-sm cursor-pointer"
+                  >
+                    Eliminar Cancha
+                  </button>
+                )}
+                <button 
+                  type="button" 
+                  onClick={() => setEditSection(null)} 
+                  className="w-full py-2 text-slate-500 hover:text-slate-700 dark:text-slate-400 font-semibold text-sm cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
             </div>
           </div>
         </div>
       )}
-
-      {/* Modal de Soporte, Reportes y Sugerencias */}
-      <ContactSupportModal
-        isOpen={isSupportModalOpen}
-        onClose={() => setIsSupportModalOpen(false)}
-        venueName={profile?.name || 'Complejo Jogo'}
-        adminName={profile?.name ? `Admin ${profile.name}` : 'Administrador'}
-        adminPhone={profile?.phone || ''}
-        adminEmail=""
-        isDarkMode={isDarkMode}
-      />
     </div>
   );
 };
-
-// Helper icons for ProfileView (since I missed importing some specific ones or need generic replacements)
-const ShoppingBagIcon = ({ size, className }: any) => <Store size={size} className={className} />;
-const FlameIcon = ({ size, className }: any) => <Utensils size={size} className={className} />;
 
 const BottomNav = ({ active, onNavigate }: { active: NavTabId | string, onNavigate: (id: NavTabId) => void }) => {
   return (
@@ -10797,7 +10406,187 @@ const ReportsModal = ({ isOpen, onClose, complexId = 'complejo_central' }: { isO
         </div>
       </motion.div>
     </div>
-  )
+  );
+}
+
+/**
+ * Modal de Información Personal (Dueño y Encargado del complejo)
+ */
+function PersonalInfoModal({
+  isOpen,
+  onClose,
+  complexId
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  complexId: string;
+}) {
+  const [profile, setProfile] = useState<any>({});
+  const [isSaving, setIsSaving] = useState(false);
+  const [ownerName, setOwnerName] = useState('');
+  const [ownerPhone, setOwnerPhone] = useState('');
+  const [ownerEmail, setOwnerEmail] = useState('');
+  const [managerName, setManagerName] = useState('');
+  const [managerPhone, setManagerPhone] = useState('');
+  const [managerEmail, setManagerEmail] = useState('');
+
+  useEffect(() => {
+    if (!complexId || !isOpen) return;
+    const unsub = subscribeToVenueProfile(complexId, (data) => {
+      if (data) {
+        setProfile(data);
+        setOwnerName(data.ownerName || '');
+        setOwnerPhone(data.ownerPhone || '');
+        setOwnerEmail(data.ownerEmail || '');
+        setManagerName(data.managerName || '');
+        setManagerPhone(data.managerPhone || '');
+        setManagerEmail(data.managerEmail || '');
+      }
+    });
+    return () => unsub();
+  }, [complexId, isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      await saveVenueProfileInFirestore(complexId, {
+        ...profile,
+        ownerName,
+        ownerPhone,
+        ownerEmail,
+        managerName,
+        managerPhone,
+        managerEmail
+      });
+      onClose();
+    } catch (e) {
+      console.error('Error al guardar información personal:', e);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <div 
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs"
+      onClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+      }}
+    >
+      <div 
+        className="bg-white dark:bg-slate-900 w-full max-w-md rounded-[28px] border border-gray-100 dark:border-slate-800 p-6 shadow-2xl relative space-y-5"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
+          <div>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 tracking-tight">Información personal</h3>
+            <p className="text-xs text-slate-400 mt-0.5">Datos del dueño y encargado del complejo</p>
+          </div>
+          <button 
+            type="button" 
+            onClick={onClose} 
+            className="p-1 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+          >
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="space-y-4 max-h-[65vh] overflow-y-auto pr-1">
+          {/* Dueño */}
+          <div className="space-y-2.5">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Dueño</h4>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Nombre y apellido</label>
+              <input
+                type="text"
+                value={ownerName}
+                onChange={e => setOwnerName(e.target.value)}
+                placeholder="Nombre del dueño"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Teléfono</label>
+              <input
+                type="tel"
+                value={ownerPhone}
+                onChange={e => setOwnerPhone(e.target.value)}
+                placeholder="+54 11 ..."
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Email</label>
+              <input
+                type="email"
+                value={ownerEmail}
+                onChange={e => setOwnerEmail(e.target.value)}
+                placeholder="dueno@complejo.com"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+              />
+            </div>
+          </div>
+
+          {/* Encargado */}
+          <div className="space-y-2.5 pt-3 border-t border-gray-100 dark:border-slate-800">
+            <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400">Encargado</h4>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Nombre y apellido</label>
+              <input
+                type="text"
+                value={managerName}
+                onChange={e => setManagerName(e.target.value)}
+                placeholder="Nombre del encargado"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Teléfono</label>
+              <input
+                type="tel"
+                value={managerPhone}
+                onChange={e => setManagerPhone(e.target.value)}
+                placeholder="+54 11 ..."
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">Email</label>
+              <input
+                type="email"
+                value={managerEmail}
+                onChange={e => setManagerEmail(e.target.value)}
+                placeholder="encargado@complejo.com"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="pt-2 flex flex-col gap-2">
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={isSaving}
+            className="w-full py-3 rounded-xl bg-[#0BA70B] hover:bg-emerald-700 text-white font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+          >
+            {isSaving ? 'Guardando...' : 'Guardar'}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="w-full py-2.5 rounded-xl text-slate-500 hover:text-slate-700 dark:text-slate-400 font-semibold text-sm cursor-pointer"
+          >
+            Cancelar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function App() {
@@ -10899,6 +10688,7 @@ export default function App() {
   const [showFinanceChart, setShowFinanceChart] = useState(false);
   const [showReportsModal, setShowReportsModal] = useState(false);
   const [showGlobalSupportModal, setShowGlobalSupportModal] = useState(false);
+  const [showPersonalInfoModal, setShowPersonalInfoModal] = useState(false);
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -11022,6 +10812,7 @@ export default function App() {
     if (action === 'chart') setShowFinanceChart(true);
     if (action === 'reports') setShowReportsModal(true);
     if (action === 'support') setShowGlobalSupportModal(true);
+    if (action === 'personal_info') setShowPersonalInfoModal(true);
   };
 
   const handleUserClick = (idOrIdentifier?: number | string | null, candidateObj?: Partial<User> | any) => {
@@ -11321,8 +11112,8 @@ export default function App() {
         {/* Header */}
         <header className={cn(
           "h-16 md:h-20 flex items-center justify-between px-4 md:px-6 z-20 relative transition-colors",
-          (activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance')
-            ? "bg-[#f4f5f7] dark:bg-slate-900 text-slate-800 dark:text-slate-100 border-b border-transparent"
+          (activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance' || activeTab === 'profile')
+            ? "bg-[#f4f5f7] dark:bg-slate-900 text-slate-700 dark:text-slate-100 border-b border-transparent"
             : "bg-[#0BA70B] dark:bg-[#0BA70B] text-white"
         )}>
           <div className="flex items-center gap-3 sm:gap-4">
@@ -11331,28 +11122,30 @@ export default function App() {
               onClick={() => setSidebarOpen(true)} 
               className={cn(
                 "lg:hidden p-1 -ml-1 cursor-pointer transition-colors",
-                (activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance') ? "text-slate-600 dark:text-slate-100 hover:text-slate-800" : "text-white hover:text-white/80"
+                (activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance' || activeTab === 'profile') ? "text-slate-600 dark:text-slate-100 hover:text-slate-800" : "text-white hover:text-white/80"
               )} 
               aria-label="Abrir menú lateral"
             >
-              <Menu size={(activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance') ? 30 : 32} strokeWidth={2.5} />
+              <Menu size={(activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance' || activeTab === 'profile') ? 30 : 32} strokeWidth={2.5} />
             </button>
             <div className="flex flex-col">
               <h2 className={cn(
                 activeTab === 'finance'
                   ? "text-xl sm:text-2xl font-bold text-slate-600 dark:text-slate-100 tracking-tight leading-tight"
-                  : (activeTab === 'users' || activeTab === 'schedule') 
-                    ? "text-[22px] md:text-[26px] font-bold tracking-tight leading-tight text-slate-800 dark:text-slate-100" 
-                    : "text-[22px] md:text-[26px] font-bold tracking-tight leading-tight text-white"
+                  : activeTab === 'profile'
+                    ? "text-2xl sm:text-3xl font-bold text-slate-600 dark:text-slate-100 tracking-tight leading-tight"
+                    : (activeTab === 'users' || activeTab === 'schedule') 
+                      ? "text-[22px] md:text-[26px] font-bold tracking-tight leading-tight text-slate-800 dark:text-slate-100" 
+                      : "text-[22px] md:text-[26px] font-bold tracking-tight leading-tight text-white"
               )}>
                 { 
                  activeTab === 'finance' ? capitalizedTodayDate :
                  activeTab === 'schedule' ? 'Agenda' :
                  activeTab === 'users' ? 'Usuarios' :
-                 activeTab === 'profile' ? 'Perfil' : 
+                 activeTab === 'profile' ? 'Mí perfil' : 
                  activeTab === 'analytics' ? 'Analíticas' : activeTab}
               </h2>
-              {activeTab !== 'users' && activeTab !== 'schedule' && activeTab !== 'finance' && authorizedComplexes.length > 1 ? (
+              {activeTab !== 'users' && activeTab !== 'schedule' && activeTab !== 'finance' && activeTab !== 'profile' && authorizedComplexes.length > 1 ? (
                 <div className="relative inline-block mt-0.5">
                   <select
                     value={activeComplexId || ''}
@@ -11368,7 +11161,7 @@ export default function App() {
                   </select>
                   <ChevronDown size={11} className="absolute right-1.5 top-1/2 -translate-y-1/2 text-white/80 pointer-events-none" />
                 </div>
-              ) : (activeTab !== 'users' && activeTab !== 'schedule' && activeTab !== 'finance' && activeComplex?.name) ? (
+              ) : (activeTab !== 'users' && activeTab !== 'schedule' && activeTab !== 'finance' && activeTab !== 'profile' && activeComplex?.name) ? (
                 <div className="flex items-center gap-1.5 text-xs text-emerald-100 font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-200 animate-pulse" />
                   <span className="truncate max-w-[200px]">{activeComplex.name}</span>
@@ -11404,6 +11197,8 @@ export default function App() {
                   ))}
                 </select>
               </div>
+            ) : activeTab === 'profile' ? (
+              null
             ) : (
               <>
                 {/* Perfil del operador autenticado & Cerrar Sesión */}
@@ -11677,6 +11472,14 @@ export default function App() {
             venueName="Complejo Jogo"
             adminName="Administrador Jogo"
             isDarkMode={isDarkMode}
+          />
+        )}
+        {showPersonalInfoModal && (
+          <PersonalInfoModal
+            key="modal-personal-info"
+            isOpen={showPersonalInfoModal}
+            onClose={() => setShowPersonalInfoModal(false)}
+            complexId={activeComplexId}
           />
         )}
       </AnimatePresence>

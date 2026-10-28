@@ -28,9 +28,10 @@ import {
   Calendar,
   Receipt,
   CheckCircle2,
-  ChevronDown
+  ChevronDown,
+  Wallet
 } from 'lucide-react';
-import type { Product, ProductCategory, InventoryMovement, ProductBatch, FinancialPaymentMethod } from '../types';
+import type { Product, ProductCategory, InventoryMovement, ProductBatch, FinancialPaymentMethod, ExpenseEntity, ExpenseEntityType } from '../types';
 import { 
   subscribeToInventoryCategories, 
   saveInventoryCategories, 
@@ -48,7 +49,11 @@ import {
   deleteExpenseItemInFirestore,
   toggleExpenseItemStatus,
   saveSupplierConceptInFirestore,
-  registerMerchandisePurchaseInFirestore
+  registerMerchandisePurchaseInFirestore,
+  subscribeToExpenseEntities,
+  saveExpenseEntityInFirestore,
+  toggleExpenseEntityStatus,
+  deleteExpenseEntityInFirestore
 } from '../lib/firestoreSync';
 import { playPurchaseSound } from '../lib/posAudio';
 import { cn } from '../lib/utils';
@@ -59,17 +64,26 @@ interface MostradorBottomSheetProps {
   isOpen: boolean;
   onClose: () => void;
   complexId: string;
+  mode?: 'mostrador' | 'gastos';
 }
 
 export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
   isOpen,
   onClose,
-  complexId
+  complexId,
+  mode = 'mostrador'
 }) => {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
 
   // View state: 'categories' | 'products' | 'expenses'
-  const [activeTab, setActiveTab] = useState<'categories' | 'products' | 'expenses'>('categories');
+  const [activeTab, setActiveTab] = useState<'categories' | 'products' | 'expenses'>(mode === 'gastos' ? 'expenses' : 'categories');
+
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab(mode === 'gastos' ? 'expenses' : 'categories');
+      setSelectedCategory(null);
+    }
+  }, [isOpen, mode]);
   // Selected category context when navigating into a specific category
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
 
@@ -96,12 +110,70 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
 
-  // Expense Modals
+  // Expense Modals & 3-Dimension Architecture states
   const [isExpenseCatModalOpen, setIsExpenseCatModalOpen] = useState(false);
   const [editingExpenseCat, setEditingExpenseCat] = useState<{ id?: string; name: string; oldName?: string; status?: 'activo' | 'inactivo' } | null>(null);
   const [isExpenseItemModalOpen, setIsExpenseItemModalOpen] = useState(false);
   const [editingExpenseItem, setEditingExpenseItem] = useState<{ id?: string; name: string; categoryId: string; price: number | ''; status?: 'activo' | 'inactivo' } | null>(null);
   const [expenseCatFilter, setExpenseCatFilter] = useState<'all' | 'active'>('active');
+
+  // Rediseño Gastos: 3 Dimensiones (Rubros y conceptos | Entidad)
+  const [expenseSubTab, setExpenseSubTab] = useState<'rubros_conceptos' | 'entidades'>('rubros_conceptos');
+  const [expenseEntities, setExpenseEntities] = useState<ExpenseEntity[]>([]);
+  const [selectedRubroPill, setSelectedRubroPill] = useState<string>('total');
+  const [expenseSearchQuery, setExpenseSearchQuery] = useState('');
+  const [entitySearchQuery, setEntitySearchQuery] = useState('');
+
+  // Entity Modal state
+  const [isEntityModalOpen, setIsEntityModalOpen] = useState(false);
+  const [entityModalMode, setEntityModalMode] = useState<'create' | 'edit'>('create');
+  const [entityForm, setEntityForm] = useState<{
+    id?: string;
+    name: string;
+    type: ExpenseEntityType;
+    location: string;
+    cuit: string;
+    phone: string;
+    email: string;
+    notes: string;
+    status: 'activo' | 'inactivo';
+  }>({
+    name: '',
+    type: 'Empresa',
+    location: '',
+    cuit: '',
+    phone: '',
+    email: '',
+    notes: '',
+    status: 'activo'
+  });
+  const [entityFormError, setEntityFormError] = useState<string | null>(null);
+  const [isSavingEntity, setIsSavingEntity] = useState(false);
+
+  // Concept Modal state
+  const [isConceptModalOpen, setIsConceptModalOpen] = useState(false);
+  const [conceptModalMode, setConceptModalMode] = useState<'create' | 'edit'>('create');
+  const [conceptForm, setConceptForm] = useState<{
+    id?: string;
+    name: string;
+    categoryId: string;
+    price: number | '';
+    status: 'activo' | 'inactivo';
+  }>({
+    name: '',
+    categoryId: '',
+    price: '',
+    status: 'activo'
+  });
+  const [conceptFormError, setConceptFormError] = useState<string | null>(null);
+  const [isSavingConcept, setIsSavingConcept] = useState(false);
+
+  // Rubros Manager Modal state
+  const [isRubrosManagerOpen, setIsRubrosManagerOpen] = useState(false);
+  const [newRubroNameInput, setNewRubroNameInput] = useState('');
+  const [editingRubroId, setEditingRubroId] = useState<string | null>(null);
+  const [editingRubroName, setEditingRubroName] = useState('');
+  const [rubroManagerError, setRubroManagerError] = useState<string | null>(null);
 
   // Product Modal (Create or Edit)
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
@@ -205,11 +277,16 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
       setExpenseItems(expIts);
     });
 
+    const unsubEntities = subscribeToExpenseEntities(targetId, (ents) => {
+      setExpenseEntities(ents);
+    });
+
     return () => {
       unsubCats();
       unsubProds();
       unsubExpCats();
       unsubExpItems();
+      unsubEntities();
     };
   }, [targetId, isOpen, selectedProduct?.id]);
 
@@ -968,6 +1045,233 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
     }
   };
 
+  // Helper for WhatsApp links
+  const getWhatsAppUrl = (phone?: string) => {
+    if (!phone) return '#';
+    const clean = phone.replace(/\D/g, '');
+    if (!clean) return '#';
+    if (clean.length === 10 && !clean.startsWith('54')) {
+      return `https://wa.me/549${clean}`;
+    }
+    if (clean.startsWith('54') && !clean.startsWith('549') && clean.length === 12) {
+      return `https://wa.me/549${clean.slice(2)}`;
+    }
+    return `https://wa.me/${clean}`;
+  };
+
+  // Helper for Entity Type badge classes
+  const getEntityTypeBadgeClass = (type?: ExpenseEntityType | string) => {
+    switch (type) {
+      case 'Empresa':
+        return 'bg-[#2563eb] text-white';
+      case 'Sector Público':
+        return 'bg-[#eab308] text-slate-900';
+      case 'Persona':
+        return 'bg-[#e2e8f0] text-slate-700 dark:bg-slate-700 dark:text-slate-200';
+      case 'ONG':
+        return 'bg-[#9333ea] text-white';
+      case 'Otro':
+      default:
+        return 'bg-[#ef4444] text-white';
+    }
+  };
+
+  // Concept Handlers
+  const handleOpenCreateConcept = () => {
+    const firstCat = expenseCategories.find(c => c.status !== 'inactivo')?.name || expenseCategories[0]?.name || 'Servicios';
+    setConceptForm({
+      name: '',
+      categoryId: selectedRubroPill !== 'total' ? selectedRubroPill : firstCat,
+      price: '',
+      status: 'activo'
+    });
+    setConceptModalMode('create');
+    setConceptFormError(null);
+    setIsConceptModalOpen(true);
+  };
+
+  const handleOpenEditConcept = (concept: Product) => {
+    setConceptForm({
+      id: concept.id,
+      name: concept.name,
+      categoryId: concept.categoryName || concept.categoryId || '',
+      price: Number(concept.purchasePrice || concept.price || 0) || '',
+      status: concept.status || 'activo'
+    });
+    setConceptModalMode('edit');
+    setConceptFormError(null);
+    setIsConceptModalOpen(true);
+  };
+
+  const handleSaveConceptForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!conceptForm.name.trim()) {
+      setConceptFormError('El nombre del concepto es obligatorio.');
+      return;
+    }
+    if (!conceptForm.categoryId.trim()) {
+      setConceptFormError('Debes seleccionar o asignar un rubro.');
+      return;
+    }
+    setIsSavingConcept(true);
+    setConceptFormError(null);
+    try {
+      await saveExpenseItemInFirestore(targetId, {
+        id: conceptForm.id,
+        name: conceptForm.name.trim(),
+        categoryId: conceptForm.categoryId.trim(),
+        categoryName: conceptForm.categoryId.trim(),
+        price: Number(conceptForm.price || 0),
+        status: conceptForm.status
+      });
+      setIsConceptModalOpen(false);
+      showToast(conceptForm.id ? 'Concepto actualizado' : 'Concepto creado exitosamente');
+    } catch (err: any) {
+      setConceptFormError(err.message || 'Error al guardar concepto');
+    } finally {
+      setIsSavingConcept(false);
+    }
+  };
+
+  // Entity Handlers
+  const handleOpenCreateEntity = () => {
+    setEntityForm({
+      name: '',
+      type: 'Empresa',
+      location: '',
+      cuit: '',
+      phone: '',
+      email: '',
+      notes: '',
+      status: 'activo'
+    });
+    setEntityModalMode('create');
+    setEntityFormError(null);
+    setIsEntityModalOpen(true);
+  };
+
+  const handleOpenEditEntity = (entity: ExpenseEntity) => {
+    setEntityForm({
+      id: entity.id,
+      name: entity.name,
+      type: entity.type,
+      location: entity.location || '',
+      cuit: entity.cuit || '',
+      phone: entity.phone || '',
+      email: entity.email || '',
+      notes: entity.notes || '',
+      status: entity.status || 'activo'
+    });
+    setEntityModalMode('edit');
+    setEntityFormError(null);
+    setIsEntityModalOpen(true);
+  };
+
+  const handleSaveEntityForm = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!entityForm.name.trim()) {
+      setEntityFormError('El nombre de la entidad es obligatorio.');
+      return;
+    }
+    setIsSavingEntity(true);
+    setEntityFormError(null);
+    try {
+      await saveExpenseEntityInFirestore(targetId, {
+        id: entityForm.id,
+        name: entityForm.name.trim(),
+        type: entityForm.type,
+        location: entityForm.location.trim() || undefined,
+        cuit: entityForm.cuit.trim() || undefined,
+        phone: entityForm.phone.trim() || undefined,
+        email: entityForm.email.trim() || undefined,
+        notes: entityForm.notes.trim() || undefined,
+        status: entityForm.status
+      });
+      setIsEntityModalOpen(false);
+      showToast(entityForm.id ? 'Entidad actualizada' : 'Entidad creada exitosamente');
+    } catch (err: any) {
+      setEntityFormError(err.message || 'Error al guardar la entidad');
+    } finally {
+      setIsSavingEntity(false);
+    }
+  };
+
+  // Rubros Manager inline add/rename
+  const handleCreateRubroFromManager = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newRubroNameInput.trim()) return;
+    setRubroManagerError(null);
+    try {
+      await saveExpenseCategoryInFirestore(targetId, {
+        name: newRubroNameInput.trim(),
+        status: 'activo'
+      });
+      setNewRubroNameInput('');
+      showToast('Rubro creado exitosamente');
+    } catch (err: any) {
+      setRubroManagerError(err.message || 'Error al crear rubro');
+    }
+  };
+
+  const handleSaveRenameRubro = async (rubro: ProductCategory) => {
+    if (!editingRubroName.trim() || editingRubroName.trim() === rubro.name) {
+      setEditingRubroId(null);
+      return;
+    }
+    setRubroManagerError(null);
+    try {
+      await saveExpenseCategoryInFirestore(targetId, {
+        id: rubro.id,
+        name: editingRubroName.trim(),
+        oldName: rubro.name,
+        status: rubro.status || 'activo'
+      });
+      setEditingRubroId(null);
+      showToast('Rubro renombrado');
+    } catch (err: any) {
+      setRubroManagerError(err.message || 'Error al renombrar');
+    }
+  };
+
+  // Filtered lists for Gastos
+  const expenseRubros = useMemo(() => {
+    return expenseCategories.filter(c => c.catalogType === 'expense');
+  }, [expenseCategories]);
+
+  const activeExpenseConcepts = useMemo(() => {
+    return expenseItems.filter(i => i.catalogType === 'expense');
+  }, [expenseItems]);
+
+  const filteredConcepts = useMemo(() => {
+    let list = activeExpenseConcepts;
+    if (selectedRubroPill !== 'total') {
+      list = list.filter(c => (c.categoryName || c.categoryId) === selectedRubroPill);
+    }
+    if (expenseSearchQuery.trim()) {
+      const q = expenseSearchQuery.toLowerCase().trim();
+      list = list.filter(c =>
+        c.name.toLowerCase().includes(q) ||
+        (c.categoryName || c.categoryId || '').toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [activeExpenseConcepts, selectedRubroPill, expenseSearchQuery]);
+
+  const filteredEntities = useMemo(() => {
+    let list = expenseEntities;
+    if (entitySearchQuery.trim()) {
+      const q = entitySearchQuery.toLowerCase().trim();
+      list = list.filter(e =>
+        e.name.toLowerCase().includes(q) ||
+        (e.phone || '').toLowerCase().includes(q) ||
+        (e.email || '').toLowerCase().includes(q) ||
+        (e.cuit || '').toLowerCase().includes(q) ||
+        (e.type || '').toLowerCase().includes(q)
+      );
+    }
+    return list;
+  }, [expenseEntities, entitySearchQuery]);
+
   if (!isOpen) return null;
 
   return (
@@ -1012,38 +1316,78 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
           </div>
 
           {/* Top Bar: Navigation & Title */}
-          <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              {selectedCategory ? (
+          {mode === 'gastos' ? (
+            <div className="px-5 pt-1 pb-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setSelectedCategory(null)}
-                  className="flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
+                  onClick={() => setExpenseSubTab('rubros_conceptos')}
+                  className={cn(
+                    "text-sm font-bold transition-all cursor-pointer rounded-2xl",
+                    expenseSubTab === 'rubros_conceptos'
+                      ? "bg-[#e2e8f0] dark:bg-slate-700 text-slate-800 dark:text-white px-4 py-2"
+                      : "text-slate-400 hover:text-slate-600 dark:text-slate-400 px-3 py-2"
+                  )}
                 >
-                  <ChevronLeft size={16} />
-                  <span>Volver a Categorías</span>
+                  Rubros y conceptos
                 </button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
-                    <Store size={18} />
-                  </div>
-                  <h2 className="text-lg font-black tracking-tight text-slate-900 dark:text-white">
-                    Editar Mostrador
-                  </h2>
-                </div>
-              )}
-            </div>
+                <button
+                  type="button"
+                  onClick={() => setExpenseSubTab('entidades')}
+                  className={cn(
+                    "text-sm font-bold transition-all cursor-pointer rounded-2xl",
+                    expenseSubTab === 'entidades'
+                      ? "bg-[#e2e8f0] dark:bg-slate-700 text-slate-800 dark:text-white px-4 py-2"
+                      : "text-slate-400 hover:text-slate-600 dark:text-slate-400 px-3 py-2"
+                  )}
+                >
+                  Entidad
+                </button>
+              </div>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-2 text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-              title="Cerrar Mostrador"
-            >
-              <X size={20} />
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-2 text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Cerrar Gastos"
+              >
+                <X size={20} />
+              </button>
+            </div>
+          ) : (
+            <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {selectedCategory ? (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCategory(null)}
+                    className="flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
+                  >
+                    <ChevronLeft size={16} />
+                    <span>Volver a Categorías</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
+                      <Store size={18} />
+                    </div>
+                    <h2 className="text-lg font-black tracking-tight text-slate-900 dark:text-white">
+                      Editar Mostrador
+                    </h2>
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-2 text-slate-400 hover:text-slate-700 dark:text-slate-500 dark:hover:text-slate-200 rounded-full hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Cerrar Mostrador"
+              >
+                <X size={20} />
+              </button>
+            </div>
+          )}
 
           {/* Context Banner if inside a category */}
           {selectedCategory ? (
@@ -1058,8 +1402,8 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                 {displayedProducts.length} {displayedProducts.length === 1 ? 'producto' : 'productos'}
               </span>
             </div>
-          ) : (
-            /* Main Segmented Switcher: Categorías | Productos | Gastos */
+          ) : mode === 'gastos' ? null : (
+            /* Main Segmented Switcher: Categorías | Productos (Gastos oculto en modo mostrador) */
             <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center p-1 bg-slate-100 dark:bg-slate-800/80 rounded-2xl flex-1 min-w-[280px] max-w-md">
                 <button
@@ -1091,21 +1435,6 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                   )}
                 >
                   Productos
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setActiveTab('expenses');
-                    setSelectedCategory(null);
-                  }}
-                  className={cn(
-                    "flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer text-center",
-                    activeTab === 'expenses'
-                      ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs"
-                      : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200"
-                  )}
-                >
-                  Gastos
                 </button>
               </div>
 
@@ -1297,16 +1626,272 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
               </>
             )}
 
-            {/* 3. Vista "Gastos" (Configurar Rubros y Conceptos de Gastos) */}
+            {/* 3. Vista "Gastos" (Configurar Rubros y Conceptos de Gastos / Entidades) */}
             {activeTab === 'expenses' && (
-              <div className="pb-16">
-                <CatalogInventorySection complexId={targetId} initialTab="expenses" hideTopTabs={true} />
+              <div className="pb-20 select-none">
+                {expenseSubTab === 'rubros_conceptos' ? (
+                  /* VISTA 1: RUBROS Y CONCEPTOS */
+                  <div>
+                    {/* Search bar */}
+                    <div className="relative mb-5">
+                      <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={expenseSearchQuery}
+                        onChange={(e) => setExpenseSearchQuery(e.target.value)}
+                        placeholder="Buscar rubros o conceptos"
+                        className="w-full pl-11 pr-4 py-3 rounded-full border border-slate-200/90 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/20 shadow-xs"
+                      />
+                      {expenseSearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setExpenseSearchQuery('')}
+                          className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Section: Rubros */}
+                    <div className="mb-6">
+                      <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-base font-bold text-slate-800 dark:text-slate-200">
+                          Rubros
+                        </h3>
+                        <button
+                          type="button"
+                          onClick={() => setIsRubrosManagerOpen(true)}
+                          className="text-xs sm:text-sm font-bold text-[#7c12e8] hover:underline cursor-pointer"
+                        >
+                          Editar rubros
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2 overflow-x-auto pb-1.5 no-scrollbar">
+                        {/* Pill Total */}
+                        <button
+                          type="button"
+                          onClick={() => setSelectedRubroPill('total')}
+                          className={cn(
+                            "px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer whitespace-nowrap",
+                            selectedRubroPill === 'total'
+                              ? "bg-[#7c12e8] text-white shadow-xs"
+                              : "bg-[#e2e8f0]/80 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-[#e2e8f0]"
+                          )}
+                        >
+                          Total ({activeExpenseConcepts.length})
+                        </button>
+
+                        {/* Individual Rubro Pills */}
+                        {expenseRubros.map((rubro) => {
+                          const count = activeExpenseConcepts.filter(c => 
+                            c.categoryId === rubro.name || c.categoryName === rubro.name || c.categoryId === rubro.id
+                          ).length;
+                          const isSelected = selectedRubroPill === rubro.name;
+                          return (
+                            <button
+                              key={`rubro-pill-${rubro.id}`}
+                              type="button"
+                              onClick={() => setSelectedRubroPill(rubro.name)}
+                              className={cn(
+                                "px-4 py-1.5 rounded-full text-xs font-bold transition-all cursor-pointer whitespace-nowrap",
+                                isSelected
+                                  ? "bg-[#7c12e8] text-white shadow-xs"
+                                  : "bg-[#e2e8f0]/80 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-[#e2e8f0]"
+                              )}
+                            >
+                              {rubro.name} ({count})
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Section: Conceptos */}
+                    <div>
+                      <h3 className="text-base font-bold text-slate-800 dark:text-slate-200 mb-3">
+                        Conceptos
+                      </h3>
+
+                      {filteredConcepts.length === 0 ? (
+                        <div className="py-12 text-center text-slate-400">
+                          <p className="text-sm">No se encontraron conceptos.</p>
+                          <button
+                            type="button"
+                            onClick={handleOpenCreateConcept}
+                            className="mt-3 text-xs font-bold text-[#0BA70B] hover:underline cursor-pointer"
+                          >
+                            + Crear primer concepto
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-2 gap-3">
+                          {filteredConcepts.map((concept) => (
+                            <div
+                              key={`concept-card-${concept.id}`}
+                              onClick={() => handleOpenEditConcept(concept)}
+                              className="bg-white dark:bg-slate-800 p-3.5 rounded-2xl border border-slate-100 dark:border-slate-700/60 shadow-xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between min-h-[76px]"
+                            >
+                              <div className="flex items-start justify-between gap-1.5">
+                                <h4 className="font-bold text-sm text-slate-900 dark:text-white truncate">
+                                  {concept.name}
+                                </h4>
+                                <span className={cn(
+                                  "text-[11px] font-semibold shrink-0",
+                                  concept.status === 'inactivo' ? "text-slate-400" : "text-[#0BA70B]"
+                                )}>
+                                  {concept.status === 'inactivo' ? 'Inactivo' : 'Activo'}
+                                </span>
+                              </div>
+                              <span className="text-xs text-slate-400 dark:text-slate-400 truncate mt-2">
+                                {concept.categoryName || concept.categoryId}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  /* VISTA 2: ENTIDAD (TABLA) */
+                  <div>
+                    {/* Search bar */}
+                    <div className="relative mb-5">
+                      <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                      <input
+                        type="text"
+                        value={entitySearchQuery}
+                        onChange={(e) => setEntitySearchQuery(e.target.value)}
+                        placeholder="Buscar entidad, teléfono o correo"
+                        className="w-full pl-11 pr-4 py-3 rounded-full border border-slate-200/90 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 shadow-xs"
+                      />
+                      {entitySearchQuery && (
+                        <button
+                          type="button"
+                          onClick={() => setEntitySearchQuery('')}
+                          className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Table Container Card */}
+                    <div className="bg-white dark:bg-slate-800 rounded-3xl border border-slate-200/90 dark:border-slate-700/80 overflow-hidden shadow-xs">
+                      {/* Table Header */}
+                      <div className="grid grid-cols-12 px-4 py-2.5 border-b border-slate-100 dark:border-slate-700/60 text-xs text-slate-500 dark:text-slate-400 font-medium">
+                        <div className="col-span-4">Nombre / Contacto</div>
+                        <div className="col-span-3">Correo</div>
+                        <div className="col-span-3 text-center">Tipo</div>
+                        <div className="col-span-2 text-right">CUIT</div>
+                      </div>
+
+                      {/* Table Rows */}
+                      {filteredEntities.length === 0 ? (
+                        <div className="py-12 text-center text-slate-400 text-xs">
+                          No hay entidades registradas. Creá una tocando el botón inferior.
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-slate-100 dark:divide-slate-700/50">
+                          {filteredEntities.map((entity) => {
+                            const phoneClean = (entity.phone || '').trim();
+                            const waUrl = getWhatsAppUrl(phoneClean);
+
+                            return (
+                              <div
+                                key={`entity-row-${entity.id}`}
+                                onClick={() => handleOpenEditEntity(entity)}
+                                className="grid grid-cols-12 px-4 py-3 items-center hover:bg-slate-50/80 dark:hover:bg-slate-750 transition cursor-pointer text-xs"
+                              >
+                                {/* Nombre / Contacto */}
+                                <div className="col-span-4 pr-1 min-w-0">
+                                  <h5 className="font-bold text-slate-900 dark:text-white truncate">
+                                    {entity.name}
+                                  </h5>
+                                  {phoneClean ? (
+                                    <a
+                                      href={waUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      onClick={(e) => e.stopPropagation()}
+                                      className="text-[#0BA70B] font-semibold hover:underline truncate block"
+                                      title="Abrir WhatsApp"
+                                    >
+                                      {phoneClean}
+                                    </a>
+                                  ) : (
+                                    <span className="text-slate-400">—</span>
+                                  )}
+                                </div>
+
+                                {/* Correo */}
+                                <div className="col-span-3 pr-1 text-slate-600 dark:text-slate-300 truncate">
+                                  {entity.email ? (
+                                    <span title={entity.email}>{entity.email}</span>
+                                  ) : (
+                                    <span className="text-slate-400">—</span>
+                                  )}
+                                </div>
+
+                                {/* Tipo Badge */}
+                                <div className="col-span-3 flex justify-center">
+                                  <span className={cn(
+                                    "px-3 py-0.5 rounded-full text-[11px] font-bold truncate max-w-[110px] text-center",
+                                    getEntityTypeBadgeClass(entity.type)
+                                  )}>
+                                    {entity.type}
+                                  </span>
+                                </div>
+
+                                {/* CUIT */}
+                                <div className="col-span-2 text-right font-mono text-slate-600 dark:text-slate-400 truncate">
+                                  {entity.cuit ? entity.cuit : <span className="text-slate-400">—</span>}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
 
-          {/* Floating Action Button (FAB): Bottom Right Corner (para Categorías y Productos de Venta) */}
-          {activeTab !== 'expenses' && (
+          {/* Floating Action Button (FAB): Bottom Right Corner */}
+          {activeTab === 'expenses' ? (
+            <div className="absolute right-5 bottom-5 z-20">
+              {expenseSubTab === 'rubros_conceptos' ? (
+                <button
+                  type="button"
+                  onClick={handleOpenCreateConcept}
+                  className="w-14 h-14 rounded-2xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white shadow-xl shadow-green-950/20 flex items-center justify-center cursor-pointer transition-transform"
+                  title="Nuevo concepto de gasto"
+                >
+                  <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="3" width="7" height="7" rx="1.5" fill="currentColor" stroke="none" />
+                    <rect x="14" y="3" width="7" height="7" rx="1.5" fill="currentColor" stroke="none" />
+                    <rect x="3" y="14" width="7" height="7" rx="1.5" fill="currentColor" stroke="none" />
+                    <path d="M14 17.5h7M17.5 14v7" stroke="currentColor" strokeWidth="2.5" />
+                  </svg>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleOpenCreateEntity}
+                  className="w-14 h-14 rounded-2xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white shadow-xl shadow-green-950/20 flex items-center justify-center cursor-pointer transition-transform"
+                  title="Nueva entidad"
+                >
+                  <div className="relative flex items-center justify-center">
+                    <Building2 size={24} className="text-white" strokeWidth={2.3} />
+                    <span className="absolute -bottom-1 -right-1 text-white font-black text-xs leading-none">+</span>
+                  </div>
+                </button>
+              )}
+            </div>
+          ) : (
             <div className="absolute right-5 bottom-5 z-20">
               <button
                 type="button"
@@ -2751,6 +3336,549 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                     </div>
                   )}
                 </motion.div>
+              </motion.div>
+            </div>
+          )}
+        {/* ========================================================= */}
+        {/* MODAL 1: NUEVA / EDITAR ENTIDAD                           */}
+        {/* ========================================================= */}
+        <AnimatePresence>
+          {isEntityModalOpen && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setIsEntityModalOpen(false)}
+                className="fixed inset-0 bg-black/60 backdrop-blur-xs"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                onClick={(e) => e.stopPropagation()}
+                className="relative w-full max-w-md max-h-[90vh] bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 z-10 flex flex-col overflow-hidden"
+              >
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                  <h3 className="text-base font-black text-slate-900 dark:text-white">
+                    {entityModalMode === 'create' ? 'Nueva entidad' : 'Editar entidad'}
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsEntityModalOpen(false)}
+                    className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveEntityForm} className="space-y-3.5 overflow-y-auto py-3">
+                  {entityFormError && (
+                    <div className="p-3 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 rounded-xl text-xs flex items-center gap-2">
+                      <AlertCircle size={16} className="shrink-0" />
+                      <span>{entityFormError}</span>
+                    </div>
+                  )}
+
+                  {/* Nombre * */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Nombre de la entidad *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. Distribuidora Quilmes, Edesur, Juan Pérez"
+                      value={entityForm.name}
+                      onChange={(e) => setEntityForm({ ...entityForm, name: e.target.value })}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
+                  </div>
+
+                  {/* Tipo * (5 opciones con colores) */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1.5">
+                      Tipo de entidad *
+                    </label>
+                    <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
+                      {(['Empresa', 'Sector Público', 'Persona', 'ONG', 'Otro'] as ExpenseEntityType[]).map((t) => {
+                        const isSelected = entityForm.type === t;
+                        return (
+                          <button
+                            key={`entity-type-btn-${t}`}
+                            type="button"
+                            onClick={() => setEntityForm({ ...entityForm, type: t })}
+                            className={cn(
+                              "py-1.5 px-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer border text-center truncate",
+                              isSelected
+                                ? `${getEntityTypeBadgeClass(t)} border-transparent shadow-xs scale-102`
+                                : "bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-100"
+                            )}
+                          >
+                            {t}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* CUIT / CUIL & Teléfono */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                        CUIT / CUIL
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ej. 30-12345678-9"
+                        value={entityForm.cuit}
+                        onChange={(e) => setEntityForm({ ...entityForm, cuit: e.target.value })}
+                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                        Teléfono (WhatsApp)
+                      </label>
+                      <input
+                        type="tel"
+                        placeholder="Ej. 11 3803-2662"
+                        value={entityForm.phone}
+                        onChange={(e) => setEntityForm({ ...entityForm, phone: e.target.value })}
+                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Correo */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Correo electrónico
+                    </label>
+                    <input
+                      type="email"
+                      placeholder="Ej. contacto@empresa.com"
+                      value={entityForm.email}
+                      onChange={(e) => setEntityForm({ ...entityForm, email: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    />
+                  </div>
+
+                  {/* Ubicación */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Ubicación / Dirección
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ej. Av. Corrientes 1234, CABA"
+                      value={entityForm.location}
+                      onChange={(e) => setEntityForm({ ...entityForm, location: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    />
+                  </div>
+
+                  {/* Observaciones */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Observaciones
+                    </label>
+                    <textarea
+                      rows={2}
+                      placeholder="Notas internas..."
+                      value={entityForm.notes}
+                      onChange={(e) => setEntityForm({ ...entityForm, notes: e.target.value })}
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none"
+                    />
+                  </div>
+
+                  {/* Estado: Activa / Inactiva */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Estado
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
+                      <button
+                        type="button"
+                        onClick={() => setEntityForm({ ...entityForm, status: 'activo' })}
+                        className={cn(
+                          "py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer",
+                          entityForm.status === 'activo'
+                            ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs"
+                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                        )}
+                      >
+                        Activa
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEntityForm({ ...entityForm, status: 'inactivo' })}
+                        className={cn(
+                          "py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer",
+                          entityForm.status === 'inactivo'
+                            ? "bg-white dark:bg-slate-900 text-red-600 dark:text-red-400 shadow-xs"
+                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                        )}
+                      >
+                        Inactiva
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+                    {entityModalMode === 'edit' && entityForm.id && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteEntity(entityForm.id!)}
+                        className="p-2.5 rounded-xl bg-red-50 hover:bg-red-100 dark:bg-red-950/40 text-red-600 text-xs font-bold transition-colors cursor-pointer"
+                        title="Eliminar entidad"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsEntityModalOpen(false)}
+                      className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingEntity}
+                      className="flex-1 py-2.5 rounded-xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white text-xs font-bold shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      {isSavingEntity ? 'Guardando...' : (entityModalMode === 'create' ? 'Crear Entidad' : 'Guardar Cambios')}
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* ========================================================= */}
+        {/* MODAL 2: NUEVO / EDITAR CONCEPTO DE GASTO                  */}
+        {/* ========================================================= */}
+        <AnimatePresence>
+          {isConceptModalOpen && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setIsConceptModalOpen(false)}
+                className="fixed inset-0 bg-black/60 backdrop-blur-xs"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                onClick={(e) => e.stopPropagation()}
+                className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 z-10 space-y-4"
+              >
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-black text-slate-900 dark:text-white">
+                    {conceptModalMode === 'create' ? 'Nuevo concepto' : 'Editar concepto'}
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsConceptModalOpen(false)}
+                    className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveConceptForm} className="space-y-4">
+                  {conceptFormError && (
+                    <div className="p-3 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 rounded-xl text-xs flex items-center gap-2">
+                      <AlertCircle size={16} className="shrink-0" />
+                      <span>{conceptFormError}</span>
+                    </div>
+                  )}
+
+                  {/* Nombre del concepto */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Nombre del concepto *
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Ej. Bebida, Luz, Gas, Mantenimiento"
+                      value={conceptForm.name}
+                      onChange={(e) => setConceptForm({ ...conceptForm, name: e.target.value })}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
+                  </div>
+
+                  {/* Rubro */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                        Rubro *
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setIsRubrosManagerOpen(true)}
+                        className="text-[11px] font-bold text-[#7c12e8] hover:underline cursor-pointer"
+                      >
+                        + Administrar rubros
+                      </button>
+                    </div>
+                    {expenseRubros.length > 0 ? (
+                      <select
+                        value={conceptForm.categoryId}
+                        onChange={(e) => setConceptForm({ ...conceptForm, categoryId: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 cursor-pointer"
+                      >
+                        {expenseRubros.map((r) => (
+                          <option key={`opt-rubro-${r.id}`} value={r.name}>
+                            {r.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        placeholder="Ej. Servicios, Proveedores"
+                        value={conceptForm.categoryId}
+                        onChange={(e) => setConceptForm({ ...conceptForm, categoryId: e.target.value })}
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white"
+                      />
+                    )}
+                  </div>
+
+                  {/* Precio / Importe sugerido */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Importe / Precio sugerido ($ opcional)
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      placeholder="0"
+                      value={conceptForm.price}
+                      onChange={(e) => setConceptForm({ ...conceptForm, price: e.target.value === '' ? '' : Number(e.target.value) })}
+                      className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                    />
+                  </div>
+
+                  {/* Estado: Activo / Inactivo */}
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Estado
+                    </label>
+                    <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
+                      <button
+                        type="button"
+                        onClick={() => setConceptForm({ ...conceptForm, status: 'activo' })}
+                        className={cn(
+                          "py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer",
+                          conceptForm.status === 'activo'
+                            ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs"
+                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                        )}
+                      >
+                        Activo
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConceptForm({ ...conceptForm, status: 'inactivo' })}
+                        className={cn(
+                          "py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer",
+                          conceptForm.status === 'inactivo'
+                            ? "bg-white dark:bg-slate-900 text-red-600 dark:text-red-400 shadow-xs"
+                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                        )}
+                      >
+                        Inactivo
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                    {conceptModalMode === 'edit' && conceptForm.id && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleDeleteExpenseItem(conceptForm.id!);
+                          setIsConceptModalOpen(false);
+                        }}
+                        className="p-2.5 rounded-xl bg-red-50 hover:bg-red-100 dark:bg-red-950/40 text-red-600 text-xs font-bold transition-colors cursor-pointer"
+                        title="Eliminar concepto"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsConceptModalOpen(false)}
+                      className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingConcept}
+                      className="flex-1 py-2.5 rounded-xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white text-xs font-bold shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                    >
+                      {isSavingConcept ? 'Guardando...' : (conceptModalMode === 'create' ? 'Crear' : 'Guardar')}
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* ========================================================= */}
+        {/* MODAL 3: ADMINISTRAR RUBROS DE GASTO ("Editar rubros")    */}
+        {/* ========================================================= */}
+        <AnimatePresence>
+          {isRubrosManagerOpen && (
+            <div className="fixed inset-0 z-[85] flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setIsRubrosManagerOpen(false)}
+                className="fixed inset-0 bg-black/60 backdrop-blur-xs"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                onClick={(e) => e.stopPropagation()}
+                className="relative w-full max-w-md max-h-[85vh] bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 z-10 flex flex-col overflow-hidden"
+              >
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                  <h3 className="text-base font-black text-slate-900 dark:text-white">
+                    Editar rubros
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsRubrosManagerOpen(false)}
+                    className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                {rubroManagerError && (
+                  <div className="p-3 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 rounded-xl text-xs flex items-center gap-2 mt-3">
+                    <AlertCircle size={16} className="shrink-0" />
+                    <span>{rubroManagerError}</span>
+                  </div>
+                )}
+
+                {/* Formulario rápido para crear nuevo rubro */}
+                <form onSubmit={handleCreateRubroFromManager} className="pt-3 pb-4 border-b border-slate-100 dark:border-slate-800 flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Nuevo rubro (ej. Proveedor, Servicios)"
+                    value={newRubroNameInput}
+                    onChange={(e) => setNewRubroNameInput(e.target.value)}
+                    className="flex-1 px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-violet-500/20"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!newRubroNameInput.trim()}
+                    className="px-4 py-2 rounded-xl bg-[#7c12e8] hover:bg-[#680ec7] disabled:opacity-50 text-white text-xs font-bold cursor-pointer transition-colors shadow-xs"
+                  >
+                    Agregar
+                  </button>
+                </form>
+
+                {/* Lista de rubros existentes */}
+                <div className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800 py-2">
+                  {expenseRubros.length === 0 ? (
+                    <p className="text-center text-xs text-slate-400 py-6">No hay rubros creados aún.</p>
+                  ) : (
+                    expenseRubros.map((rubro) => {
+                      const isEditingThis = editingRubroId === rubro.id;
+                      return (
+                        <div key={`mgr-rubro-${rubro.id}`} className="py-2.5 flex items-center justify-between gap-2 text-xs">
+                          {isEditingThis ? (
+                            <div className="flex items-center gap-2 flex-1">
+                              <input
+                                type="text"
+                                autoFocus
+                                value={editingRubroName}
+                                onChange={(e) => setEditingRubroName(e.target.value)}
+                                className="flex-1 px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => handleSaveRenameRubro(rubro)}
+                                className="p-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer"
+                              >
+                                <Check size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditingRubroId(null)}
+                                className="p-1.5 rounded-lg bg-slate-200 text-slate-600 hover:bg-slate-300 cursor-pointer"
+                              >
+                                <X size={14} />
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="font-bold text-slate-900 dark:text-white truncate">
+                                  {rubro.name}
+                                </span>
+                                <span className={cn(
+                                  "text-[10px] font-semibold px-2 py-0.5 rounded-full",
+                                  rubro.status === 'inactivo'
+                                    ? "bg-slate-100 dark:bg-slate-800 text-slate-400"
+                                    : "bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400"
+                                )}>
+                                  {rubro.status === 'inactivo' ? 'Inactivo' : 'Activo'}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingRubroId(rubro.id);
+                                    setEditingRubroName(rubro.name);
+                                  }}
+                                  className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-white rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                                  title="Renombrar rubro"
+                                >
+                                  <Edit3 size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleExpenseCatStatus(rubro)}
+                                  className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-white px-2 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
+                                >
+                                  {rubro.status === 'inactivo' ? 'Activar' : 'Desactivar'}
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setIsRubrosManagerOpen(false)}
+                    className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    Listo
+                  </button>
+                </div>
               </motion.div>
             </div>
           )}

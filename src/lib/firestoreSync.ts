@@ -26,7 +26,8 @@ import type {
   FinancialMovementCategory, FinancialPaymentMethod, FinancialMovementFlow,
   CreateOperationParams, RegisterOperationPaymentParams,
   RegisterHistoricalDebtPaymentParams, CancelOperationParams,
-  OperationResult, PaymentRegistrationResult, HistoricalDebtPaymentResult
+  OperationResult, PaymentRegistrationResult, HistoricalDebtPaymentResult,
+  ExpenseEntity, ExpenseEntityType
 } from '../types';
 import {
   calculateFinancialBalances,
@@ -61,6 +62,7 @@ export const OPERATIONS_COLLECTION = 'operations';
 export const FINANCIAL_MOVEMENTS_COLLECTION = 'financial_movements';
 export const IDEMPOTENCY_COLLECTION = 'idempotency_keys';
 export const COMPLEX_COUNTERS_COLLECTION = 'complex_counters';
+export const EXPENSE_ENTITIES_COLLECTION = 'expense_entities';
 
 
 /**
@@ -461,6 +463,10 @@ export async function saveCourtInFirestore(
     }
   }
 
+  const normalizedBlockedCourts = Array.isArray((court as any).blockedCourts)
+    ? (court as any).blockedCourts.map(String)
+    : [];
+
   const courtItem = {
     id: courtId,
     name: (court.name || 'Cancha').trim(),
@@ -469,10 +475,10 @@ export async function saveCourtInFirestore(
     surface: court.surface || 'sintético',
     price: Number(court.price ?? court.price_per_hour ?? 0),
     price_per_hour: Number(court.price ?? court.price_per_hour ?? 0),
-    status: court.status === 'maintenance' || court.status === 'mantenimiento' ? 'mantenimiento' : (court.status === 'inactiva' ? 'inactiva' : 'activa'),
+    status: court.status === 'inactiva' ? 'inactiva' : 'activa',
     is_roofed: Boolean(court.is_roofed ?? (court as any).isCovered),
     isCovered: Boolean(court.is_roofed ?? (court as any).isCovered),
-    blockedCourts: Array.isArray((court as any).blockedCourts) ? (court as any).blockedCourts : []
+    blockedCourts: normalizedBlockedCourts
   };
 
   const idx = existingCourts.findIndex(c => String(c.id) === String(courtId));
@@ -481,6 +487,29 @@ export async function saveCourtInFirestore(
   } else {
     existingCourts.push(courtItem);
   }
+
+  // Guardado bidireccional y simétrico de canchas superpuestas (bloqueo mutuo)
+  existingCourts = existingCourts.map(otherCourt => {
+    const otherId = String(otherCourt.id);
+    if (otherId === String(courtId)) return otherCourt;
+
+    let otherBlocked: string[] = Array.isArray(otherCourt.blockedCourts)
+      ? otherCourt.blockedCourts.map(String)
+      : [];
+
+    if (normalizedBlockedCourts.includes(otherId)) {
+      if (!otherBlocked.includes(String(courtId))) {
+        otherBlocked = [...otherBlocked, String(courtId)];
+      }
+    } else {
+      otherBlocked = otherBlocked.filter(id => id !== String(courtId));
+    }
+
+    return {
+      ...otherCourt,
+      blockedCourts: otherBlocked
+    };
+  });
 
   await setDoc(compRef, { 
     courts: existingCourts, 
@@ -503,7 +532,12 @@ export async function deleteCourtInFirestore(courtId: string | number, complexId
   if (cSnap.exists()) {
     const data = cSnap.data();
     let existingCourts = Array.isArray(data.courts) ? [...data.courts] : (Array.isArray(data.canchas) ? [...data.canchas] : []);
-    existingCourts = existingCourts.filter(c => String(c.id) !== strId);
+    existingCourts = existingCourts
+      .filter(c => String(c.id) !== strId)
+      .map(c => ({
+        ...c,
+        blockedCourts: Array.isArray(c.blockedCourts) ? c.blockedCourts.filter((bId: any) => String(bId) !== strId) : []
+      }));
     await setDoc(compRef, { 
       courts: existingCourts, 
       updatedAt: new Date().toISOString() 
@@ -538,8 +572,10 @@ export function subscribeToVenueProfile(
           alias: data.alias || '',
           ownerName: data.ownerName || '',
           ownerPhone: data.ownerPhone || '',
+          ownerEmail: data.ownerEmail || '',
           managerName: data.managerName || '',
           managerPhone: data.managerPhone || '',
+          managerEmail: data.managerEmail || '',
           contactChannel: data.contactChannel || 'WhatsApp',
           hours,
           weeklySchedule,
@@ -590,8 +626,10 @@ export async function saveVenueProfileInFirestore(
     alias: profile.alias || '',
     ownerName: profile.ownerName || '',
     ownerPhone: profile.ownerPhone || '',
+    ownerEmail: profile.ownerEmail || '',
     managerName: profile.managerName || '',
     managerPhone: profile.managerPhone || '',
+    managerEmail: profile.managerEmail || '',
     hours: rawHours,
     weeklySchedule,
     openTime,
@@ -2370,6 +2408,159 @@ export async function toggleExpenseItemStatus(
 }
 
 /**
+ * Escucha en tiempo real las entidades de gastos del complejo (/expense_entities)
+ */
+export function subscribeToExpenseEntities(
+  complexId: string,
+  cb: (entities: ExpenseEntity[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const colRef = collection(db, EXPENSE_ENTITIES_COLLECTION);
+  const q = query(colRef);
+
+  return onSnapshot(q, (snapshot) => {
+    const list: ExpenseEntity[] = [];
+    snapshot.forEach((d) => {
+      const data = d.data();
+      const comp = data.complejoId || data.complexId;
+      if (!comp || isSameComplex(comp, targetId)) {
+        list.push({
+          id: d.id,
+          complejoId: comp || targetId,
+          complexId: comp || targetId,
+          name: data.name || '',
+          type: (data.type as ExpenseEntityType) || 'Otro',
+          location: data.location || '',
+          cuit: data.cuit || '',
+          phone: data.phone || '',
+          email: data.email || '',
+          notes: data.notes || '',
+          status: (data.status as 'activo' | 'inactivo') || 'activo',
+          createdAt: data.createdAt,
+          updatedAt: data.updatedAt
+        });
+      }
+    });
+
+    list.sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+    cb(list);
+  }, (err) => {
+    console.warn('[Firestore] Error escuchando expense_entities:', err);
+    cb([]);
+  });
+}
+
+/**
+ * Guarda o actualiza una entidad de gastos en Firestore con prevención de duplicados
+ */
+export async function saveExpenseEntityInFirestore(
+  complexId: string,
+  entity: Partial<ExpenseEntity> & { name: string; type: ExpenseEntityType }
+): Promise<ExpenseEntity> {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const cleanName = (entity.name || '').trim();
+  if (!cleanName) {
+    throw new Error('El nombre de la entidad es obligatorio.');
+  }
+
+  // Normalizar nombre para prevención de duplicados (minúsculas, sin tildes ni caracteres extra)
+  const normalize = (str: string) =>
+    str.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, ' ').trim();
+  const normalizedName = normalize(cleanName);
+
+  const cleanCuit = (entity.cuit || '').replace(/\D/g, '');
+
+  // Chequeo de duplicados en la colección de entidades del complejo
+  const colRef = collection(db, EXPENSE_ENTITIES_COLLECTION);
+  const snap = await getDocs(colRef);
+  for (const d of snap.docs) {
+    if (entity.id && d.id === entity.id) continue;
+    const data = d.data();
+    const comp = data.complejoId || data.complexId;
+    if (comp && !isSameComplex(comp, targetId)) continue;
+
+    // Verificar nombre
+    if (data.name && normalize(data.name) === normalizedName) {
+      throw new Error(`Ya existe una entidad registrada con el nombre "${cleanName}".`);
+    }
+
+    // Verificar CUIT si fue provisto
+    if (cleanCuit.length >= 8 && data.cuit) {
+      const existingCuit = String(data.cuit).replace(/\D/g, '');
+      if (existingCuit === cleanCuit) {
+        throw new Error(`Ya existe una entidad ("${data.name}") con el mismo CUIT/CUIL (${entity.cuit}).`);
+      }
+    }
+  }
+
+  const isNew = !entity.id;
+  const entityId = entity.id || `ent_${Date.now()}_${generateUUID().slice(0, 6)}`;
+  const entityRef = doc(colRef, entityId);
+
+  const payload: any = {
+    complejoId: targetId,
+    complexId: targetId,
+    name: cleanName,
+    type: entity.type,
+    location: entity.location?.trim() || '',
+    cuit: entity.cuit?.trim() || '',
+    phone: entity.phone?.trim() || '',
+    email: entity.email?.trim() || '',
+    notes: entity.notes?.trim() || '',
+    status: entity.status || 'activo',
+    updatedAt: serverTimestamp()
+  };
+
+  if (isNew) {
+    payload.createdAt = serverTimestamp();
+  }
+
+  await setDoc(entityRef, payload, { merge: true });
+
+  return {
+    id: entityId,
+    complejoId: targetId,
+    complexId: targetId,
+    name: cleanName,
+    type: entity.type,
+    location: payload.location,
+    cuit: payload.cuit,
+    phone: payload.phone,
+    email: payload.email,
+    notes: payload.notes,
+    status: payload.status as 'activo' | 'inactivo',
+    createdAt: isNew ? new Date().toISOString() : entity.createdAt,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Alterna el estado activo / inactivo de una entidad de gasto
+ */
+export async function toggleExpenseEntityStatus(
+  entityId: string,
+  currentStatus: 'activo' | 'inactivo'
+): Promise<'activo' | 'inactivo'> {
+  const nextStatus: 'activo' | 'inactivo' = currentStatus === 'activo' ? 'inactivo' : 'activo';
+  const ref = doc(db, EXPENSE_ENTITIES_COLLECTION, entityId);
+  await updateDoc(ref, {
+    status: nextStatus,
+    updatedAt: serverTimestamp()
+  });
+  return nextStatus;
+}
+
+/**
+ * Elimina una entidad de gasto
+ */
+export async function deleteExpenseEntityInFirestore(
+  entityId: string
+): Promise<void> {
+  const ref = doc(db, EXPENSE_ENTITIES_COLLECTION, entityId);
+  await deleteDoc(ref);
+}
+
+/**
  * Busca o crea un concepto de proveedor persistente dentro de /products con catalogType: 'expense'
  */
 export async function saveSupplierConceptInFirestore(
@@ -2478,6 +2669,9 @@ export async function executeExpenseOperation(params: {
   conceptId?: string;
   supplierId?: string;
   supplierName?: string;
+  entityId?: string | null;
+  entityName?: string | null;
+  entityType?: string | null;
   amount: number;
   payments: Array<{
     amount: number;
@@ -2540,7 +2734,7 @@ export async function executeExpenseOperation(params: {
   }
 
   const cleanConcept = (params.concept || '').trim() || params.category.trim();
-  const cleanSupplier = (params.supplierName || cleanConcept || 'Proveedor').trim();
+  const cleanSupplier = (params.entityName || params.supplierName || cleanConcept || 'Proveedor').trim();
   const cleanCategory = (params.category || 'Gastos Generales').trim();
 
   return await runTransaction(db, async (t) => {
@@ -2569,6 +2763,13 @@ export async function executeExpenseOperation(params: {
       supplierName: cleanSupplier,
       userName: cleanSupplier,
       clientName: cleanSupplier,
+      expenseCategoryId: params.categoryId || null,
+      expenseCategoryName: cleanCategory,
+      expenseConceptId: params.conceptId || null,
+      expenseConceptName: cleanConcept,
+      entityId: params.entityId || null,
+      entityName: params.entityName || null,
+      entityType: params.entityType || null,
       contractualAmount: amount,
       totalCollected: totalPaid,
       totalRefunded: 0,
@@ -2593,6 +2794,9 @@ export async function executeExpenseOperation(params: {
         conceptId: params.conceptId || null,
         supplierId: params.supplierId || null,
         supplierName: cleanSupplier,
+        entityId: params.entityId || null,
+        entityName: params.entityName || null,
+        entityType: params.entityType || null,
         isExpense: true
       },
       createdAt: serverTimestamp(),
@@ -2631,6 +2835,13 @@ export async function executeExpenseOperation(params: {
         userName: cleanSupplier,
         clientName: cleanSupplier,
         clearedCurrentAccountDebt: 0,
+        expenseCategoryId: params.categoryId || null,
+        expenseCategoryName: cleanCategory,
+        expenseConceptId: params.conceptId || null,
+        expenseConceptName: cleanConcept,
+        entityId: params.entityId || null,
+        entityName: params.entityName || null,
+        entityType: (params.entityType as any) || null,
         notes: pay.notes || `Pago gasto: ${cleanConcept} (${pay.paymentMethod})`,
         operatorId: params.operatorId,
         createdAt: serverTimestamp()
@@ -3018,6 +3229,9 @@ export async function registerMerchandisePurchaseInFirestore(params: {
   expenseCategoryName?: string;
   expenseConceptId?: string;
   expenseConceptName?: string;
+  entityId?: string | null;
+  entityName?: string | null;
+  entityType?: string | null;
   payments: Array<{
     amount: number;
     paymentMethod: FinancialPaymentMethod;
@@ -3125,6 +3339,9 @@ export async function registerMerchandisePurchaseInFirestore(params: {
     const cleanExpenseCategory = (params.expenseCategoryName || '').trim() || undefined;
     const cleanExpenseConceptId = params.expenseConceptId || params.supplierId || null;
     const cleanExpenseCategoryId = params.expenseCategoryId || null;
+    const cleanEntityId = params.entityId || null;
+    const cleanEntityName = params.entityName || null;
+    const cleanEntityType = params.entityType || null;
 
     const newBatch: ProductBatch = {
       id: newBatchId,
@@ -3154,6 +3371,13 @@ export async function registerMerchandisePurchaseInFirestore(params: {
       supplierName: cleanPurchasePlace,
       userName: cleanPurchasePlace,
       clientName: cleanPurchasePlace,
+      expenseCategoryId: cleanExpenseCategoryId,
+      expenseCategoryName: cleanExpenseCategory || null,
+      expenseConceptId: cleanExpenseConceptId,
+      expenseConceptName: cleanPurchasePlace,
+      entityId: cleanEntityId,
+      entityName: cleanEntityName,
+      entityType: cleanEntityType as any,
       contractualAmount: totalPurchase,
       totalCollected: totalPaid,
       totalRefunded: 0,
@@ -3180,6 +3404,9 @@ export async function registerMerchandisePurchaseInFirestore(params: {
         purchasePlace: cleanPurchasePlace,
         supplierId: cleanExpenseConceptId,
         supplierName: cleanPurchasePlace,
+        entityId: cleanEntityId,
+        entityName: cleanEntityName,
+        entityType: cleanEntityType,
         productId: params.productId,
         productName: prodData.name,
         quantity: qty,
@@ -3256,6 +3483,9 @@ export async function registerMerchandisePurchaseInFirestore(params: {
           expenseCategoryName: cleanExpenseCategory || null,
           expenseConceptId: cleanExpenseConceptId,
           expenseConceptName: cleanPurchasePlace,
+          entityId: cleanEntityId,
+          entityName: cleanEntityName,
+          entityType: cleanEntityType as any,
           notes: pay.notes || `Pago compra mercadería (${pay.paymentMethod}) · ${cleanPurchasePlace}${cleanExpenseCategory ? ` · ${cleanExpenseCategory}` : ''}`,
           operatorId: params.operatorId || 'administrador',
           createdAt: serverTimestamp()
