@@ -80,7 +80,12 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      setActiveTab(mode === 'gastos' ? 'expenses' : 'categories');
+      if (mode === 'gastos') {
+        setActiveTab('expenses');
+        setExpenseSubTab('rubros_conceptos');
+      } else {
+        setActiveTab('categories');
+      }
       setSelectedCategory(null);
     }
   }, [isOpen, mode]);
@@ -1196,6 +1201,16 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
     }
   };
 
+  const handleDeleteEntity = async (entityId: string) => {
+    try {
+      await deleteExpenseEntityInFirestore(entityId);
+      setIsEntityModalOpen(false);
+      showToast('Entidad eliminada');
+    } catch (err: any) {
+      setEntityFormError(err.message || 'Error al eliminar entidad');
+    }
+  };
+
   // Rubros Manager inline add/rename
   const handleCreateRubroFromManager = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1233,17 +1248,30 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
     }
   };
 
+  const handleDeleteRubro = async (rubro: ProductCategory) => {
+    setRubroManagerError(null);
+    try {
+      await deleteExpenseCategoryInFirestore(rubro.id, targetId, true);
+      if (selectedRubroPill === rubro.name || selectedRubroPill === rubro.id) {
+        setSelectedRubroPill('total');
+      }
+      showToast(`Rubro "${rubro.name}" eliminado`);
+    } catch (err: any) {
+      setRubroManagerError(err?.message || 'Error al eliminar rubro');
+    }
+  };
+
   // Filtered lists for Gastos
   const expenseRubros = useMemo(() => {
     return expenseCategories.filter(c => c.catalogType === 'expense');
   }, [expenseCategories]);
 
-  const activeExpenseConcepts = useMemo(() => {
+  const catalogExpenseConcepts = useMemo(() => {
     return expenseItems.filter(i => i.catalogType === 'expense');
   }, [expenseItems]);
 
   const filteredConcepts = useMemo(() => {
-    let list = activeExpenseConcepts;
+    let list = catalogExpenseConcepts;
     if (selectedRubroPill !== 'total') {
       list = list.filter(c => (c.categoryName || c.categoryId) === selectedRubroPill);
     }
@@ -1255,7 +1283,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
       );
     }
     return list;
-  }, [activeExpenseConcepts, selectedRubroPill, expenseSearchQuery]);
+  }, [catalogExpenseConcepts, selectedRubroPill, expenseSearchQuery]);
 
   const filteredEntities = useMemo(() => {
     let list = expenseEntities;
@@ -1456,7 +1484,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
           {/* Main Content Area */}
           <div className="flex-1 overflow-y-auto px-5 py-4 pb-28 space-y-3">
             {/* 1. Vista "Categorías" */}
-            {activeTab === 'categories' && !selectedCategory && (
+            {mode !== 'gastos' && activeTab === 'categories' && !selectedCategory && (
               <>
                 {categories.length === 0 ? (
                   <div className="h-64 flex flex-col items-center justify-center text-center p-6 space-y-3">
@@ -1510,7 +1538,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
             )}
 
             {/* 2. Vista "Productos" */}
-            {(selectedCategory || activeTab === 'products') && (
+            {mode !== 'gastos' && (selectedCategory || activeTab === 'products') && (
               <>
                 {displayedProducts.length === 0 ? (
                   <div className="h-64 flex flex-col items-center justify-center text-center p-6 space-y-3">
@@ -1627,7 +1655,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
             )}
 
             {/* 3. Vista "Gastos" (Configurar Rubros y Conceptos de Gastos / Entidades) */}
-            {activeTab === 'expenses' && (
+            {(mode === 'gastos' || activeTab === 'expenses') && (
               <div className="pb-20 select-none">
                 {expenseSubTab === 'rubros_conceptos' ? (
                   /* VISTA 1: RUBROS Y CONCEPTOS */
@@ -1780,11 +1808,11 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                     {/* Table Container Card */}
                     <div className="bg-white dark:bg-slate-800 rounded-3xl border border-slate-200/90 dark:border-slate-700/80 overflow-hidden shadow-xs">
                       {/* Table Header */}
-                      <div className="grid grid-cols-12 px-4 py-2.5 border-b border-slate-100 dark:border-slate-700/60 text-xs text-slate-500 dark:text-slate-400 font-medium">
-                        <div className="col-span-4">Nombre / Contacto</div>
-                        <div className="col-span-3">Correo</div>
-                        <div className="col-span-3 text-center">Tipo</div>
-                        <div className="col-span-2 text-right">CUIT</div>
+                      <div className="flex items-center px-4 py-2.5 border-b border-slate-100 dark:border-slate-700/60 text-xs text-slate-500 dark:text-slate-400 font-medium">
+                        <div className="w-[32%] shrink-0 pr-1">Nombre / Contacto</div>
+                        <div className="w-[28%] shrink-0 pr-1">Correo</div>
+                        <div className="w-[20%] shrink-0 text-center">Tipo</div>
+                        <div className="w-[20%] shrink-0 text-right">CUIT</div>
                       </div>
 
                       {/* Table Rows */}
@@ -1802,10 +1830,10 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                               <div
                                 key={`entity-row-${entity.id}`}
                                 onClick={() => handleOpenEditEntity(entity)}
-                                className="grid grid-cols-12 px-4 py-3 items-center hover:bg-slate-50/80 dark:hover:bg-slate-750 transition cursor-pointer text-xs"
+                                className="flex items-center px-4 py-3 hover:bg-slate-50/80 dark:hover:bg-slate-750 transition cursor-pointer text-xs"
                               >
-                                {/* Nombre / Contacto */}
-                                <div className="col-span-4 pr-1 min-w-0">
+                                {/* Nombre / Contacto (32%) */}
+                                <div className="w-[32%] shrink-0 pr-1 min-w-0">
                                   <h5 className="font-bold text-slate-900 dark:text-white truncate">
                                     {entity.name}
                                   </h5>
@@ -1825,27 +1853,27 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                   )}
                                 </div>
 
-                                {/* Correo */}
-                                <div className="col-span-3 pr-1 text-slate-600 dark:text-slate-300 truncate">
+                                {/* Correo (28%) */}
+                                <div className="w-[28%] shrink-0 pr-1 text-slate-600 dark:text-slate-300 truncate">
                                   {entity.email ? (
-                                    <span title={entity.email}>{entity.email}</span>
+                                    <span title={entity.email} className="truncate block">{entity.email}</span>
                                   ) : (
                                     <span className="text-slate-400">—</span>
                                   )}
                                 </div>
 
-                                {/* Tipo Badge */}
-                                <div className="col-span-3 flex justify-center">
+                                {/* Tipo Badge (20%) */}
+                                <div className="w-[20%] shrink-0 flex justify-center">
                                   <span className={cn(
-                                    "px-3 py-0.5 rounded-full text-[11px] font-bold truncate max-w-[110px] text-center",
+                                    "px-2.5 py-0.5 rounded-full text-[11px] font-bold truncate max-w-[100px] text-center",
                                     getEntityTypeBadgeClass(entity.type)
                                   )}>
                                     {entity.type}
                                   </span>
                                 </div>
 
-                                {/* CUIT */}
-                                <div className="col-span-2 text-right font-mono text-slate-600 dark:text-slate-400 truncate">
+                                {/* CUIT (20%) */}
+                                <div className="w-[20%] shrink-0 text-right font-mono text-slate-600 dark:text-slate-400 truncate">
                                   {entity.cuit ? entity.cuit : <span className="text-slate-400">—</span>}
                                 </div>
                               </div>
@@ -1861,7 +1889,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
           </div>
 
           {/* Floating Action Button (FAB): Bottom Right Corner */}
-          {activeTab === 'expenses' ? (
+          {mode === 'gastos' || activeTab === 'expenses' ? (
             <div className="absolute right-5 bottom-5 z-20">
               {expenseSubTab === 'rubros_conceptos' ? (
                 <button
@@ -3339,12 +3367,13 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
               </motion.div>
             </div>
           )}
+        </AnimatePresence>
         {/* ========================================================= */}
         {/* MODAL 1: NUEVA / EDITAR ENTIDAD                           */}
         {/* ========================================================= */}
         <AnimatePresence>
           {isEntityModalOpen && (
-            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+            <div className="fixed inset-0 z-[80] flex items-center justify-center p-3 sm:p-4">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -3357,197 +3386,201 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                 animate={{ opacity: 1, scale: 1 }}
                 exit={{ opacity: 0, scale: 0.95 }}
                 onClick={(e) => e.stopPropagation()}
-                className="relative w-full max-w-md max-h-[90vh] bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 z-10 flex flex-col overflow-hidden"
+                className="relative max-w-md w-full p-4 rounded-3xl space-y-2.5 bg-white dark:bg-slate-900 shadow-2xl border border-slate-200 dark:border-slate-800 z-10"
               >
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-                  <h3 className="text-base font-black text-slate-900 dark:text-white">
+                {/* 1. Cabecera compacta */}
+                <div className="flex items-center justify-between pb-1.5 border-b border-slate-100 dark:border-slate-800">
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-white">
                     {entityModalMode === 'create' ? 'Nueva entidad' : 'Editar entidad'}
                   </h3>
-                  <button
-                    type="button"
-                    onClick={() => setIsEntityModalOpen(false)}
-                    className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
-                  >
-                    <X size={18} />
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {entityModalMode === 'edit' && entityForm.id && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteEntity(entityForm.id!)}
+                        className="p-1.5 text-slate-400 hover:text-red-500 dark:hover:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer transition-colors"
+                        title="Eliminar entidad"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsEntityModalOpen(false)}
+                      className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
+                    >
+                      <X size={17} />
+                    </button>
+                  </div>
                 </div>
 
-                <form onSubmit={handleSaveEntityForm} className="space-y-3.5 overflow-y-auto py-3">
-                  {entityFormError && (
-                    <div className="p-3 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 rounded-xl text-xs flex items-center gap-2">
-                      <AlertCircle size={16} className="shrink-0" />
-                      <span>{entityFormError}</span>
-                    </div>
-                  )}
+                {entityFormError && (
+                  <div className="py-1 px-2.5 bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 rounded-xl text-[11px] font-bold flex items-center gap-1.5">
+                    <AlertCircle size={14} className="shrink-0" />
+                    <span className="truncate">{entityFormError}</span>
+                  </div>
+                )}
 
-                  {/* Nombre * */}
+                <form onSubmit={handleSaveEntityForm} className="space-y-2.5">
+                  {/* Fila 1 — Nombre * (izquierda) y CUIT / CUIL (derecha) */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-0.5 block">
+                        Nombre *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ej. EDENOR"
+                        value={entityForm.name}
+                        onChange={(e) => setEntityForm({ ...entityForm, name: e.target.value })}
+                        className="w-full h-8.5 px-2.5 py-1 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-0.5 block">
+                        CUIT / CUIL
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="30-00000000-0"
+                        value={entityForm.cuit}
+                        onChange={(e) => setEntityForm({ ...entityForm, cuit: e.target.value })}
+                        className="w-full h-8.5 px-2.5 py-1 text-xs font-mono rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Fila 2 — Dirección ocupando todo el ancho */}
                   <div>
-                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                      Nombre de la entidad *
+                    <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-0.5 block">
+                      Dirección / Ubicación
                     </label>
                     <input
                       type="text"
-                      required
-                      placeholder="Ej. Distribuidora Quilmes, Edesur, Juan Pérez"
-                      value={entityForm.name}
-                      onChange={(e) => setEntityForm({ ...entityForm, name: e.target.value })}
-                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                      placeholder="Calle, número, localidad..."
+                      value={entityForm.location}
+                      onChange={(e) => setEntityForm({ ...entityForm, location: e.target.value })}
+                      className="w-full h-8.5 px-2.5 py-1 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-emerald-500"
                     />
                   </div>
 
-                  {/* Tipo * (5 opciones con colores) */}
+                  {/* Fila 3 — Teléfono (izquierda) y Correo (derecha) */}
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-0.5 block">
+                        Teléfono
+                      </label>
+                      <input
+                        type="tel"
+                        placeholder="11 2345-6789"
+                        value={entityForm.phone}
+                        onChange={(e) => setEntityForm({ ...entityForm, phone: e.target.value })}
+                        className="w-full h-8.5 px-2.5 py-1 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-0.5 block">
+                        Correo
+                      </label>
+                      <input
+                        type="email"
+                        placeholder="correo@entidad.com"
+                        value={entityForm.email}
+                        onChange={(e) => setEntityForm({ ...entityForm, email: e.target.value })}
+                        className="w-full h-8.5 px-2.5 py-1 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-emerald-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Fila 4 — Tipo * con los 5 tipos en UNA SOLA LÍNEA horizontal */}
                   <div>
-                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1.5">
+                    <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-0.5 block">
                       Tipo de entidad *
                     </label>
-                    <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5">
-                      {(['Empresa', 'Sector Público', 'Persona', 'ONG', 'Otro'] as ExpenseEntityType[]).map((t) => {
-                        const isSelected = entityForm.type === t;
+                    <div className="grid grid-cols-5 gap-1">
+                      {([
+                        { type: 'Empresa', label: 'Empresa', activeClass: 'bg-[#2563eb] text-white shadow-2xs' },
+                        { type: 'Sector Público', label: 'S. Público', activeClass: 'bg-[#eab308] text-slate-900 shadow-2xs' },
+                        { type: 'Persona', label: 'Persona', activeClass: 'bg-[#cbd5e1] text-slate-800 shadow-2xs' },
+                        { type: 'ONG', label: 'ONG', activeClass: 'bg-[#9333ea] text-white shadow-2xs' },
+                        { type: 'Otro', label: 'Otro', activeClass: 'bg-[#ef4444] text-white shadow-2xs' }
+                      ] as { type: ExpenseEntityType; label: string; activeClass: string }[]).map((t) => {
+                        const isSelected = entityForm.type === t.type;
                         return (
                           <button
-                            key={`entity-type-btn-${t}`}
+                            key={`compact-entity-type-${t.type}`}
                             type="button"
-                            onClick={() => setEntityForm({ ...entityForm, type: t })}
+                            onClick={() => setEntityForm({ ...entityForm, type: t.type })}
                             className={cn(
-                              "py-1.5 px-1.5 rounded-xl text-[11px] font-bold transition-all cursor-pointer border text-center truncate",
+                              "py-1.5 px-1 rounded-lg text-[10px] sm:text-[11px] font-bold text-center truncate whitespace-nowrap transition-all cursor-pointer",
                               isSelected
-                                ? `${getEntityTypeBadgeClass(t)} border-transparent shadow-xs scale-102`
-                                : "bg-slate-50 dark:bg-slate-800 text-slate-600 dark:text-slate-400 border-slate-200 dark:border-slate-700 hover:bg-slate-100"
+                                ? t.activeClass
+                                : "bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
                             )}
                           >
-                            {t}
+                            {t.label}
                           </button>
                         );
                       })}
                     </div>
                   </div>
 
-                  {/* CUIT / CUIL & Teléfono */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                        CUIT / CUIL
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ej. 30-12345678-9"
-                        value={entityForm.cuit}
-                        onChange={(e) => setEntityForm({ ...entityForm, cuit: e.target.value })}
-                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                        Teléfono (WhatsApp)
-                      </label>
-                      <input
-                        type="tel"
-                        placeholder="Ej. 11 3803-2662"
-                        value={entityForm.phone}
-                        onChange={(e) => setEntityForm({ ...entityForm, phone: e.target.value })}
-                        className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Correo */}
+                  {/* Fila 5 — Observaciones (compacto en 1 línea) */}
                   <div>
-                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                      Correo electrónico
-                    </label>
-                    <input
-                      type="email"
-                      placeholder="Ej. contacto@empresa.com"
-                      value={entityForm.email}
-                      onChange={(e) => setEntityForm({ ...entityForm, email: e.target.value })}
-                      className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                    />
-                  </div>
-
-                  {/* Ubicación */}
-                  <div>
-                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                      Ubicación / Dirección
+                    <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 mb-0.5 block">
+                      Observaciones
                     </label>
                     <input
                       type="text"
-                      placeholder="Ej. Av. Corrientes 1234, CABA"
-                      value={entityForm.location}
-                      onChange={(e) => setEntityForm({ ...entityForm, location: e.target.value })}
-                      className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                    />
-                  </div>
-
-                  {/* Observaciones */}
-                  <div>
-                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                      Observaciones
-                    </label>
-                    <textarea
-                      rows={2}
-                      placeholder="Notas internas..."
+                      placeholder="Notas u observaciones opcionales..."
                       value={entityForm.notes}
                       onChange={(e) => setEntityForm({ ...entityForm, notes: e.target.value })}
-                      className="w-full px-3.5 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 resize-none"
+                      className="w-full h-8.5 px-2.5 py-1 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white outline-none focus:border-emerald-500"
                     />
                   </div>
 
-                  {/* Estado: Activa / Inactiva */}
-                  <div>
-                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                      Estado
-                    </label>
-                    <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
-                      <button
-                        type="button"
-                        onClick={() => setEntityForm({ ...entityForm, status: 'activo' })}
-                        className={cn(
-                          "py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer",
-                          entityForm.status === 'activo'
-                            ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs"
-                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
-                        )}
-                      >
-                        Activa
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEntityForm({ ...entityForm, status: 'inactivo' })}
-                        className={cn(
-                          "py-1.5 text-xs font-bold rounded-lg transition-all cursor-pointer",
-                          entityForm.status === 'inactivo'
-                            ? "bg-white dark:bg-slate-900 text-red-600 dark:text-red-400 shadow-xs"
-                            : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
-                        )}
-                      >
-                        Inactiva
-                      </button>
-                    </div>
+                  {/* Fila 6 — Botón Activo / Inactivo */}
+                  <div className="grid grid-cols-2 gap-1.5 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-xl h-8 items-center">
+                    <button
+                      type="button"
+                      onClick={() => setEntityForm({ ...entityForm, status: 'activo' })}
+                      className={cn(
+                        "h-7 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center",
+                        entityForm.status === 'activo'
+                          ? "bg-white dark:bg-slate-900 text-[#0BA70B] shadow-2xs"
+                          : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                      )}
+                    >
+                      Activo
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEntityForm({ ...entityForm, status: 'inactivo' })}
+                      className={cn(
+                        "h-7 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center",
+                        entityForm.status === 'inactivo'
+                          ? "bg-white dark:bg-slate-900 text-red-500 shadow-2xs"
+                          : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                      )}
+                    >
+                      Inactivo
+                    </button>
                   </div>
 
-                  {/* Actions */}
-                  <div className="flex items-center gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-                    {entityModalMode === 'edit' && entityForm.id && (
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteEntity(entityForm.id!)}
-                        className="p-2.5 rounded-xl bg-red-50 hover:bg-red-100 dark:bg-red-950/40 text-red-600 text-xs font-bold transition-colors cursor-pointer"
-                        title="Eliminar entidad"
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    )}
+                  {/* Fila 7 — Botones Cancelar y Guardar */}
+                  <div className="flex items-center gap-2 pt-1">
                     <button
                       type="button"
                       onClick={() => setIsEntityModalOpen(false)}
-                      className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer"
+                      className="h-9 flex-1 rounded-xl text-xs font-bold bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 transition-colors cursor-pointer"
                     >
                       Cancelar
                     </button>
                     <button
                       type="submit"
                       disabled={isSavingEntity}
-                      className="flex-1 py-2.5 rounded-xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white text-xs font-bold shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                      className="h-9 flex-1 rounded-xl text-xs font-bold bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white shadow-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
                     >
                       {isSavingEntity ? 'Guardando...' : (entityModalMode === 'create' ? 'Crear Entidad' : 'Guardar Cambios')}
                     </button>
@@ -3860,6 +3893,14 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                   className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-white px-2 py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer"
                                 >
                                   {rubro.status === 'inactivo' ? 'Activar' : 'Desactivar'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRubro(rubro)}
+                                  className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-red-400 rounded-lg hover:bg-red-50 dark:hover:bg-red-950/40 cursor-pointer transition-colors"
+                                  title="Eliminar rubro"
+                                >
+                                  <Trash2 size={14} />
                                 </button>
                               </div>
                             </>

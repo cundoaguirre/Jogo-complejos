@@ -7348,7 +7348,7 @@ function resolveFinanceRowDisplay(
 
     if (!title && cleanDetail) {
       title = cleanDetail;
-      const supplierOrResp = linkedOp?.supplierName || rawItem?.supplierName || linkedOp?.responsibleName || rawItem?.responsibleName;
+      const supplierOrResp = linkedOp?.entityName || rawItem?.entityName || linkedOp?.supplierName || rawItem?.supplierName || linkedOp?.responsibleName || rawItem?.responsibleName;
       if (supplierOrResp && typeof supplierOrResp === 'string' && supplierOrResp.trim() && supplierOrResp.toLowerCase() !== 'nn' && supplierOrResp.toLowerCase() !== 'cliente mostrador') {
         cleanDetail = supplierOrResp.trim();
       } else {
@@ -7362,7 +7362,7 @@ function resolveFinanceRowDisplay(
 
     let subtitle = cleanDetail;
     if (!subtitle || subtitle.toLowerCase() === title.toLowerCase()) {
-      const supplierOrResp = linkedOp?.supplierName || rawItem?.supplierName || linkedOp?.responsibleName || rawItem?.responsibleName;
+      const supplierOrResp = linkedOp?.entityName || rawItem?.entityName || linkedOp?.supplierName || rawItem?.supplierName || linkedOp?.responsibleName || rawItem?.responsibleName;
       if (supplierOrResp && typeof supplierOrResp === 'string' && supplierOrResp.trim() && supplierOrResp.toLowerCase() !== 'nn' && supplierOrResp.toLowerCase() !== 'cliente mostrador') {
         subtitle = supplierOrResp.trim();
       } else {
@@ -9490,8 +9490,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
   };
 
   const [isSaving, setIsSaving] = useState(false);
-  const [isMostradorOpen, setIsMostradorOpen] = useState(false);
-  const [mostradorMode, setMostradorMode] = useState<'mostrador' | 'gastos'>('mostrador');
+  const [mostradorSheetMode, setMostradorSheetMode] = useState<'mostrador' | 'gastos' | null>(null);
   const [courtMenuOpen, setCourtMenuOpen] = useState(false);
 
   // Formato del badge de deporte para las píldoras de canchas
@@ -9753,10 +9752,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
       <div className="grid grid-cols-2 gap-3 sm:gap-4 mt-4">
         <button
           type="button"
-          onClick={() => {
-            setMostradorMode('mostrador');
-            setIsMostradorOpen(true);
-          }}
+          onClick={() => setMostradorSheetMode('mostrador')}
           className="rounded-2xl border border-gray-200/90 dark:border-slate-700/80 bg-white dark:bg-slate-800 py-3.5 px-4 text-center font-bold text-sm text-slate-700 dark:text-slate-200 hover:bg-gray-50 dark:hover:bg-slate-750 transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-2"
         >
           Editar mostrador
@@ -9764,10 +9760,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
 
         <button
           type="button"
-          onClick={() => {
-            setMostradorMode('gastos');
-            setIsMostradorOpen(true);
-          }}
+          onClick={() => setMostradorSheetMode('gastos')}
           className="rounded-2xl border border-gray-200/90 dark:border-slate-700/80 bg-white dark:bg-slate-800 py-3.5 px-4 text-center font-bold text-sm text-slate-700 dark:text-slate-200 hover:bg-gray-50 dark:hover:bg-slate-750 transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-2"
         >
           Editar gastos
@@ -9776,10 +9769,10 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
 
       {/* Mostrador & Gastos Bottom Sheet */}
       <MostradorBottomSheet
-        isOpen={isMostradorOpen}
-        onClose={() => setIsMostradorOpen(false)}
+        isOpen={mostradorSheetMode !== null}
+        mode={mostradorSheetMode || 'mostrador'}
+        onClose={() => setMostradorSheetMode(null)}
         complexId={targetId}
-        mode={mostradorMode}
       />
 
       {/* Edit Info Modal */}

@@ -24,10 +24,11 @@ import {
   Flame,
   Wallet,
   Tag,
-  FileText
+  FileText,
+  Building2
 } from 'lucide-react';
 import { motion, AnimatePresence, Reorder } from 'framer-motion';
-import type { Product, User, ProductCategory, FinancialPaymentMethod } from '../types';
+import type { Product, User, ProductCategory, FinancialPaymentMethod, ExpenseEntity, ExpenseEntityType } from '../types';
 import { 
   subscribeToProducts, 
   subscribeToInventoryCategories, 
@@ -38,7 +39,9 @@ import {
   subscribeToExpenseItems,
   executeExpenseOperation,
   saveSupplierConceptInFirestore,
-  saveExpenseItemInFirestore
+  saveExpenseItemInFirestore,
+  subscribeToExpenseEntities,
+  saveExpenseEntityInFirestore
 } from '../lib/firestoreSync';
 import { usePOSCart } from './POSCartContext';
 import { playAddToCartSound, playCashRegisterSound } from '../lib/posAudio';
@@ -177,6 +180,26 @@ export const POSModal: React.FC<POSModalProps> = ({
   const [expenseSuccessMsg, setExpenseSuccessMsg] = useState(false);
   const [expenseErrorMsg, setExpenseErrorMsg] = useState<string | null>(null);
 
+  // 3-Dimension Expense Architecture: Entidades
+  const [expenseEntities, setExpenseEntities] = useState<ExpenseEntity[]>([]);
+  const [selectedExpenseEntity, setSelectedExpenseEntity] = useState<ExpenseEntity | null>(null);
+  const [isEntityPickerOpen, setIsEntityPickerOpen] = useState(false);
+  const [entitySearchText, setEntitySearchText] = useState('');
+  const [isQuickEntityModalOpen, setIsQuickEntityModalOpen] = useState(false);
+  const [quickEntityForm, setQuickEntityForm] = useState<{
+    name: string;
+    type: ExpenseEntityType;
+    phone: string;
+    cuit: string;
+  }>({
+    name: '',
+    type: 'Empresa',
+    phone: '',
+    cuit: ''
+  });
+  const [quickEntityError, setQuickEntityError] = useState<string | null>(null);
+  const [isSavingQuickEntity, setIsSavingQuickEntity] = useState(false);
+
   // Subscriptions to Firestore data
   useEffect(() => {
     if (!isOpen) return;
@@ -201,12 +224,17 @@ export const POSModal: React.FC<POSModalProps> = ({
       setExpenseItems(expIts);
     });
 
+    const unsubEntities = subscribeToExpenseEntities(targetId, (ents) => {
+      setExpenseEntities(ents);
+    });
+
     return () => {
       unsubProds();
       unsubCats();
       unsubClients();
       unsubExpCats();
       unsubExpItems();
+      unsubEntities();
     };
   }, [targetId, isOpen]);
 
@@ -591,6 +619,47 @@ export const POSModal: React.FC<POSModalProps> = ({
     return list;
   }, [expenseItems, expenseCategoryFilter, expenseSearchQuery]);
 
+  const activeExpenseEntities = useMemo(() => {
+    return expenseEntities.filter(e => e.status !== 'inactivo');
+  }, [expenseEntities]);
+
+  const filteredExpenseEntities = useMemo(() => {
+    const q = entitySearchText.toLowerCase().trim();
+    if (!q) return activeExpenseEntities;
+    return activeExpenseEntities.filter(e => 
+      e.name.toLowerCase().includes(q) ||
+      (e.cuit && e.cuit.includes(q)) ||
+      (e.phone && e.phone.includes(q))
+    );
+  }, [activeExpenseEntities, entitySearchText]);
+
+  const handleCreateQuickEntity = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickEntityForm.name.trim()) {
+      setQuickEntityError('El nombre de la entidad es obligatorio.');
+      return;
+    }
+    setIsSavingQuickEntity(true);
+    setQuickEntityError(null);
+    try {
+      const savedEntity = await saveExpenseEntityInFirestore(targetId, {
+        name: quickEntityForm.name.trim(),
+        type: quickEntityForm.type,
+        phone: quickEntityForm.phone.trim() || undefined,
+        cuit: quickEntityForm.cuit.trim() || undefined,
+        status: 'activo'
+      });
+      setSelectedExpenseEntity(savedEntity);
+      setIsQuickEntityModalOpen(false);
+      setIsEntityPickerOpen(false);
+      setQuickEntityForm({ name: '', type: 'Empresa', phone: '', cuit: '' });
+    } catch (err: any) {
+      setQuickEntityError(err?.message || 'Error al guardar entidad.');
+    } finally {
+      setIsSavingQuickEntity(false);
+    }
+  };
+
   // Paso 1 -> Paso 2: Validar concepto e importe y avanzar al pago
   const handleProceedExpenseToPayment = () => {
     setExpenseErrorMsg(null);
@@ -681,11 +750,14 @@ export const POSModal: React.FC<POSModalProps> = ({
         categoryId: selectedExpenseConcept?.categoryId,
         concept: conceptName,
         conceptId: finalConceptId,
-        supplierName: conceptName,
+        supplierName: selectedExpenseEntity ? selectedExpenseEntity.name : conceptName,
         amount: totalExpenseNum,
         payments: paidPayments,
         operatorId: auth.currentUser?.uid || 'administrador',
-        notes: expenseDescription.trim() || `Egreso registrado: ${conceptName}`
+        notes: expenseDescription.trim() || `Egreso registrado: ${conceptName}`,
+        entityId: selectedExpenseEntity?.id,
+        entityName: selectedExpenseEntity?.name,
+        entityType: selectedExpenseEntity?.type
       });
 
       playCashRegisterSound();
@@ -693,6 +765,7 @@ export const POSModal: React.FC<POSModalProps> = ({
       setExpenseAmount('');
       setExpenseDescription('');
       setSelectedExpenseConcept(null);
+      setSelectedExpenseEntity(null);
       setIsCustomConceptModalOpen(false);
       setExpenseStep(1);
       setCustomConceptForm({
@@ -947,7 +1020,7 @@ export const POSModal: React.FC<POSModalProps> = ({
                       </p>
                       <p className="text-[11px] text-gray-400 max-w-xs mx-auto">
                         {expenseItems.length === 0
-                          ? 'Configurá tus conceptos en Perfil → Editar mostrador → Gastos, o registrá uno puntual con el botón superior.'
+                          ? 'Configurá tus conceptos en Perfil → Editar gastos, o registrá uno puntual con el botón superior.'
                           : 'Probá seleccionando otro rubro o limpiá la búsqueda.'}
                       </p>
                     </div>
@@ -1198,6 +1271,73 @@ export const POSModal: React.FC<POSModalProps> = ({
                     <span>Asignado: ${totalAssignedExpensePayments.toLocaleString()}</span>
                     <span>Total: ${totalExpenseNum.toLocaleString()}</span>
                   </div>
+                </div>
+
+                {/* Selector de Entidad / Proveedor (Opcional - Arquitectura de 3 Dimensiones) */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs font-bold text-gray-600 dark:text-slate-300">
+                    <span className="flex items-center gap-1.5">
+                      <Building2 size={14} className="text-gray-400" />
+                      <span>Entidad (opcional)</span>
+                    </span>
+                    {!selectedExpenseEntity && (
+                      <button
+                        type="button"
+                        onClick={() => setIsEntityPickerOpen(true)}
+                        className="text-xs font-bold text-[#0BA70B] hover:underline cursor-pointer"
+                      >
+                        + Añadir entidad
+                      </button>
+                    )}
+                  </div>
+
+                  {selectedExpenseEntity ? (
+                    <div className="p-3 bg-white dark:bg-slate-800 rounded-2xl border border-gray-200 dark:border-slate-700 shadow-2xs flex items-center justify-between gap-2.5">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-xl bg-emerald-50 dark:bg-emerald-950/50 text-[#0BA70B] flex items-center justify-center shrink-0">
+                          <Building2 size={16} />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-xs sm:text-sm text-gray-900 dark:text-white truncate">
+                              {selectedExpenseEntity.name}
+                            </span>
+                            <span className={`px-2 py-0.2 rounded-full text-[10px] font-bold ${
+                              selectedExpenseEntity.type === 'Empresa' ? 'bg-[#2563eb] text-white' :
+                              selectedExpenseEntity.type === 'Sector Público' ? 'bg-[#eab308] text-slate-900' :
+                              selectedExpenseEntity.type === 'Persona' ? 'bg-[#e2e8f0] text-slate-700 dark:bg-slate-700 dark:text-slate-200' :
+                              selectedExpenseEntity.type === 'ONG' ? 'bg-[#9333ea] text-white' :
+                              'bg-[#ef4444] text-white'
+                            }`}>
+                              {selectedExpenseEntity.type}
+                            </span>
+                          </div>
+                          {(selectedExpenseEntity.cuit || selectedExpenseEntity.phone) && (
+                            <p className="text-[11px] text-gray-400 font-mono truncate mt-0.5">
+                              {[selectedExpenseEntity.cuit && `CUIT: ${selectedExpenseEntity.cuit}`, selectedExpenseEntity.phone && `Tel: ${selectedExpenseEntity.phone}`].filter(Boolean).join(' · ')}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedExpenseEntity(null)}
+                        className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg cursor-pointer transition-colors"
+                        title="Desvincular entidad"
+                      >
+                        <X size={16} />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setIsEntityPickerOpen(true)}
+                      className="w-full py-2.5 px-3 border border-dashed border-gray-300 dark:border-slate-700 hover:border-[#0BA70B] text-gray-500 dark:text-slate-400 hover:text-[#0BA70B] rounded-2xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer bg-gray-50/50 dark:bg-slate-800/40"
+                    >
+                      <Plus size={14} />
+                      <span>+ Añadir entidad (opcional)</span>
+                    </button>
+                  )}
                 </div>
 
                 {/* Atajos Rápidos */}
@@ -2250,6 +2390,257 @@ export const POSModal: React.FC<POSModalProps> = ({
               >
                 Aceptar y Cerrar
               </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* =================================================================== */}
+      {/* MODAL: SELECCIONAR ENTIDAD PARA EL GASTO (3 DIMENSIONES)            */}
+      {/* =================================================================== */}
+      <AnimatePresence>
+        {isEntityPickerOpen && (
+          <div 
+            className="fixed inset-0 z-[65] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+            onClick={() => {
+              setIsEntityPickerOpen(false);
+              setEntitySearchText('');
+            }}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-2xl border border-gray-100 dark:border-slate-800 w-full max-w-sm space-y-3.5 max-h-[85vh] flex flex-col"
+            >
+              <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800 shrink-0">
+                <div>
+                  <h4 className="font-black text-sm sm:text-base text-gray-900 dark:text-white flex items-center gap-2">
+                    <Building2 size={18} className="text-[#0BA70B]" />
+                    <span>Seleccionar Entidad</span>
+                  </h4>
+                  <p className="text-[11px] text-gray-400">
+                    Proveedor, empresa o persona asociada al gasto
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsEntityPickerOpen(false);
+                    setEntitySearchText('');
+                  }}
+                  className="p-1 text-gray-400 hover:text-gray-600 cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Buscador de Entidad */}
+              <div className="relative shrink-0">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Buscar por nombre, CUIT o teléfono..."
+                  value={entitySearchText}
+                  onChange={(e) => setEntitySearchText(e.target.value)}
+                  className="w-full h-9 pl-9 pr-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                  autoFocus
+                />
+              </div>
+
+              {/* Botón para dar de alta entidad rápida */}
+              <button
+                type="button"
+                onClick={() => {
+                  setQuickEntityForm({
+                    name: entitySearchText.trim(),
+                    type: 'Empresa',
+                    phone: '',
+                    cuit: ''
+                  });
+                  setQuickEntityError(null);
+                  setIsQuickEntityModalOpen(true);
+                }}
+                className="w-full py-2 px-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-[#0BA70B] hover:bg-emerald-100 transition-colors text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+              >
+                <Plus size={14} />
+                <span>+ Crear nueva entidad al vuelo</span>
+              </button>
+
+              {/* Lista de Entidades */}
+              <div className="flex-1 overflow-y-auto space-y-1.5 pr-0.5 divide-y divide-gray-100 dark:divide-slate-800">
+                {filteredExpenseEntities.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-gray-400">
+                    <p>No se encontraron entidades con "{entitySearchText}".</p>
+                  </div>
+                ) : (
+                  filteredExpenseEntities.map((ent) => {
+                    const isSelected = selectedExpenseEntity?.id === ent.id;
+                    return (
+                      <button
+                        key={`pick-ent-${ent.id}`}
+                        type="button"
+                        onClick={() => {
+                          setSelectedExpenseEntity(ent);
+                          setIsEntityPickerOpen(false);
+                          setEntitySearchText('');
+                        }}
+                        className={`w-full p-2.5 rounded-xl text-left transition-colors flex items-center justify-between cursor-pointer ${
+                          isSelected
+                            ? 'bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-100 font-bold'
+                            : 'hover:bg-gray-50 dark:hover:bg-slate-800 text-gray-800 dark:text-slate-200'
+                        }`}
+                      >
+                        <div className="min-w-0 pr-2">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-xs truncate">{ent.name}</span>
+                            <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-bold ${
+                              ent.type === 'Empresa' ? 'bg-[#2563eb] text-white' :
+                              ent.type === 'Sector Público' ? 'bg-[#eab308] text-slate-900' :
+                              ent.type === 'Persona' ? 'bg-[#e2e8f0] text-slate-700 dark:bg-slate-700 dark:text-slate-200' :
+                              ent.type === 'ONG' ? 'bg-[#9333ea] text-white' :
+                              'bg-[#ef4444] text-white'
+                            }`}>
+                              {ent.type}
+                            </span>
+                          </div>
+                          {(ent.cuit || ent.phone) && (
+                            <p className="text-[10px] text-gray-400 font-mono truncate mt-0.5">
+                              {[ent.cuit && `CUIT: ${ent.cuit}`, ent.phone && `Tel: ${ent.phone}`].filter(Boolean).join(' · ')}
+                            </p>
+                          )}
+                        </div>
+                        {isSelected && <Check size={16} className="text-[#0BA70B] shrink-0" />}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* =================================================================== */}
+      {/* MODAL: ALTA RÁPIDA DE ENTIDAD AL VUELO                              */}
+      {/* =================================================================== */}
+      <AnimatePresence>
+        {isQuickEntityModalOpen && (
+          <div 
+            className="fixed inset-0 z-[75] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+            onClick={() => setIsQuickEntityModalOpen(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-2xl border border-gray-100 dark:border-slate-800 w-full max-w-sm space-y-3.5"
+            >
+              <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
+                <h4 className="font-black text-sm sm:text-base text-gray-900 dark:text-white flex items-center gap-2">
+                  <Building2 size={18} className="text-[#0BA70B]" />
+                  <span>Nueva Entidad</span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setIsQuickEntityModalOpen(false)}
+                  className="p-1 text-gray-400 hover:text-gray-600 cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {quickEntityError && (
+                <div className="p-2.5 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-900 rounded-xl text-xs text-red-600 font-bold flex items-center gap-1.5">
+                  <AlertCircle size={14} className="shrink-0" />
+                  <span>{quickEntityError}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleCreateQuickEntity} className="space-y-3 text-xs">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                    Nombre o Razón Social *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Distribuidora Central SRL, Edenor..."
+                    value={quickEntityForm.name}
+                    onChange={(e) => setQuickEntityForm({ ...quickEntityForm, name: e.target.value })}
+                    className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                    autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                    Tipo de Entidad *
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['Empresa', 'Sector Público', 'Persona', 'ONG', 'Otro'] as ExpenseEntityType[]).map((t) => (
+                      <button
+                        key={`quick-type-${t}`}
+                        type="button"
+                        onClick={() => setQuickEntityForm({ ...quickEntityForm, type: t })}
+                        className={`py-1.5 px-2 rounded-xl text-xs font-bold transition-all truncate cursor-pointer ${
+                          quickEntityForm.type === t
+                            ? 'bg-[#0BA70B] text-white shadow-2xs'
+                            : 'bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300 hover:bg-gray-200'
+                        }`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                      Teléfono
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="11 2345-6789"
+                      value={quickEntityForm.phone}
+                      onChange={(e) => setQuickEntityForm({ ...quickEntityForm, phone: e.target.value })}
+                      className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                      CUIT / CUIL
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="30-12345678-9"
+                      value={quickEntityForm.cuit}
+                      onChange={(e) => setQuickEntityForm({ ...quickEntityForm, cuit: e.target.value })}
+                      className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-mono text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsQuickEntityModalOpen(false)}
+                    className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-slate-300 font-bold text-xs hover:bg-gray-100 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingQuickEntity || !quickEntityForm.name.trim()}
+                    className="flex-1 py-2.5 rounded-xl bg-[#0BA70B] hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs shadow-md transition-all cursor-pointer"
+                  >
+                    {isSavingQuickEntity ? 'Guardando...' : 'Guardar y Usar'}
+                  </button>
+                </div>
+              </form>
             </motion.div>
           </div>
         )}

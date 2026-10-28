@@ -17,10 +17,11 @@ import {
   ShoppingBag,
   ChevronRight,
   ChevronLeft,
-  ChevronDown
+  ChevronDown,
+  Building2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import type { Product, ProductCategory, FinancialPaymentMethod } from '../types';
+import type { Product, ProductCategory, FinancialPaymentMethod, ExpenseEntity, ExpenseEntityType } from '../types';
 import { 
   subscribeToInventoryCategories, 
   saveInventoryCategories, 
@@ -36,7 +37,9 @@ import {
   saveExpenseItemInFirestore,
   deleteExpenseItemInFirestore,
   toggleExpenseItemStatus,
-  seedDefaultExpenseCategoriesInFirestore
+  seedDefaultExpenseCategoriesInFirestore,
+  subscribeToExpenseEntities,
+  saveExpenseEntityInFirestore
 } from '../lib/firestoreSync';
 
 export interface CatalogInventorySectionProps {
@@ -105,8 +108,29 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
   const [purchaseConceptSearch, setPurchaseConceptSearch] = useState('');
   const [isPurchaseConceptDropdownOpen, setIsPurchaseConceptDropdownOpen] = useState(false);
 
+  // Selector de Entidad para Compra de Mercadería (Arquitectura de 3 Dimensiones)
+  const [expenseEntities, setExpenseEntities] = useState<ExpenseEntity[]>([]);
+  const [selectedPurchaseEntity, setSelectedPurchaseEntity] = useState<ExpenseEntity | null>(null);
+  const [purchaseEntitySearch, setPurchaseEntitySearch] = useState('');
+  const [isPurchaseEntityDropdownOpen, setIsPurchaseEntityDropdownOpen] = useState(false);
+  const [isQuickEntityModalOpen, setIsQuickEntityModalOpen] = useState(false);
+  const [quickEntityForm, setQuickEntityForm] = useState<{
+    name: string;
+    type: ExpenseEntityType;
+    phone: string;
+    cuit: string;
+  }>({
+    name: '',
+    type: 'Empresa',
+    phone: '',
+    cuit: ''
+  });
+  const [quickEntityError, setQuickEntityError] = useState<string | null>(null);
+  const [isSavingQuickEntity, setIsSavingQuickEntity] = useState(false);
+
   const rubroDropdownRef = useRef<HTMLDivElement>(null);
   const conceptDropdownRef = useRef<HTMLDivElement>(null);
+  const entityDropdownRef = useRef<HTMLDivElement>(null);
   const hasInitializedPurchaseRubroRef = useRef(false);
 
   // -------------------------------------------------------------
@@ -140,7 +164,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  // Suscripciones a Firestore en tiempo real para Ventas y Gastos
+  // Suscripciones a Firestore en tiempo real para Ventas, Gastos y Entidades
   useEffect(() => {
     const unsubCats = subscribeToInventoryCategories(targetId, (cats) => {
       setCategories(cats);
@@ -158,11 +182,16 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
       setExpenseConcepts(items);
     });
 
+    const unsubEntities = subscribeToExpenseEntities(targetId, (ents) => {
+      setExpenseEntities(ents);
+    });
+
     return () => {
       unsubCats();
       unsubProds();
       unsubExpCats();
       unsubExpItems();
+      unsubEntities();
     };
   }, [targetId]);
 
@@ -180,6 +209,9 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
       }
       if (conceptDropdownRef.current && !conceptDropdownRef.current.contains(e.target as Node)) {
         setIsPurchaseConceptDropdownOpen(false);
+      }
+      if (entityDropdownRef.current && !entityDropdownRef.current.contains(e.target as Node)) {
+        setIsPurchaseEntityDropdownOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -660,6 +692,9 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
     setSelectedPurchaseConcept(null);
     setPurchaseConceptSearch('');
     setIsPurchaseConceptDropdownOpen(false);
+    setSelectedPurchaseEntity(null);
+    setPurchaseEntitySearch('');
+    setIsPurchaseEntityDropdownOpen(false);
     setPurchasePayments([
       { id: `purch_p_${Date.now()}`, method: 'Efectivo', amount: cost * 10 > 0 ? cost * 10 : '' }
     ]);
@@ -797,11 +832,14 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
         quantity: qty,
         unitCost: cost,
         purchasePlace: finalPlace,
-        supplierId: selectedPurchaseConcept?.id,
+        supplierId: selectedPurchaseEntity?.id || selectedPurchaseConcept?.id,
         expenseCategoryId: selectedPurchaseRubro?.id,
         expenseCategoryName: finalRubroName,
         expenseConceptId: selectedPurchaseConcept?.id,
         expenseConceptName: finalConceptName,
+        entityId: selectedPurchaseEntity?.id,
+        entityName: selectedPurchaseEntity?.name,
+        entityType: selectedPurchaseEntity?.type,
         payments: paidPayments,
         operatorId: 'administrador',
         notes: purchaseNotes.trim() || undefined
@@ -810,11 +848,61 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
       setIsPurchaseModalOpen(false);
       setPurchaseStep(1);
       setSelectedProductForPurchase(null);
+      setSelectedPurchaseEntity(null);
     } catch (err: any) {
       console.error('Error registrando compra:', err);
       alert(err?.message || 'Error al registrar la compra.');
     } finally {
       setIsSubmittingPurchase(false);
+    }
+  };
+
+  const activeExpenseEntities = useMemo(() => {
+    return expenseEntities.filter(e => e.status !== 'inactivo');
+  }, [expenseEntities]);
+
+  const filteredPurchaseEntities = useMemo(() => {
+    const q = normalizeFilterText(purchaseEntitySearch);
+    if (!q) return activeExpenseEntities;
+    return activeExpenseEntities.filter(e => 
+      normalizeFilterText(e.name).includes(q) ||
+      (e.cuit && e.cuit.includes(q)) ||
+      (e.phone && e.phone.includes(q))
+    );
+  }, [activeExpenseEntities, purchaseEntitySearch]);
+
+  const handleSelectPurchaseEntity = (entity: ExpenseEntity) => {
+    setSelectedPurchaseEntity(entity);
+    setPurchaseEntitySearch(entity.name);
+    setIsPurchaseEntityDropdownOpen(false);
+  };
+
+  const handleCreateQuickEntityFromPurchase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!quickEntityForm.name.trim()) {
+      setQuickEntityError('El nombre es obligatorio.');
+      return;
+    }
+    setIsSavingQuickEntity(true);
+    setQuickEntityError(null);
+    try {
+      const cleanName = quickEntityForm.name.trim();
+      const savedEntity = await saveExpenseEntityInFirestore(targetId, {
+        name: cleanName,
+        type: quickEntityForm.type,
+        phone: quickEntityForm.phone.trim() || undefined,
+        cuit: quickEntityForm.cuit.trim() || undefined,
+        status: 'activo'
+      });
+      setSelectedPurchaseEntity(savedEntity);
+      setPurchaseEntitySearch(cleanName);
+      setIsQuickEntityModalOpen(false);
+      setIsPurchaseEntityDropdownOpen(false);
+      setQuickEntityForm({ name: '', type: 'Empresa', phone: '', cuit: '' });
+    } catch (err: any) {
+      setQuickEntityError(err?.message || 'Error al guardar entidad.');
+    } finally {
+      setIsSavingQuickEntity(false);
     }
   };
 
@@ -1441,6 +1529,122 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                       )}
                     </div>
 
+                    {/* 3ra Dimensión: Entidad / Proveedor (opcional) */}
+                    <div className="relative" ref={entityDropdownRef}>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                          <span>Entidad (opcional)</span>
+                          {selectedPurchaseEntity && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                              {selectedPurchaseEntity.type}
+                            </span>
+                          )}
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setQuickEntityForm({
+                              name: purchaseEntitySearch.trim(),
+                              type: 'Empresa',
+                              phone: '',
+                              cuit: ''
+                            });
+                            setQuickEntityError(null);
+                            setIsQuickEntityModalOpen(true);
+                          }}
+                          className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:text-emerald-800 flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
+                          title="Crear nueva entidad al vuelo"
+                        >
+                          <Plus size={12} className="stroke-[3]" />
+                          <span>+ Agregar entidad</span>
+                        </button>
+                      </div>
+
+                      <div className="relative">
+                        <input
+                          type="text"
+                          placeholder="Elegir o buscar «Entidad» (empresa, proveedor, persona)..."
+                          value={purchaseEntitySearch}
+                          onFocus={() => setIsPurchaseEntityDropdownOpen(true)}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setPurchaseEntitySearch(val);
+                            setIsPurchaseEntityDropdownOpen(true);
+                            if (!val) {
+                              setSelectedPurchaseEntity(null);
+                            }
+                          }}
+                          className="w-full h-9.5 pl-3 pr-8 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                        />
+                        {purchaseEntitySearch ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedPurchaseEntity(null);
+                              setPurchaseEntitySearch('');
+                            }}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 cursor-pointer"
+                          >
+                            <X size={13} />
+                          </button>
+                        ) : (
+                          <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                        )}
+                      </div>
+
+                      {/* Dropdown Entidades */}
+                      {isPurchaseEntityDropdownOpen && (
+                        <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-52 overflow-y-auto divide-y divide-gray-100 dark:divide-slate-700/50">
+                          {filteredPurchaseEntities.length > 0 ? (
+                            filteredPurchaseEntities.map((ent) => {
+                              const isSelected = selectedPurchaseEntity?.id === ent.id;
+                              return (
+                                <button
+                                  key={`purch-ent-${ent.id}`}
+                                  type="button"
+                                  onClick={() => handleSelectPurchaseEntity(ent)}
+                                  className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
+                                    isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-gray-700 dark:text-slate-200'
+                                  }`}
+                                >
+                                  <div className="min-w-0 pr-2">
+                                    <div className="truncate font-semibold">{ent.name}</div>
+                                    <div className="text-[10px] text-gray-400 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
+                                      <span className="px-1.5 py-0.2 rounded bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300">{ent.type}</span>
+                                      {ent.cuit && <span className="font-mono">{ent.cuit}</span>}
+                                      {ent.phone && <span>Tel: {ent.phone}</span>}
+                                    </div>
+                                  </div>
+                                  {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
+                                </button>
+                              );
+                            })
+                          ) : (
+                            <div className="p-3 text-center text-xs text-gray-400 dark:text-slate-400">
+                              <p className="mb-1.5">No se encontraron entidades con "{purchaseEntitySearch}".</p>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setQuickEntityForm({
+                                    name: purchaseEntitySearch.trim(),
+                                    type: 'Empresa',
+                                    phone: '',
+                                    cuit: ''
+                                  });
+                                  setQuickEntityError(null);
+                                  setIsQuickEntityModalOpen(true);
+                                }}
+                                className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
+                              >
+                                <Plus size={12} />
+                                <span>Crear "{purchaseEntitySearch || 'nueva'}" como Entidad</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
                     {/* Nota / Factura */}
                     <div>
                       <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
@@ -1511,6 +1715,11 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                         {(selectedPurchaseRubro?.name || purchaseRubroSearch.trim()) && (
                           <span className="ml-1 text-[10px] text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/70 px-1.5 py-0.5 rounded-md font-semibold">
                             {selectedPurchaseRubro?.name || purchaseRubroSearch.trim()}
+                          </span>
+                        )}
+                        {selectedPurchaseEntity && (
+                          <span className="ml-1 text-[10px] text-blue-700 dark:text-blue-400 bg-blue-100 dark:bg-blue-950/70 px-1.5 py-0.5 rounded-md font-semibold">
+                            {selectedPurchaseEntity.name}
                           </span>
                         )}
                       </span>
@@ -2615,6 +2824,130 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
               </div>
             )}
           </AnimatePresence>
+
+      {/* ========================================================================= */}
+      {/* MODAL: ALTA RÁPIDA DE ENTIDAD (COMPRA DE MERCADERÍA)                       */}
+      {/* ========================================================================= */}
+      <AnimatePresence>
+        {isQuickEntityModalOpen && (
+          <div 
+            className="fixed inset-0 z-[95] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+            onClick={() => setIsQuickEntityModalOpen(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white dark:bg-slate-900 rounded-3xl p-5 shadow-2xl border border-gray-100 dark:border-slate-800 w-full max-w-sm space-y-3.5"
+            >
+              <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
+                <h4 className="font-black text-sm sm:text-base text-gray-900 dark:text-white flex items-center gap-2">
+                  <Building2 size={18} className="text-[#0BA70B]" />
+                  <span>Nueva Entidad</span>
+                </h4>
+                <button
+                  type="button"
+                  onClick={() => setIsQuickEntityModalOpen(false)}
+                  className="p-1 text-gray-400 hover:text-gray-600 cursor-pointer"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {quickEntityError && (
+                <div className="p-2.5 bg-red-50 dark:bg-red-950/50 border border-red-200 dark:border-red-900 rounded-xl text-xs text-red-600 font-bold flex items-center gap-1.5">
+                  <AlertTriangle size={14} className="shrink-0" />
+                  <span>{quickEntityError}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleCreateQuickEntityFromPurchase} className="space-y-3 text-xs">
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                    Nombre o Razón Social *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="Ej. Distribuidora Quilmes SRL, Mayorista Sur..."
+                    value={quickEntityForm.name}
+                    onChange={(e) => setQuickEntityForm({ ...quickEntityForm, name: e.target.value })}
+                    className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                    autoFocus
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                    Tipo de Entidad *
+                  </label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {(['Empresa', 'Sector Público', 'Persona', 'ONG', 'Otro'] as ExpenseEntityType[]).map((t) => (
+                      <button
+                        key={`quick-purch-type-${t}`}
+                        type="button"
+                        onClick={() => setQuickEntityForm({ ...quickEntityForm, type: t })}
+                        className={`py-1.5 px-2 rounded-xl text-xs font-bold transition-all truncate cursor-pointer ${
+                          quickEntityForm.type === t
+                            ? 'bg-[#0BA70B] text-white shadow-2xs'
+                            : 'bg-gray-100 dark:bg-slate-800 text-gray-700 dark:text-slate-300 hover:bg-gray-200'
+                        }`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                      Teléfono
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="11 2345-6789"
+                      value={quickEntityForm.phone}
+                      onChange={(e) => setQuickEntityForm({ ...quickEntityForm, phone: e.target.value })}
+                      className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                      CUIT / CUIL
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="30-12345678-9"
+                      value={quickEntityForm.cuit}
+                      onChange={(e) => setQuickEntityForm({ ...quickEntityForm, cuit: e.target.value })}
+                      className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-mono text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                    />
+                  </div>
+                </div>
+
+                <div className="pt-2 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsQuickEntityModalOpen(false)}
+                    className="flex-1 py-2.5 rounded-xl border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-slate-300 font-bold text-xs hover:bg-gray-100 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSavingQuickEntity || !quickEntityForm.name.trim()}
+                    className="flex-1 py-2.5 rounded-xl bg-[#0BA70B] hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs shadow-md transition-all cursor-pointer"
+                  >
+                    {isSavingQuickEntity ? 'Guardando...' : 'Guardar y Usar'}
+                  </button>
+                </div>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

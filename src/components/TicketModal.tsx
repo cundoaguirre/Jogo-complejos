@@ -221,6 +221,9 @@ export const TicketModal: React.FC<TicketModalProps> = ({
       `Fecha: ${safeFormatDate(emissionDate, "dd/MM/yyyy HH:mm", { locale: es })}\n` +
       `Tipo: ${operationTypeLabel}\n` +
       `Cliente: ${displayClientName}${displayPhone ? ` (${displayPhone})` : ''}\n` +
+      (operation?.entityName ? `Entidad: ${operation.entityName}${operation.entityType ? ` (${operation.entityType})` : ''}\n` : '') +
+      (operation?.expenseCategoryName ? `Rubro: ${operation.expenseCategoryName}\n` : '') +
+      (operation?.expenseConceptName ? `Concepto: ${operation.expenseConceptName}\n` : '') +
       `-------------------------\n` +
       `Total: $${totalContractual.toLocaleString()}\n` +
       `Cobrado: $${totalCollected.toLocaleString()}\n` +
@@ -399,6 +402,31 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                 <div className="flex justify-between items-center">
                   <span className="text-gray-500 dark:text-slate-400">Teléfono:</span>
                   <span className="font-medium text-gray-700 dark:text-slate-300">{displayPhone}</span>
+                </div>
+              )}
+              {operation?.entityName && (
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 dark:text-slate-400">Entidad:</span>
+                  <span className="font-bold text-gray-900 dark:text-white flex items-center gap-1.5">
+                    <span>{operation.entityName}</span>
+                    {operation.entityType && (
+                      <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                        {operation.entityType}
+                      </span>
+                    )}
+                  </span>
+                </div>
+              )}
+              {operation?.expenseCategoryName && (
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 dark:text-slate-400">Rubro:</span>
+                  <span className="font-medium text-gray-700 dark:text-slate-300">{operation.expenseCategoryName}</span>
+                </div>
+              )}
+              {operation?.expenseConceptName && (
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-500 dark:text-slate-400">Concepto:</span>
+                  <span className="font-medium text-gray-700 dark:text-slate-300">{operation.expenseConceptName}</span>
                 </div>
               )}
             </div>

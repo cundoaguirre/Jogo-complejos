@@ -62,7 +62,7 @@ export const OPERATIONS_COLLECTION = 'operations';
 export const FINANCIAL_MOVEMENTS_COLLECTION = 'financial_movements';
 export const IDEMPOTENCY_COLLECTION = 'idempotency_keys';
 export const COMPLEX_COUNTERS_COLLECTION = 'complex_counters';
-export const EXPENSE_ENTITIES_COLLECTION = 'expense_entities';
+export const EXPENSE_ENTITIES_COLLECTION = 'categories';
 
 
 /**
@@ -2122,20 +2122,24 @@ export function subscribeToExpenseCategories(
     const list: ProductCategory[] = [];
     snap.forEach((d) => {
       const data = d.data();
-      list.push({
-        id: d.id,
-        complejoId: data.complejoId || targetId,
-        name: data.name || '',
-        description: data.description || '',
-        catalogType: 'expense',
-        status: data.status === 'inactivo' ? 'inactivo' : 'activo',
-        createdAt: data.createdAt,
-        updatedAt: data.updatedAt
-      });
+      if (data.catalogType === 'expense') {
+        list.push({
+          id: d.id,
+          complejoId: data.complejoId || targetId,
+          name: data.name || '',
+          description: data.description || '',
+          catalogType: 'expense',
+          status: data.status === 'inactivo' ? 'inactivo' : 'activo',
+          createdAt: data.createdAt,
+          updatedAt: data.updatedAt
+        });
+      }
     });
 
-    // Solo sembrar por primera vez si no existen rubros en Firestore y no se ha inicializado
-    if (list.length === 0 && !isSeeding && !seededComplexesTracker.has(targetId)) {
+    const isSeededLocally = typeof window !== 'undefined' && localStorage.getItem(`jogo_expense_rubros_seeded_${targetId}`) === 'true';
+
+    // Solo sembrar por primera vez si no existen rubros en Firestore y no se ha inicializado ni borrado previamente
+    if (list.length === 0 && !isSeeding && !seededComplexesTracker.has(targetId) && !isSeededLocally) {
       seededComplexesTracker.add(targetId);
       const counterRef = doc(db, COMPLEX_COUNTERS_COLLECTION, targetId);
       try {
@@ -2144,19 +2148,26 @@ export function subscribeToExpenseCategories(
         if (!alreadyInit) {
           isSeeding = true;
           const defaults = await seedDefaultExpenseCategoriesInFirestore(targetId);
+          if (typeof window !== 'undefined') {
+            localStorage.setItem(`jogo_expense_rubros_seeded_${targetId}`, 'true');
+          }
           cb(defaults);
           return;
         }
       } catch (seedErr) {
         console.warn('[Firestore] Error comprobando/sembrando rubros de gastos:', seedErr);
-        // Si no se pudo comprobar el contador pero la lista está vacía, sembrar directamente
-        try {
-          isSeeding = true;
-          const defaults = await seedDefaultExpenseCategoriesInFirestore(targetId);
-          cb(defaults);
-          return;
-        } catch (e) {
-          console.warn('[Firestore] Fallo al sembrar rubros directamente:', e);
+        if (!isSeededLocally) {
+          try {
+            isSeeding = true;
+            const defaults = await seedDefaultExpenseCategoriesInFirestore(targetId);
+            if (typeof window !== 'undefined') {
+              localStorage.setItem(`jogo_expense_rubros_seeded_${targetId}`, 'true');
+            }
+            cb(defaults);
+            return;
+          } catch (e) {
+            console.warn('[Firestore] Fallo al sembrar rubros directamente:', e);
+          }
         }
       } finally {
         isSeeding = false;
@@ -2248,7 +2259,16 @@ export async function deleteExpenseCategoryInFirestore(
 ): Promise<{ deleted: boolean; status: 'deleted' | 'inactivo' }> {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const catRef = doc(db, CATEGORIES_COLLECTION, categoryId);
-  
+
+  // Asegurar que no se vuelva a auto-sembrar si el usuario elimina un rubro
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(`jogo_expense_rubros_seeded_${targetId}`, 'true');
+    }
+    const counterRef = doc(db, COMPLEX_COUNTERS_COLLECTION, targetId);
+    setDoc(counterRef, { expenseCategoriesInitialized: true, complexId: targetId, complejoId: targetId }, { merge: true }).catch(() => {});
+  } catch (e) {}
+
   try {
     await deleteDoc(catRef);
     return { deleted: true, status: 'deleted' };
@@ -2408,26 +2428,25 @@ export async function toggleExpenseItemStatus(
 }
 
 /**
- * Escucha en tiempo real las entidades de gastos del complejo (/expense_entities)
+ * Escucha en tiempo real las entidades de gastos del complejo dentro de /categories con catalogType: 'entity'
  */
 export function subscribeToExpenseEntities(
   complexId: string,
   cb: (entities: ExpenseEntity[]) => void
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
-  const colRef = collection(db, EXPENSE_ENTITIES_COLLECTION);
-  const q = query(colRef);
+  const colRef = collection(db, CATEGORIES_COLLECTION);
+  const q = query(colRef, where('complejoId', '==', targetId));
 
   return onSnapshot(q, (snapshot) => {
     const list: ExpenseEntity[] = [];
     snapshot.forEach((d) => {
       const data = d.data();
-      const comp = data.complejoId || data.complexId;
-      if (!comp || isSameComplex(comp, targetId)) {
+      if (data.catalogType === 'entity') {
         list.push({
           id: d.id,
-          complejoId: comp || targetId,
-          complexId: comp || targetId,
+          complejoId: data.complejoId || targetId,
+          complexId: data.complexId || targetId,
           name: data.name || '',
           type: (data.type as ExpenseEntityType) || 'Otro',
           location: data.location || '',
@@ -2445,13 +2464,13 @@ export function subscribeToExpenseEntities(
     list.sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
     cb(list);
   }, (err) => {
-    console.warn('[Firestore] Error escuchando expense_entities:', err);
+    console.warn('[Firestore] Error escuchando expense entities:', err);
     cb([]);
   });
 }
 
 /**
- * Guarda o actualiza una entidad de gastos en Firestore con prevención de duplicados
+ * Guarda o actualiza una entidad de gastos en Firestore (/categories con catalogType: 'entity')
  */
 export async function saveExpenseEntityInFirestore(
   complexId: string,
@@ -2470,14 +2489,14 @@ export async function saveExpenseEntityInFirestore(
 
   const cleanCuit = (entity.cuit || '').replace(/\D/g, '');
 
-  // Chequeo de duplicados en la colección de entidades del complejo
-  const colRef = collection(db, EXPENSE_ENTITIES_COLLECTION);
-  const snap = await getDocs(colRef);
+  // Chequeo de duplicados en la colección categories con catalogType === 'entity'
+  const colRef = collection(db, CATEGORIES_COLLECTION);
+  const q = query(colRef, where('complejoId', '==', targetId));
+  const snap = await getDocs(q);
   for (const d of snap.docs) {
     if (entity.id && d.id === entity.id) continue;
     const data = d.data();
-    const comp = data.complejoId || data.complexId;
-    if (comp && !isSameComplex(comp, targetId)) continue;
+    if (data.catalogType !== 'entity') continue;
 
     // Verificar nombre
     if (data.name && normalize(data.name) === normalizedName) {
@@ -2500,6 +2519,7 @@ export async function saveExpenseEntityInFirestore(
   const payload: any = {
     complejoId: targetId,
     complexId: targetId,
+    catalogType: 'entity',
     name: cleanName,
     type: entity.type,
     location: entity.location?.trim() || '',
@@ -2542,7 +2562,7 @@ export async function toggleExpenseEntityStatus(
   currentStatus: 'activo' | 'inactivo'
 ): Promise<'activo' | 'inactivo'> {
   const nextStatus: 'activo' | 'inactivo' = currentStatus === 'activo' ? 'inactivo' : 'activo';
-  const ref = doc(db, EXPENSE_ENTITIES_COLLECTION, entityId);
+  const ref = doc(db, CATEGORIES_COLLECTION, entityId);
   await updateDoc(ref, {
     status: nextStatus,
     updatedAt: serverTimestamp()
@@ -2556,7 +2576,7 @@ export async function toggleExpenseEntityStatus(
 export async function deleteExpenseEntityInFirestore(
   entityId: string
 ): Promise<void> {
-  const ref = doc(db, EXPENSE_ENTITIES_COLLECTION, entityId);
+  const ref = doc(db, CATEGORIES_COLLECTION, entityId);
   await deleteDoc(ref);
 }
 
