@@ -6,7 +6,7 @@ import {
   ArrowLeft, ArrowRight, Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
   Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, ShoppingBasket, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, UserCheck, UserPlus, BarChart2, MoreVertical, MoreHorizontal, FileText, Download,
   MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle, AlertTriangle,
-  Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard, Info, Pencil, Footprints
+  Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard, Info, Pencil, Footprints, Share2
 } from 'lucide-react';
 import { format, differenceInDays, isSameDay, isSameWeek, isSameMonth, parseISO, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -459,17 +459,16 @@ const NewUserModal = ({
   isEdit = false, 
   existingUsers = [] 
 }: NewUserModalProps) => {
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
     email: '',
     address: '',
-    gender: '',
+    gender: initialData?.gender || 'hombre',
     acquisitionChannel: '',
-    category: 'jugador',
-    preferredFoot: '',
-    birthDate: '',
-    notes: ''
+    category: initialData?.category || 'jugador',
+    birthDate: ''
   });
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -481,17 +480,22 @@ const NewUserModal = ({
         phone: initialData?.phone || '',
         email: initialData?.email || '',
         address: initialData?.address || initialData?.city || '',
-        gender: initialData?.gender || '',
+        gender: initialData?.gender || 'hombre',
         acquisitionChannel: initialData?.acquisitionChannel || '',
         category: initialData?.category || 'jugador',
-        preferredFoot: initialData?.preferredFoot || '',
-        birthDate: initialData?.birthDate || '',
-        notes: initialData?.notes || ''
+        birthDate: initialData?.birthDate || ''
       });
       setError(null);
       setIsSubmitting(false);
+
+      if (!isEdit) {
+        const timer = setTimeout(() => {
+          nameInputRef.current?.focus();
+        }, 100);
+        return () => clearTimeout(timer);
+      }
     }
-  }, [isOpen, initialData]);
+  }, [isOpen, initialData, isEdit]);
 
   if (!isOpen) return null;
 
@@ -519,8 +523,6 @@ const NewUserModal = ({
       const duplicate = existingUsers.find(u => {
         if (currentId && String(u.id) === currentId) return false;
         if (u.isDerived || String(u.id).startsWith('derived_')) return false;
-        // Si el usuario que se edita ya tenía este mismo teléfono (ej. consolidando ficha derivada o tarjeta del jugador)
-        // y u.id coincide o es la ficha registrada local con ese teléfono, no es una colisión de cambio de número:
         if (initialNormPhone && initialNormPhone === normPhone && (
           (u.canonicalId && initialData?.canonicalId && u.canonicalId === initialData.canonicalId) || 
           (Array.isArray(u.historicalIds) && currentId && u.historicalIds.includes(currentId)) ||
@@ -544,12 +546,12 @@ const NewUserModal = ({
         email: formData.email.trim(),
         address: formData.address.trim(),
         city: formData.address.trim(), // Compatibilidad hacia atrás
-        gender: formData.gender,
+        gender: formData.gender || 'hombre',
         acquisitionChannel: formData.acquisitionChannel || 'WhatsApp',
         category: formData.category || 'jugador',
-        preferredFoot: formData.preferredFoot || '',
+        preferredFoot: '',
         birthDate: formData.birthDate || '',
-        notes: formData.notes.trim()
+        notes: ''
       });
       onClose();
     } catch (err: any) {
@@ -560,9 +562,14 @@ const NewUserModal = ({
     }
   };
 
+  const isHombre = (formData.gender || 'hombre').toLowerCase() === 'hombre' || (formData.gender || '').toLowerCase() === 'masculino';
+  const isMujer = (formData.gender || '').toLowerCase() === 'mujer' || (formData.gender || '').toLowerCase() === 'femenino';
+  const isCapitan = (formData.category || '').toLowerCase() === 'capitán' || (formData.category || '').toLowerCase() === 'capitan';
+  const isJugador = !isCapitan;
+
   return (
     <div 
-      className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4 pointer-events-auto"
+      className="fixed inset-0 bg-black/60 z-[80] flex items-center justify-center p-3 sm:p-4 pointer-events-auto"
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -573,12 +580,12 @@ const NewUserModal = ({
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[90vh] md:max-h-[85vh] pointer-events-auto"
+        className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[92vh] md:max-h-[85vh] border border-gray-100 dark:border-slate-800 pointer-events-auto"
       >
-        <div className="p-5 border-b border-gray-100 flex justify-between items-center shrink-0">
+        <div className="p-4 sm:p-5 border-b border-gray-100 dark:border-slate-800 flex justify-between items-center shrink-0">
           <div>
-            <h3 className="font-bold text-lg text-gray-900">{isEdit ? 'Editar perfil' : 'Nuevo Usuario'}</h3>
-            <p className="text-xs text-gray-500">{isEdit ? 'Modificar datos del jugador en la sede activa' : 'Alta de jugador o cliente para la sede activa'}</p>
+            <h3 className="font-bold text-base sm:text-lg text-gray-900 dark:text-white">{isEdit ? 'Editar perfil' : 'Nuevo Usuario'}</h3>
+            <p className="text-[11px] sm:text-xs text-gray-500 dark:text-gray-400">{isEdit ? 'Modificar datos del jugador en la sede activa' : 'Alta de jugador o cliente para la sede activa'}</p>
           </div>
           <button 
             type="button" 
@@ -587,160 +594,187 @@ const NewUserModal = ({
               e.stopPropagation();
               if (!isSubmitting) onClose();
             }} 
-            className="text-gray-400 hover:text-gray-600 cursor-pointer p-1"
+            className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 cursor-pointer p-1"
           >
-            <X size={20} />
+            <X size={18} />
           </button>
         </div>
 
-        <form id="new-user-form" onSubmit={handleSubmit} className="p-5 space-y-3.5 overflow-y-auto flex-1">
+        <form id="new-user-form" onSubmit={handleSubmit} className="p-3.5 sm:p-5 space-y-2 overflow-y-auto flex-1">
           {error && (
-            <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-center gap-2">
-              <AlertCircle size={16} className="shrink-0 text-red-600" />
+            <div className="p-2.5 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 text-red-700 dark:text-red-300 text-xs rounded-xl flex items-center gap-2">
+              <AlertCircle size={15} className="shrink-0 text-red-600 dark:text-red-400" />
               <span>{error}</span>
             </div>
           )}
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Nombre y Apellido *</label>
+          {/* Formulario fijo en 2 columnas sin importar pantalla */}
+          <div className="grid grid-cols-2 gap-2">
+            {/* Fila 1: Nombre y Apellido — Canal de Adquisición */}
+            <div className="relative flex items-center">
+              <UserIcon size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               <input 
+                ref={nameInputRef}
                 required
                 type="text" 
-                placeholder="Ej: Marcos Rojo"
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
+                placeholder="Nombre y apellido *"
+                autoFocus={false}
+                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#0BA70B] outline-none"
                 value={formData.name}
-                onChange={e => setFormData({...formData, name: e.target.value})}
+                onChange={e => setFormData({ ...formData, name: e.target.value })}
               />
             </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Teléfono *</label>
+
+            <div className="relative flex items-center">
+              <Share2 size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+              <select 
+                value={formData.acquisitionChannel}
+                onChange={e => setFormData({ ...formData, acquisitionChannel: e.target.value })}
+                className={cn(
+                  "w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium focus:ring-2 focus:ring-[#0BA70B] outline-none",
+                  !formData.acquisitionChannel ? "text-gray-400" : "text-gray-900 dark:text-white"
+                )}
+              >
+                <option value="" className="text-gray-400">Canal de adquisición</option>
+                <option value="WhatsApp" className="text-gray-900 dark:text-white">WhatsApp</option>
+                <option value="Referido" className="text-gray-900 dark:text-white">Referido</option>
+                <option value="Instagram (Ig)" className="text-gray-900 dark:text-white">Instagram (Ig)</option>
+                <option value="Facebook (Fb)" className="text-gray-900 dark:text-white">Facebook (Fb)</option>
+                <option value="TikTok" className="text-gray-900 dark:text-white">TikTok</option>
+                <option value="Inbound" className="text-gray-900 dark:text-white">Inbound</option>
+                <option value="Outbound" className="text-gray-900 dark:text-white">Outbound</option>
+                <option value="Evento" className="text-gray-900 dark:text-white">Evento</option>
+                <option value="Cliente Presencial" className="text-gray-900 dark:text-white">Cliente Presencial</option>
+              </select>
+            </div>
+
+            {/* Fila 2: Teléfono — Email */}
+            <div className="relative flex items-center">
+              <Phone size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               <input 
                 required
                 type="tel" 
-                placeholder="Ej: +54 9 11 9876-5432"
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
+                placeholder="Teléfono *"
+                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#0BA70B] outline-none"
                 value={formData.phone}
-                onChange={e => setFormData({...formData, phone: e.target.value})}
+                onChange={e => setFormData({ ...formData, phone: e.target.value })}
               />
             </div>
-          </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Email <span className="text-gray-400 font-normal">(Opcional)</span></label>
+            <div className="relative flex items-center">
+              <Mail size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               <input 
                 type="email" 
-                placeholder="jugador@ejemplo.com"
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
+                placeholder="Email (opcional)"
+                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#0BA70B] outline-none"
                 value={formData.email}
-                onChange={e => setFormData({...formData, email: e.target.value})}
+                onChange={e => setFormData({ ...formData, email: e.target.value })}
               />
             </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Dirección <span className="text-gray-400 font-normal">(Opcional)</span></label>
+
+            {/* Fila 3: Género — Categoría */}
+            <div className="grid grid-cols-2 gap-1 p-0.5 bg-gray-100 dark:bg-slate-800 rounded-xl h-9 items-center">
+              <button
+                type="button"
+                onClick={() => setFormData(prev => ({ ...prev, gender: 'hombre' }))}
+                className={cn(
+                  "h-full rounded-lg text-xs transition-all flex items-center justify-center cursor-pointer",
+                  isHombre
+                    ? "bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-xs font-bold"
+                    : "text-gray-500 hover:text-gray-700 dark:text-gray-400 font-medium"
+                )}
+              >
+                Hombre
+              </button>
+              <button
+                type="button"
+                onClick={() => setFormData(prev => ({ ...prev, gender: 'mujer' }))}
+                className={cn(
+                  "h-full rounded-lg text-xs transition-all flex items-center justify-center cursor-pointer",
+                  isMujer
+                    ? "bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-xs font-bold"
+                    : "text-gray-500 hover:text-gray-700 dark:text-gray-400 font-medium"
+                )}
+              >
+                Mujer
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-1 p-0.5 bg-gray-100 dark:bg-slate-800 rounded-xl h-9 items-center">
+              <button
+                type="button"
+                onClick={() => setFormData(prev => ({ ...prev, category: 'jugador' }))}
+                className={cn(
+                  "h-full rounded-lg text-xs transition-all flex items-center justify-center cursor-pointer",
+                  isJugador
+                    ? "bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-xs font-bold"
+                    : "text-gray-500 hover:text-gray-700 dark:text-gray-400 font-medium"
+                )}
+              >
+                Jugador
+              </button>
+              <button
+                type="button"
+                onClick={() => setFormData(prev => ({ ...prev, category: 'capitán' }))}
+                className={cn(
+                  "h-full rounded-lg text-xs transition-all flex items-center justify-center cursor-pointer",
+                  isCapitan
+                    ? "bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-xs font-bold"
+                    : "text-gray-500 hover:text-gray-700 dark:text-gray-400 font-medium"
+                )}
+              >
+                Capitán
+              </button>
+            </div>
+
+            {/* Fila 4: Dirección — Fecha de nacimiento */}
+            <div className="relative flex items-center">
+              <MapPin size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               <input 
                 type="text" 
-                placeholder="Ej: Av. Mitre 1234, Quilmes"
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
+                placeholder="Dirección (opcional)"
+                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#0BA70B] outline-none"
                 value={formData.address}
-                onChange={e => setFormData({...formData, address: e.target.value})}
+                onChange={e => setFormData({ ...formData, address: e.target.value })}
               />
             </div>
-          </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Género</label>
-              <select 
-                value={formData.gender}
-                onChange={e => setFormData({...formData, gender: e.target.value})}
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
-              >
-                <option value="">Seleccionar género...</option>
-                <option value="masculino">Masculino</option>
-                <option value="femenino">Femenino</option>
-                <option value="mixto">Mixto</option>
-                <option value="otro">Otro</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Canal de Adquisición <span className="text-gray-400 font-normal">(Opcional)</span></label>
-              <select 
-                value={formData.acquisitionChannel}
-                onChange={e => setFormData({...formData, acquisitionChannel: e.target.value})}
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
-              >
-                <option value="">Seleccionar canal...</option>
-                <option value="WhatsApp">WhatsApp</option>
-                <option value="Referido">Referido</option>
-                <option value="Ig">Instagram (Ig)</option>
-                <option value="Fb">Facebook (Fb)</option>
-                <option value="Tiktok">TikTok</option>
-                <option value="inbound">Inbound</option>
-                <option value="outbound">Outbound</option>
-                <option value="Evento">Evento</option>
-                <option value="Cliente">Cliente Presencial</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Categoría</label>
-              <select 
-                value={formData.category}
-                onChange={e => setFormData({...formData, category: e.target.value})}
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
-              >
-                <option value="jugador">Jugador</option>
-                <option value="capitán">Capitán</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Pierna hábil</label>
-              <select 
-                value={formData.preferredFoot}
-                onChange={e => setFormData({...formData, preferredFoot: e.target.value})}
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium"
-              >
-                <option value="">Seleccionar pierna hábil...</option>
-                <option value="Diestro">Diestro</option>
-                <option value="Zurdo">Zurdo</option>
-                <option value="Ambidiestro">Ambidiestro</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Fecha de nacimiento <span className="text-gray-400 font-normal">(Opcional)</span></label>
+            <div className="relative flex items-center">
+              <Calendar size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+              {!formData.birthDate && (
+                <span className="absolute left-8 top-1/2 -translate-y-1/2 text-xs text-gray-400 pointer-events-none select-none">
+                  Fecha de nac.
+                </span>
+              )}
               <input 
                 type="date"
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50 font-medium text-gray-800"
+                className={cn(
+                  "w-full h-9 pl-8 pr-7 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium focus:ring-2 focus:ring-[#0BA70B] outline-none",
+                  !formData.birthDate ? "text-transparent" : "text-gray-900 dark:text-white"
+                )}
                 value={formData.birthDate}
-                onChange={e => setFormData({...formData, birthDate: e.target.value})}
+                onChange={e => setFormData({ ...formData, birthDate: e.target.value })}
               />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-gray-700 mb-1">Notas u Observaciones</label>
-              <input 
-                type="text"
-                placeholder="Notas operativas del jugador..."
-                value={formData.notes}
-                onChange={e => setFormData({...formData, notes: e.target.value})}
-                className="w-full px-3.5 py-2 rounded-xl border border-gray-200 focus:ring-2 focus:ring-emerald-500 outline-none text-sm bg-gray-50"
-              />
+              {formData.birthDate && (
+                <button 
+                  type="button" 
+                  onClick={() => setFormData(prev => ({ ...prev, birthDate: '' }))} 
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 p-1 cursor-pointer text-xs font-bold leading-none"
+                  title="Borrar fecha"
+                >
+                  ✕
+                </button>
+              )}
             </div>
           </div>
         </form>
 
-        <div className="p-4 border-t border-gray-100 flex justify-end gap-3 shrink-0">
+        <div className="p-3.5 sm:p-4 border-t border-gray-100 dark:border-slate-800 flex justify-end gap-2.5 shrink-0">
           <button 
             type="button" 
             onClick={onClose} 
             disabled={isSubmitting}
-            className="px-4 py-2 text-gray-600 hover:bg-gray-50 rounded-xl font-medium cursor-pointer disabled:opacity-50"
+            className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-800 rounded-xl font-medium cursor-pointer disabled:opacity-50 text-xs sm:text-sm"
           >
             Cancelar
           </button>
@@ -748,7 +782,7 @@ const NewUserModal = ({
             type="submit" 
             form="new-user-form" 
             disabled={!formData.name || !formData.phone || isSubmitting} 
-            className="px-5 py-2 bg-emerald-600 text-white rounded-xl font-bold hover:bg-emerald-700 disabled:opacity-50 cursor-pointer shadow-md shadow-emerald-900/10 flex items-center gap-2"
+            className="px-5 py-2 bg-[#0BA70B] text-white rounded-xl font-bold hover:bg-[#0BA70B]/90 disabled:opacity-50 cursor-pointer shadow-md shadow-emerald-900/10 flex items-center gap-2 text-xs sm:text-sm"
           >
             {isSubmitting ? 'Guardando...' : (isEdit ? 'Guardar cambios' : 'Guardar Usuario')}
           </button>
@@ -2766,12 +2800,12 @@ const CreateMatchModal = ({
   const [venue, setVenue] = useState<any>(null);
 
   // Desplegable de búsqueda de cliente
+  const userSearchInputRef = useRef<HTMLInputElement | null>(null);
   const [userSearch, setUserSearch] = useState('');
   const [isSelectUserOpen, setIsSelectUserOpen] = useState(false);
 
   // Modal anidado para + Nuevo Cliente
   const [isAddingNewUser, setIsAddingNewUser] = useState(false);
-  const [newUserForm, setNewUserForm] = useState({ name: '', phone: '', email: '', category: 'jugador' });
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -2872,7 +2906,15 @@ const CreateMatchModal = ({
       amount_paid: initialAmountPaid,
       notes: initialNotes
     });
-    setIsSelectUserOpen(false);
+    const isEditingExisting = Boolean(isRealMatch && initialData?.id);
+    if (!isEditingExisting) {
+      setIsSelectUserOpen(true);
+      setTimeout(() => {
+        userSearchInputRef.current?.focus();
+      }, 120);
+    } else {
+      setIsSelectUserOpen(false);
+    }
     setUserSearch('');
     setStep(1);
     if (initialAmountPaid > 0 && initialAmountPaid < courtPrice) {
@@ -3241,23 +3283,25 @@ const CreateMatchModal = ({
     }
   };
 
-  // Alta anidada de usuario sin desmontar el modal de reserva
-  const handleSaveNewUser = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newUserForm.name.trim() || !newUserForm.phone.trim()) return;
-
-    const newUserData = {
-      name: newUserForm.name.trim(),
-      phone: newUserForm.phone.trim(),
-      email: newUserForm.email.trim(),
-      category: newUserForm.category || 'jugador',
-      status: 'activo'
-    };
-
+  // Alta anidada de usuario usando NewUserModal sin desmontar el modal de reserva
+  const handleSaveFromNewUserModal = async (userData: any) => {
     let realUserId = '';
     if (onQuickAddUser) {
       try {
-        const res = await onQuickAddUser(newUserData);
+        const res = await onQuickAddUser({
+          name: userData.name,
+          phone: userData.phone,
+          email: userData.email,
+          address: userData.address,
+          city: userData.address,
+          gender: userData.gender,
+          acquisitionChannel: userData.acquisitionChannel || 'WhatsApp',
+          category: userData.category || 'jugador',
+          birthDate: userData.birthDate || '',
+          notes: '',
+          preferredFoot: '',
+          status: 'activo'
+        });
         if (res && typeof res === 'string') {
           realUserId = res;
         }
@@ -3273,13 +3317,12 @@ const CreateMatchModal = ({
       ...prev,
       host_id: assignedId,
       userId: assignedId,
-      clientName: newUserData.name,
-      clientPhone: newUserData.phone,
-      clientEmail: newUserData.email
+      clientName: userData.name,
+      clientPhone: userData.phone,
+      clientEmail: userData.email || ''
     }));
 
     setIsAddingNewUser(false);
-    setNewUserForm({ name: '', phone: '', email: '', category: 'jugador' });
   };
 
   const selectedUserName = users.find(u => String(u.id) === String(data.host_id))?.name || data.clientName;
@@ -3296,7 +3339,7 @@ const CreateMatchModal = ({
   return (
     <>
       <div 
-        className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 backdrop-blur-xs p-3 sm:p-4"
+        className="fixed inset-0 z-[70] flex flex-col justify-end bg-black/60 backdrop-blur-xs p-0 sm:p-4"
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -3304,24 +3347,23 @@ const CreateMatchModal = ({
         }}
       >
         <motion.div 
-          initial={{ opacity: 0, scale: 0.96 }}
-          animate={{ opacity: 1, scale: 1 }}
+          initial={{ y: '100%' }}
+          animate={{ y: 0 }}
+          exit={{ y: '100%' }}
+          transition={{ type: 'spring', damping: 28, stiffness: 300 }}
           onClick={(e) => e.stopPropagation()}
-          className="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl shadow-2xl p-4 sm:p-5 flex flex-col max-h-[92vh] border border-gray-100 dark:border-slate-800"
+          className="w-full max-w-lg rounded-t-[32px] sm:rounded-3xl bg-white dark:bg-slate-900 border-t border-x border-gray-100 dark:border-slate-800 shadow-2xl overflow-hidden mx-auto p-4 sm:p-5 pt-0 flex flex-col max-h-[92vh]"
         >
-          {/* Cabecera con indicador de 2 Pasos */}
+          {/* Barra gris de arrastre */}
+          <div className="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mt-3 mb-2 shrink-0" />
+
+          {/* Cabecera de Reserva */}
           <div className="pb-3 border-b border-gray-100 dark:border-slate-800 shrink-0 space-y-2">
             <div className="flex justify-between items-center">
               <div>
                 <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                  <span>{data.id ? 'Editar Reserva' : 'Nueva Reserva'}</span>
-                  <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-800/40">
-                    Paso {step} de 2
-                  </span>
+                  <span>{data.id ? 'Editar reserva' : 'Nueva reserva'}</span>
                 </h2>
-                <p className="text-[11px] text-gray-400">
-                  {step === 1 ? '1. Datos de cliente, fecha, horario y cancha' : '2. Registro de pagos y seña (idéntico a ventas)'}
-                </p>
               </div>
 
               <div className="flex items-center gap-1">
@@ -3349,31 +3391,39 @@ const CreateMatchModal = ({
               </div>
             </div>
 
-            {/* Selector de pasos visual */}
-            <div className="grid grid-cols-2 gap-1.5 p-1 bg-gray-100 dark:bg-slate-800 rounded-xl">
+            {/* Selector de pasos visual plano sin fondo de caja */}
+            <div className="grid grid-cols-2 gap-4 pt-1">
               <button
                 type="button"
                 onClick={() => setStep(1)}
-                className={cn(
-                  "py-1 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer",
-                  step === 1
-                    ? "bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-xs"
-                    : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
-                )}
+                className="cursor-pointer text-left flex flex-col items-center"
               >
-                <span>1. Datos del Turno</span>
+                <span className={cn(
+                  "text-xs sm:text-sm pb-1.5 block text-center transition-colors",
+                  step === 1 ? "font-extrabold text-gray-900 dark:text-white" : "font-bold text-gray-400"
+                )}>
+                  1. Datos del Turno
+                </span>
+                <div className={cn(
+                  "h-1 rounded-full w-full transition-all",
+                  step === 1 ? "bg-[#0BA70B]" : "bg-gray-200 dark:bg-slate-700"
+                )} />
               </button>
               <button
                 type="button"
                 onClick={handleProceedToPayment}
-                className={cn(
-                  "py-1 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer",
-                  step === 2
-                    ? "bg-white dark:bg-slate-700 text-emerald-600 dark:text-emerald-400 shadow-xs"
-                    : "text-gray-500 hover:text-gray-900 dark:hover:text-white"
-                )}
+                className="cursor-pointer text-left flex flex-col items-center"
               >
-                <span>2. Registrar Pago</span>
+                <span className={cn(
+                  "text-xs sm:text-sm pb-1.5 block text-center transition-colors",
+                  step === 2 ? "font-extrabold text-gray-900 dark:text-white" : "font-bold text-gray-400"
+                )}>
+                  2. Registrar Pago
+                </span>
+                <div className={cn(
+                  "h-1 rounded-full w-full transition-all",
+                  step === 2 ? "bg-[#0BA70B]" : "bg-gray-200 dark:bg-slate-700"
+                )} />
               </button>
             </div>
           </div>
@@ -3381,29 +3431,22 @@ const CreateMatchModal = ({
           {/* CUERPO DEL PASO 1: DATOS DEL TURNO */}
           {step === 1 ? (
             <div className="space-y-3 pt-3 overflow-y-auto pr-1 flex-1 text-xs sm:text-sm">
-              {/* 1. Cliente: Buscador con desplegable + Botón '+ Nuevo Cliente' */}
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider">
-                    Cliente *
-                  </label>
-                  <button 
-                    type="button"
-                    onClick={() => setIsAddingNewUser(true)}
-                    className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-md cursor-pointer border border-emerald-200/60 dark:border-emerald-800/40"
-                  >
-                    <Plus size={11} strokeWidth={2.5} />
-                    <span>Nuevo Cliente</span>
-                  </button>
-                </div>
-
-                <div className="relative">
+              {/* 1. Cliente: Buscador con botón '+ Nuevo Cliente' */}
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
                   <button
                     type="button"
-                    onClick={() => setIsSelectUserOpen(!isSelectUserOpen)}
-                    className="w-full h-9.5 px-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-left flex justify-between items-center focus:ring-2 focus:ring-emerald-500 outline-none cursor-pointer"
+                    onClick={() => {
+                      const next = !isSelectUserOpen;
+                      setIsSelectUserOpen(next);
+                      if (next) {
+                        setTimeout(() => userSearchInputRef.current?.focus(), 80);
+                      }
+                    }}
+                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-left flex justify-between items-center focus:ring-2 focus:ring-[#0BA70B] outline-none cursor-pointer relative"
                   >
-                    <span className={selectedUserName ? "text-gray-900 dark:text-white font-medium truncate" : "text-gray-400 truncate"}>
+                    <UserIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                    <span className={selectedUserName ? "text-gray-900 dark:text-white font-medium truncate text-xs sm:text-sm" : "text-gray-400 truncate text-xs sm:text-sm"}>
                       {selectedUserName || "Buscar o seleccionar cliente..."}
                     </span>
                     <ChevronDown size={15} className="text-gray-400 shrink-0 ml-1" />
@@ -3414,12 +3457,12 @@ const CreateMatchModal = ({
                       <div className="p-2 border-b border-gray-100 dark:border-slate-700 flex items-center bg-gray-50 dark:bg-slate-900/50">
                         <Search size={14} className="text-gray-400 ml-1 shrink-0" />
                         <input 
+                          ref={userSearchInputRef}
                           type="text"
                           placeholder="Buscar por nombre o teléfono..."
                           className="w-full px-2 py-1 bg-transparent outline-none text-xs text-gray-900 dark:text-white"
                           value={userSearch}
                           onChange={e => setUserSearch(e.target.value)}
-                          autoFocus
                         />
                       </div>
                       <div className="max-h-40 overflow-y-auto divide-y divide-gray-50 dark:divide-slate-700/50">
@@ -3447,7 +3490,7 @@ const CreateMatchModal = ({
                               <span className="font-semibold text-gray-900 dark:text-white truncate block">{u.name}</span>
                               {u.phone && <span className="text-[11px] text-gray-400 dark:text-slate-400 block">{u.phone}</span>}
                             </div>
-                            {String(data.host_id) === String(u.id) && <Check size={14} className="text-emerald-500 shrink-0" />}
+                            {String(data.host_id) === String(u.id) && <Check size={14} className="text-[#0BA70B] shrink-0" />}
                           </div>
                         ))}
                         {filteredUsers.length === 0 && (
@@ -3459,34 +3502,39 @@ const CreateMatchModal = ({
                     </div>
                   )}
                 </div>
+
+                <button 
+                  type="button"
+                  onClick={() => setIsAddingNewUser(true)}
+                  className="h-9.5 px-3 inline-flex items-center gap-1.5 text-xs font-bold text-[#0BA70B] bg-[#0BA70B]/10 hover:bg-[#0BA70B]/20 rounded-xl cursor-pointer border border-[#0BA70B]/30 shrink-0 transition-colors"
+                >
+                  <Plus size={13} strokeWidth={2.5} />
+                  <span>Nuevo Cliente</span>
+                </button>
               </div>
 
               {/* 2 & 3. Fecha y Hora */}
               <div className="grid grid-cols-2 gap-2.5">
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                    Fecha *
-                  </label>
+                <div className="relative flex items-center">
+                  <Calendar size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                   <input 
                     type="date" 
                     value={data.date || ''}
                     onChange={e => setData({ ...data, date: e.target.value })}
-                    className="w-full h-9.5 px-2.5 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500" 
+                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]" 
                   />
                 </div>
 
-                <div>
-                  <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                    Hora *
-                  </label>
+                <div className="relative flex items-center">
+                  <Clock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                   <select 
                     value={data.time || ''}
                     onChange={e => setData({ ...data, time: e.target.value })}
                     disabled={!data.date || displayHours.length === 0}
-                    className="w-full h-9.5 px-2 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500 disabled:opacity-50"
+                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B] disabled:opacity-50"
                   >
                     <option value="" disabled>
-                      {!data.date ? 'Elige fecha' : displayHours.length === 0 ? 'Sin horarios' : 'Seleccionar'}
+                      {!data.date ? 'Elige fecha' : displayHours.length === 0 ? 'Sin horarios' : 'Seleccionar horario...'}
                     </option>
                     {displayHours.map((time, tIdx) => (
                       <option key={`opt-time-${time}-${tIdx}`} value={time}>
@@ -3497,11 +3545,9 @@ const CreateMatchModal = ({
                 </div>
               </div>
 
-              {/* 4. Cancha: Desplegable con formato [Nombre de Cancha] - $[Precio] */}
-              <div>
-                <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                  Cancha *
-                </label>
+              {/* 4. Cancha */}
+              <div className="relative flex items-center">
+                <Trophy size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                 <select
                   value={data.court_id ? String(data.court_id) : ''}
                   onChange={e => {
@@ -3519,8 +3565,9 @@ const CreateMatchModal = ({
                       ]);
                     }
                   }}
-                  className="w-full h-9.5 px-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
                 >
+                  <option value="" disabled>Seleccionar cancha...</option>
                   {courts.map((court, cIdx) => {
                     const isOccupied = isCourtOccupiedForTime(court.id);
                     const isInactive = court.status === 'inactiva';
@@ -3537,25 +3584,23 @@ const CreateMatchModal = ({
                     );
                   })}
                 </select>
-                {data.court_id && isCourtOccupiedForTime(data.court_id) && (
-                  <p className="text-[11px] text-red-600 dark:text-red-400 font-bold mt-1.5 flex items-center gap-1">
-                    <AlertCircle size={13} className="shrink-0" />
-                    <span>Esta cancha ya está ocupada en el horario seleccionado. Elegí otra cancha o cambiá el horario.</span>
-                  </p>
-                )}
               </div>
+              {data.court_id && isCourtOccupiedForTime(data.court_id) && (
+                <p className="text-[11px] text-red-600 dark:text-red-400 font-bold mt-1.5 flex items-center gap-1">
+                  <AlertCircle size={13} className="shrink-0" />
+                  <span>Esta cancha ya está ocupada en el horario seleccionado. Elegí otra cancha o cambiá el horario.</span>
+                </p>
+              )}
 
               {/* 5. Notas u Observaciones */}
-              <div>
-                <label className="block text-[11px] font-bold text-gray-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                  Notas u Observaciones (opcional)
-                </label>
+              <div className="relative flex items-center">
+                <FileText size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                 <input 
                   type="text"
-                  placeholder="Observaciones de la reserva..."
+                  placeholder="Notas u observaciones (opcional)..."
                   value={data.notes || ''}
                   onChange={e => setData({ ...data, notes: e.target.value })}
-                  className="w-full h-8.5 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B] placeholder:text-gray-400"
                 />
               </div>
 
@@ -3833,85 +3878,14 @@ const CreateMatchModal = ({
         </motion.div>
       </div>
 
-      {/* 2.2. Modal Anidado '+ Nuevo Cliente' sobre la pantalla actual */}
+      {/* 2.2. Modal Anidado '+ Nuevo Cliente' usando NewUserModal sobre la pantalla actual */}
       {isAddingNewUser && (
-        <div 
-          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
-          onClick={() => setIsAddingNewUser(false)}
-        >
-          <motion.div 
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            onClick={(e) => e.stopPropagation()}
-            className="bg-white dark:bg-slate-900 rounded-2xl w-full max-w-sm shadow-2xl p-5 border border-gray-100 dark:border-slate-800 space-y-3.5"
-          >
-            <div className="flex justify-between items-center pb-2 border-b border-gray-100 dark:border-slate-800">
-              <h3 className="font-bold text-sm sm:text-base text-gray-900 dark:text-white">Nuevo Cliente</h3>
-              <button 
-                type="button" 
-                onClick={() => setIsAddingNewUser(false)}
-                className="text-gray-400 hover:text-gray-600 p-1 cursor-pointer"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveNewUser} className="space-y-3 text-xs sm:text-sm">
-              <div>
-                <label className="block text-[11px] font-bold text-gray-600 dark:text-slate-400 mb-1">Nombre y Apellido *</label>
-                <input 
-                  type="text" 
-                  required
-                  placeholder="Ej: Marcos Rojo"
-                  value={newUserForm.name}
-                  onChange={e => setNewUserForm({ ...newUserForm, name: e.target.value })}
-                  className="w-full h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-emerald-500 text-gray-900 dark:text-white"
-                  autoFocus
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-gray-600 dark:text-slate-400 mb-1">Teléfono *</label>
-                <input 
-                  type="tel" 
-                  required
-                  placeholder="Ej: 1122334455"
-                  value={newUserForm.phone}
-                  onChange={e => setNewUserForm({ ...newUserForm, phone: e.target.value })}
-                  className="w-full h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-emerald-500 text-gray-900 dark:text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-gray-600 dark:text-slate-400 mb-1">Email (Opcional)</label>
-                <input 
-                  type="email" 
-                  placeholder="cliente@email.com"
-                  value={newUserForm.email}
-                  onChange={e => setNewUserForm({ ...newUserForm, email: e.target.value })}
-                  className="w-full h-9 px-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs outline-none focus:ring-2 focus:ring-emerald-500 text-gray-900 dark:text-white"
-                />
-              </div>
-
-              <div className="flex gap-2 pt-2">
-                <button 
-                  type="button" 
-                  onClick={() => setIsAddingNewUser(false)}
-                  className="flex-1 py-2 rounded-xl text-xs font-bold text-gray-600 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 transition-colors cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  type="submit" 
-                  disabled={!newUserForm.name.trim() || !newUserForm.phone.trim()}
-                  className="flex-1 py-2 rounded-xl text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-xs disabled:opacity-50 cursor-pointer"
-                >
-                  Guardar Cliente
-                </button>
-              </div>
-            </form>
-          </motion.div>
-        </div>
+        <NewUserModal 
+          isOpen={isAddingNewUser}
+          existingUsers={users}
+          onClose={() => setIsAddingNewUser(false)}
+          onSave={handleSaveFromNewUserModal}
+        />
       )}
     </>
   );
@@ -7287,38 +7261,63 @@ function resolveFinanceRowDisplay(
   if (isPurchase) {
     const title = 'Compra de mercadería';
 
-    let subtitle = '';
-    const items = linkedOp?.items || rawItem?.originalDoc?.items || rawItem?.items;
-    if (Array.isArray(items) && items.length > 0) {
-      subtitle = items
-        .map(it => (it.quantity ? `${it.quantity}x ${it.name}` : it.name))
-        .join(', ');
-    }
+    // Subtítulo: Nombre de la Entidad / Lugar de compra seleccionado en la tarjeta de compra
+    const entityCandidates = [
+      linkedOp?.entityName,
+      rawItem?.entityName,
+      rawItem?.originalDoc?.entityName,
+      linkedOp?.supplierName,
+      rawItem?.supplierName,
+      rawItem?.originalDoc?.supplierName,
+      linkedOp?.metadata?.purchasePlace,
+      rawItem?.originalDoc?.metadata?.purchasePlace,
+      linkedOp?.supplier,
+      rawItem?.supplier
+    ];
 
-    if (!subtitle) {
-      const candidates = [
-        rawItem?.notes,
-        rawItem?.concept,
-        linkedOp?.notes,
-        linkedOp?.concept,
-        rawItem?.description
-      ].filter(Boolean) as string[];
-
-      for (const cand of candidates) {
-        const cleaned = cleanFinanceText(cand);
-        if (cleaned && cleaned.toLowerCase() !== 'compra de mercadería' && cleaned.toLowerCase() !== 'compra') {
-          subtitle = cleaned;
+    let entityName = '';
+    for (const cand of entityCandidates) {
+      if (cand && typeof cand === 'string' && cand.trim()) {
+        const trimmed = cand.trim();
+        const lower = trimmed.toLowerCase();
+        if (
+          lower !== '' &&
+          lower !== 'nn' &&
+          lower !== 'cliente mostrador' &&
+          lower !== 'compra de mercadería' &&
+          lower !== 'compra'
+        ) {
+          entityName = trimmed;
           break;
         }
       }
     }
 
-    if (!subtitle) {
-      const supplier = linkedOp?.supplierName || linkedOp?.supplier || rawItem?.supplierName || rawItem?.supplier;
-      if (supplier && typeof supplier === 'string' && supplier.trim()) {
-        subtitle = supplier.trim();
-      } else {
-        subtitle = 'Mercadería';
+    let subtitle = '';
+    if (entityName) {
+      subtitle = entityName;
+    } else {
+      // Si no se cargó ninguna entidad, mostrar la Categoría del producto comprado
+      const catCandidate =
+        linkedOp?.metadata?.category ||
+        rawItem?.originalDoc?.metadata?.category ||
+        linkedOp?.category ||
+        rawItem?.category;
+
+      if (catCandidate && typeof catCandidate === 'string' && catCandidate.trim()) {
+        const cleaned = cleanFinanceText(catCandidate);
+        if (cleaned && cleaned.toLowerCase() !== 'compra de mercadería' && cleaned.toLowerCase() !== 'compra') {
+          subtitle = cleaned;
+        }
+      }
+
+      if (!subtitle) {
+        const items = linkedOp?.items || rawItem?.originalDoc?.items || rawItem?.items;
+        if (Array.isArray(items) && items.length > 0 && items[0]?.name) {
+          subtitle = items[0].name;
+        } else {
+          subtitle = 'Mercadería';
+        }
       }
     }
 
@@ -7340,53 +7339,77 @@ function resolveFinanceRowDisplay(
   );
 
   if (isExpense) {
-    const specificCatCandidates = [
+    // Título: Rubro del gasto (si no tiene rubro, "Gasto")
+    const rubroCandidates = [
+      linkedOp?.metadata?.rubro,
       linkedOp?.metadata?.category,
-      linkedOp?.category,
+      rawItem?.originalDoc?.metadata?.rubro,
       rawItem?.originalDoc?.metadata?.category,
+      linkedOp?.category,
       rawItem?.category
-    ].filter(c => c && !isGenericExpenseCategory(c)) as string[];
+    ].filter(c => c && !isGenericExpenseCategory(c) && c !== 'expense_payment' && c !== 'Pago Gasto') as string[];
 
-    let title = specificCatCandidates[0] ? cleanFinanceText(specificCatCandidates[0]) : '';
+    let rubro = rubroCandidates[0] ? cleanFinanceText(rubroCandidates[0]) : '';
+    if (!rubro || rubro.toLowerCase() === 'gasto operativo') {
+      rubro = 'Gasto';
+    }
+    const title = rubro;
 
-    const detailCandidates = [
-      rawItem?.notes,
-      rawItem?.concept,
-      linkedOp?.notes,
-      linkedOp?.concept,
-      rawItem?.description
-    ].filter(Boolean) as string[];
+    // Subtítulo: Nombre de la Entidad seleccionada en la tarjeta del gasto. Si no se cargó ninguna entidad, mostrar la Categoría / Concepto del gasto.
+    const entityCandidates = [
+      linkedOp?.entityName,
+      rawItem?.entityName,
+      rawItem?.originalDoc?.entityName,
+      linkedOp?.supplierName,
+      rawItem?.supplierName,
+      rawItem?.originalDoc?.supplierName,
+      linkedOp?.responsibleName,
+      rawItem?.responsibleName
+    ];
 
-    let cleanDetail = '';
-    for (const d of detailCandidates) {
-      const cleaned = cleanFinanceText(d);
-      if (cleaned) {
-        cleanDetail = cleaned;
-        break;
+    let entityName = '';
+    for (const cand of entityCandidates) {
+      if (cand && typeof cand === 'string' && cand.trim()) {
+        const trimmed = cand.trim();
+        const lower = trimmed.toLowerCase();
+        if (
+          lower !== '' &&
+          lower !== 'nn' &&
+          lower !== 'cliente mostrador' &&
+          lower !== 'administrador' &&
+          lower !== 'pos_operator' &&
+          lower !== 'gasto operativo'
+        ) {
+          entityName = trimmed;
+          break;
+        }
       }
     }
 
-    if (!title && cleanDetail) {
-      title = cleanDetail;
-      const supplierOrResp = linkedOp?.entityName || rawItem?.entityName || linkedOp?.supplierName || rawItem?.supplierName || linkedOp?.responsibleName || rawItem?.responsibleName;
-      if (supplierOrResp && typeof supplierOrResp === 'string' && supplierOrResp.trim() && supplierOrResp.toLowerCase() !== 'nn' && supplierOrResp.toLowerCase() !== 'cliente mostrador') {
-        cleanDetail = supplierOrResp.trim();
-      } else {
-        cleanDetail = 'Gasto Operativo';
+    let subtitle = '';
+    if (entityName) {
+      subtitle = entityName;
+    } else {
+      const conceptCandidates = [
+        linkedOp?.concept,
+        rawItem?.concept,
+        rawItem?.originalDoc?.concept,
+        linkedOp?.notes,
+        rawItem?.notes,
+        rawItem?.originalDoc?.notes,
+        rawItem?.description,
+        linkedOp?.description
+      ].filter(Boolean) as string[];
+
+      for (const d of conceptCandidates) {
+        const cleaned = cleanFinanceText(d);
+        if (cleaned && cleaned.toLowerCase() !== 'gasto' && cleaned.toLowerCase() !== 'pago gasto') {
+          subtitle = cleaned;
+          break;
+        }
       }
-    }
-
-    if (!title) {
-      title = 'Gasto Operativo';
-    }
-
-    let subtitle = cleanDetail;
-    if (!subtitle || subtitle.toLowerCase() === title.toLowerCase()) {
-      const supplierOrResp = linkedOp?.entityName || rawItem?.entityName || linkedOp?.supplierName || rawItem?.supplierName || linkedOp?.responsibleName || rawItem?.responsibleName;
-      if (supplierOrResp && typeof supplierOrResp === 'string' && supplierOrResp.trim() && supplierOrResp.toLowerCase() !== 'nn' && supplierOrResp.toLowerCase() !== 'cliente mostrador') {
-        subtitle = supplierOrResp.trim();
-      } else {
-        subtitle = title !== 'Gasto Operativo' ? 'Gasto Operativo' : 'Servicios';
+      if (!subtitle) {
+        subtitle = 'Gasto General';
       }
     }
 
@@ -7442,13 +7465,24 @@ function formatTimelineGroupDate(d: Date): { key: string; label: string } {
   return { key: format(d, 'yyyy-MM-dd'), label: `${dayNum} ${capitalizedMonth}` };
 }
 
+function formatPaymentMethodName(method?: string): string {
+  if (!method) return 'Efectivo';
+  const m = method.toLowerCase().trim();
+  if (m === 'cash' || m.includes('efectivo')) return 'Efectivo';
+  if (m === 'transfer' || m.includes('transferencia') || m.includes('transf')) return 'Transferencia';
+  if (m === 'credit' || m.includes('tarjeta') || m.includes('crédito') || m.includes('credito') || m.includes('debito') || m.includes('débito')) return 'Tarjeta';
+  if (m === 'fiado' || m.includes('pendiente') || m === 'pending') return 'Pendiente';
+  return method.charAt(0).toUpperCase() + method.slice(1);
+}
+
 const FinanceView = ({ 
   complexId = 'complejo_central',
   bookings: parentBookings,
   courts: parentCourts,
   onNavigateToUserProfile,
   financePeriod = 'today',
-  onPeriodChange
+  onPeriodChange,
+  users: parentUsers
 }: { 
   complexId?: string;
   bookings?: any[];
@@ -7456,6 +7490,7 @@ const FinanceView = ({
   onNavigateToUserProfile?: (userId: string) => void;
   financePeriod?: FinancePeriod;
   onPeriodChange?: (period: FinancePeriod) => void;
+  users?: any[];
 }) => {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const targetIds = useMemo(() => {
@@ -7702,40 +7737,90 @@ const FinanceView = ({
     const processedMovOperationIds = new Set<string>();
 
     // 1.1 Movimientos reales de /financial_movements filtrados estrictamente por el complejo activo
-    financialMovements.forEach(m => {
+    // Agrupación visual por acto de pago (mismo operationId, mismo flow, diferencia temporal < 30s o mismo idempotencyKey base)
+    const filteredMovs = financialMovements.filter(m => {
       const c = m.complexId || m.complejoId;
-      if (c && !targetIds.includes(c)) return;
+      return !c || targetIds.includes(c);
+    });
 
-      if (m.operationId) processedMovOperationIds.add(m.operationId);
-      if (m.ticketCode) processedMovOperationIds.add(m.ticketCode);
-
+    const parsedMovs = filteredMovs.map(m => {
       const d = m.effectiveDate?.toDate 
         ? m.effectiveDate.toDate() 
         : (m.createdAt?.toDate ? m.createdAt.toDate() : (m.createdAt ? new Date(m.createdAt) : new Date()));
-      
-      const linkedDoc = (m.operationId ? operationsMap.get(m.operationId) : null) ||
-                        ((m as any).bookingId ? bookingsMap.get((m as any).bookingId) : null) ||
-                        (m.operationId ? bookingsMap.get(m.operationId) : null);
-      const resolvedName = resolveClientName(m, users, linkedDoc);
+      return { ...m, _parsedDate: d };
+    });
+
+    const movGroups: Array<{
+      items: typeof parsedMovs;
+      operationId: string | null;
+      flow: 'income' | 'expense';
+      date: Date;
+    }> = [];
+
+    parsedMovs.forEach(m => {
+      const mOpId = m.operationId ? String(m.operationId) : null;
+      const mBaseIdem = m.idempotencyKey ? String(m.idempotencyKey).replace(/_pay_\d+$/, '') : null;
+      const mTime = m._parsedDate.getTime();
+
+      let matchedGroup = movGroups.find(g => {
+        if (g.flow !== m.flow) return false;
+        if (mOpId && g.operationId && mOpId === g.operationId) {
+          const timeDiff = Math.abs(g.date.getTime() - mTime);
+          if (timeDiff < 30000) return true;
+          if (mBaseIdem && g.items.some(item => item.idempotencyKey && String(item.idempotencyKey).replace(/_pay_\d+$/, '') === mBaseIdem)) {
+            return true;
+          }
+        } else if (mBaseIdem && g.items.some(item => item.idempotencyKey && String(item.idempotencyKey).replace(/_pay_\d+$/, '') === mBaseIdem)) {
+          return true;
+        }
+        return false;
+      });
+
+      if (matchedGroup) {
+        matchedGroup.items.push(m);
+      } else {
+        movGroups.push({
+          items: [m],
+          operationId: mOpId,
+          flow: m.flow,
+          date: m._parsedDate
+        });
+      }
+    });
+
+    movGroups.forEach(g => {
+      const firstM = g.items[0];
+      if (firstM.operationId) processedMovOperationIds.add(firstM.operationId);
+      if (firstM.ticketCode) processedMovOperationIds.add(firstM.ticketCode);
+
+      const totalAmount = g.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+      const rawMethods = g.items.map(item => formatPaymentMethodName(item.paymentMethod));
+      const uniqueMethods = Array.from(new Set(rawMethods));
+      const combinedPaymentMethod = uniqueMethods.join(' + ') || 'Efectivo';
+
+      const linkedDoc = (firstM.operationId ? operationsMap.get(firstM.operationId) : null) ||
+                        ((firstM as any).bookingId ? bookingsMap.get((firstM as any).bookingId) : null) ||
+                        (firstM.operationId ? bookingsMap.get(firstM.operationId) : null);
+      const resolvedName = resolveClientName(firstM, users, linkedDoc);
 
       list.push({
-        id: m.id,
-        date: d,
-        flow: m.flow,
-        category: m.category === 'sale_collection' ? 'Cobro Venta Mostrador' :
-                  m.category === 'booking_deposit' ? 'Seña Alquiler Cancha' :
-                  m.category === 'booking_settlement' ? 'Liquidación Alquiler Cancha' :
-                  m.category === 'historical_debt_payment' ? 'Abono Deuda Histórica' :
-                  m.category === 'refund' ? 'Reintegro / Devolución' :
-                  m.category === 'expense_payment' ? 'Pago Gasto' : m.category,
-        amount: Number(m.amount || 0),
-        paymentMethod: m.paymentMethod,
+        id: firstM.id,
+        date: g.date,
+        flow: firstM.flow,
+        category: firstM.category === 'sale_collection' ? 'Cobro Venta Mostrador' :
+                  firstM.category === 'booking_deposit' ? 'Seña Alquiler Cancha' :
+                  firstM.category === 'booking_settlement' ? 'Liquidación Alquiler Cancha' :
+                  firstM.category === 'historical_debt_payment' ? 'Abono Deuda Histórica' :
+                  firstM.category === 'refund' ? 'Reintegro / Devolución' :
+                  firstM.category === 'expense_payment' ? 'Pago Gasto' : firstM.category,
+        amount: totalAmount,
+        paymentMethod: combinedPaymentMethod,
         responsibleName: resolvedName,
-        operationId: m.operationId,
-        bookingId: (m as any).bookingId,
-        ticketCode: m.ticketCode,
-        notes: m.notes,
-        originalDoc: m
+        operationId: firstM.operationId,
+        bookingId: (firstM as any).bookingId,
+        ticketCode: firstM.ticketCode,
+        notes: firstM.notes,
+        originalDoc: firstM
       });
     });
 
@@ -8449,6 +8534,8 @@ const FinanceView = ({
           subtitle: display.subtitle,
           amount: m.amount,
           amountPending: 0,
+          flow: m.flow,
+          isExpense: m.flow === 'expense',
           time: format(d, 'HH:mm'),
           onClick: () => {
             if (m.operationId) handleOpenTicketFromMovement(m.operationId);
@@ -8489,6 +8576,8 @@ const FinanceView = ({
           amount: op.contractualAmount,
           amountPending: op.amountPending,
           totalCollected: op.totalCollected,
+          flow: op.isExpense ? 'expense' : 'income',
+          isExpense: Boolean(op.isExpense),
           time: format(d, 'HH:mm'),
           onClick: () => {
             if (op.originalDoc) handleOpenTicket(op.originalDoc);
@@ -8812,12 +8901,26 @@ const FinanceView = ({
 
                         {/* Columna Derecha con Monto y Hora */}
                         <div className="text-right shrink-0">
-                          <div className={cn(
-                            "font-bold text-sm sm:text-base leading-tight",
-                            item.amountPending > 0 ? "text-red-600 dark:text-red-400" : "text-gray-600 dark:text-slate-200"
-                          )}>
-                            ${item.amount.toLocaleString('es-AR')}
-                          </div>
+                          {activeSection === 'movements' ? (
+                            item.flow === 'expense' ? (
+                              <div className="text-gray-900 dark:text-white font-mono font-black text-sm sm:text-base leading-tight">
+                                -${item.amount.toLocaleString('es-AR')}
+                              </div>
+                            ) : (
+                              <div className="text-emerald-600 dark:text-emerald-400 font-mono font-black text-sm sm:text-base leading-tight">
+                                +${item.amount.toLocaleString('es-AR')}
+                              </div>
+                            )
+                          ) : (
+                            <div className={cn(
+                              "font-mono font-black text-sm sm:text-base leading-tight",
+                              Number(item.amountPending || 0) > 0
+                                ? "text-red-600 dark:text-red-400"
+                                : "text-gray-900 dark:text-white"
+                            )}>
+                              {item.isExpense ? `-$${item.amount.toLocaleString('es-AR')}` : `$${item.amount.toLocaleString('es-AR')}`}
+                            </div>
+                          )}
                           <div className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">
                             {item.time}
                           </div>
@@ -8855,6 +8958,7 @@ const FinanceView = ({
         onClose={() => setIsPOSModalOpen(false)}
         complexId={targetId}
         onNavigateToUserProfile={onNavigateToUserProfile}
+        users={parentUsers || users}
       />
 
       {/* Modal de Ticket de Venta */}
@@ -11348,6 +11452,7 @@ export default function App() {
                   complexId={activeComplexId} 
                   bookings={activeBookings}
                   courts={courts}
+                  users={unifiedCrmUsers}
                   onNavigateToUserProfile={handleUserClick} 
                   financePeriod={financePeriod}
                   onPeriodChange={setFinancePeriod}
