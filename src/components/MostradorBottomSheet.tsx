@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
+import { motion, AnimatePresence, Reorder, useDragControls } from 'motion/react';
 import { 
   X, 
   Plus, 
@@ -29,7 +29,14 @@ import {
   Receipt,
   CheckCircle2,
   ChevronDown,
-  Wallet
+  Wallet,
+  Landmark,
+  CircleDollarSign,
+  History,
+  GripVertical,
+  RefreshCw,
+  User as UserIcon,
+  FileText
 } from 'lucide-react';
 import type { Product, ProductCategory, InventoryMovement, ProductBatch, FinancialPaymentMethod, ExpenseEntity, ExpenseEntityType } from '../types';
 import { 
@@ -592,8 +599,8 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
     setProductForm({
       name: '',
       categoryId: targetCat,
-      stock: 10,
-      purchasePrice: '',
+      stock: 0,
+      purchasePrice: 0,
       salePrice: '',
       status: 'activo'
     });
@@ -663,9 +670,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
       productForm.name.trim().length > 0 &&
       productForm.categoryId.trim().length > 0 &&
       productForm.salePrice !== '' &&
-      Number(productForm.salePrice) >= 0 &&
-      productForm.stock !== '' &&
-      Number(productForm.stock) >= 0
+      Number(productForm.salePrice) >= 0
     );
   }, [productForm]);
 
@@ -673,13 +678,20 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
     e.preventDefault();
     if (!isProductFormValid) return;
 
+    const finalStock = productModalMode === 'create'
+      ? 0
+      : (selectedProduct?.id === productForm.id ? selectedProduct.stock : Number(productForm.stock || 0));
+    const finalPurchasePrice = productModalMode === 'create'
+      ? 0
+      : Number(productForm.purchasePrice || selectedProduct?.purchasePrice || 0);
+
     const payload: Partial<Product> = {
       ...(productForm.id ? { id: productForm.id } : {}),
       name: productForm.name.trim(),
       categoryId: productForm.categoryId.trim(),
       categoryName: productForm.categoryId.trim(),
-      stock: Number(productForm.stock),
-      purchasePrice: Number(productForm.purchasePrice || 0),
+      stock: finalStock,
+      purchasePrice: finalPurchasePrice,
       salePrice: Number(productForm.salePrice),
       status: productForm.status
     };
@@ -695,7 +707,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
         id: savedId
       } as Product);
     }
-    showToast('Producto actualizado exitosamente');
+    showToast(productModalMode === 'create' ? 'Producto creado exitosamente' : 'Producto actualizado exitosamente');
   };
 
   // Handler for Confirm Purchase of Merchandise with unified mixed payments
@@ -735,6 +747,189 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
   }, [purchasePayments]);
 
   const amountPendingComputed = Math.max(0, totalPurchaseComputed - totalPaidComputed);
+
+  const hasPurchasePendingPayment = useMemo(() => {
+    return purchasePayments.some(p => p.method === 'Pendiente' && (Number(p.amount) || 0) > 0);
+  }, [purchasePayments]);
+
+  const isPurchaseEntityBlocked = hasPurchasePendingPayment && !selectedPurchaseEntity;
+  const canConfirmPurchase = totalPurchaseComputed > 0 && !isPurchaseFalta && !isPurchaseEntityBlocked;
+  const canFinalizePurchase = canConfirmPurchase;
+
+  // Estados para pantalla y sub-bottom sheet de pago de compras (idéntico a gastos/reservas/mostrador)
+  const [deletePurchaseMenuRowId, setDeletePurchaseMenuRowId] = useState<string | null>(null);
+  const [isPurchasePaymentSheetOpen, setIsPurchasePaymentSheetOpen] = useState(false);
+  const [editingPurchasePaymentIndex, setEditingPurchasePaymentIndex] = useState<number | null>(null);
+  const [orderedPurchaseMethods, setOrderedPurchaseMethods] = useState<string[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('jogo_payment_methods_order');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const normalized = parsed.map((m: string) =>
+              m === 'Fiado' ? 'Pendiente' : (m === 'Crédito' || m === 'Credito') ? 'Tarjeta' : m
+            );
+            const defs = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
+            defs.forEach(d => {
+              if (!normalized.includes(d)) normalized.push(d);
+            });
+            return Array.from(new Set(normalized));
+          }
+        }
+      } catch (e) {}
+    }
+    return ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
+  });
+
+  useEffect(() => {
+    const handleOrderChange = () => {
+      try {
+        const saved = localStorage.getItem('jogo_payment_methods_order');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const normalized = parsed.map((m: string) =>
+              m === 'Fiado' ? 'Pendiente' : (m === 'Crédito' || m === 'Credito') ? 'Tarjeta' : m
+            );
+            const defs = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
+            defs.forEach(d => {
+              if (!normalized.includes(d)) normalized.push(d);
+            });
+            const newOrder = Array.from(new Set(normalized));
+            setOrderedPurchaseMethods(newOrder);
+            setPurchasePayments(prev => prev.length === 1 ? [{ ...prev[0], method: newOrder[0] as any || 'Efectivo' }] : prev);
+          }
+        }
+      } catch (e) {}
+    };
+    window.addEventListener('jogo_payment_methods_order_changed', handleOrderChange);
+    return () => window.removeEventListener('jogo_payment_methods_order_changed', handleOrderChange);
+  }, []);
+
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      setDeletePurchaseMenuRowId(null);
+    };
+    window.addEventListener('mousedown', handleGlobalClick);
+    window.addEventListener('touchstart', handleGlobalClick);
+    return () => {
+      window.removeEventListener('mousedown', handleGlobalClick);
+      window.removeEventListener('touchstart', handleGlobalClick);
+    };
+  }, []);
+
+  // Category rename modal state
+  const [isRenameCategoryModalOpen, setIsRenameCategoryModalOpen] = useState(false);
+  const [categoryToRename, setCategoryToRename] = useState<string>('');
+  const [newRenamedCategoryTitle, setNewRenamedCategoryTitle] = useState<string>('');
+
+  const handleOpenRenameCategory = (cat: string) => {
+    setCategoryToRename(cat);
+    setNewRenamedCategoryTitle(cat);
+    setIsRenameCategoryModalOpen(true);
+  };
+
+  const handleSaveRenameCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = newRenamedCategoryTitle.trim();
+    if (!clean || clean === categoryToRename) {
+      setIsRenameCategoryModalOpen(false);
+      return;
+    }
+    const updated = categories.map(c => c === categoryToRename ? clean : c);
+    await saveInventoryCategories(targetId, updated);
+    const affected = products.filter(p => p.categoryId === categoryToRename);
+    for (const p of affected) {
+      await saveProductInFirestore(targetId, { ...p, categoryId: clean, categoryName: clean });
+    }
+    if (selectedCategory === categoryToRename) {
+      setSelectedCategory(clean);
+    }
+    setIsRenameCategoryModalOpen(false);
+    showToast('Categoría actualizada');
+  };
+
+  // Historial de movimientos acordeón con persistencia
+  const [isHistoryExpanded, setIsHistoryExpanded] = useState<boolean>(() => {
+    try {
+      const val = localStorage.getItem('jogo_product_history_expanded');
+      return val !== null ? val === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const handleToggleHistory = () => {
+    setIsHistoryExpanded(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('jogo_product_history_expanded', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  const formatMovementDateShort = (dateStr: string, createdAt?: any) => {
+    try {
+      let d: Date | null = null;
+      if (createdAt?.toDate) d = createdAt.toDate();
+      else if (createdAt?.seconds) d = new Date(createdAt.seconds * 1000);
+      else if (dateStr) {
+        const parts = dateStr.split('-');
+        if (parts.length === 3) {
+          d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+        } else {
+          d = new Date(dateStr);
+        }
+      }
+      if (!d || isNaN(d.getTime())) return dateStr || 'Reciente';
+      const months = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+      return `${d.getDate()} de ${months[d.getMonth()]} ${d.getFullYear()}`;
+    } catch {
+      return dateStr || 'Reciente';
+    }
+  };
+
+  const getBatchOrdinalLabel = (idx: number) => {
+    const ordinals = [
+      'Primera en salir',
+      'Segunda en salir',
+      'Tercera en salir',
+      'Cuarta en salir',
+      'Quinta en salir',
+      'Sexta en salir',
+      'Séptima en salir',
+      'Octava en salir',
+      'Novena en salir',
+      'Décima en salir'
+    ];
+    return ordinals[idx] || `${idx + 1}ª en salir`;
+  };
+
+  const handleSavePurchaseMethodsOrder = (newOrder: string[]) => {
+    setOrderedPurchaseMethods(newOrder);
+    try {
+      localStorage.setItem('jogo_payment_methods_order', JSON.stringify(newOrder));
+      window.dispatchEvent(new Event('jogo_payment_methods_order_changed'));
+    } catch (e) {}
+    setPurchasePayments(prev => prev.length === 1 ? [{ ...prev[0], method: newOrder[0] as any || 'Efectivo' }] : prev);
+  };
+  const purchaseSheetDragControls = useDragControls();
+
+  const renderPurchaseMethodIcon = (method: string) => {
+    const m = method.toLowerCase();
+    if (m.includes('transf') || m.includes('transfer')) {
+      return <Landmark size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+    }
+    if (m.includes('tarjeta') || m.includes('crédito') || m.includes('credito') || m.includes('credit')) {
+      return <CreditCard size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+    }
+    if (m.includes('pendiente') || m.includes('fiado')) {
+      return <History size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+    }
+    return <CircleDollarSign size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+  };
 
   const handleAddNewPurchasePaymentMethod = (methodToUse?: 'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente') => {
     const available: Array<'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente'> = ['Efectivo', 'Transferencia', 'Crédito', 'Pendiente'];
@@ -790,8 +985,9 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
       return;
     }
     const tot = qty * cost;
+    const defaultMethod = (orderedPurchaseMethods[0] as any) || 'Efectivo';
     if (purchasePayments.length === 0 || (purchasePayments.length === 1 && (!purchasePayments[0].amount || purchasePayments[0].amount === 0))) {
-      setPurchasePayments([{ id: `purch_p_${Date.now()}`, method: 'Efectivo', amount: tot }]);
+      setPurchasePayments([{ id: `purch_p_${Date.now()}`, method: defaultMethod, amount: tot }]);
     }
     setPurchaseStep(2);
   };
@@ -811,12 +1007,26 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
       return;
     }
 
-    if (!isPurchaseMathExact) {
-      alert(isPurchaseFalta
-        ? `Faltan $${purchaseFaltante.toLocaleString()} por asignar para completar el total de la compra ($${totalPurchaseComputed.toLocaleString()}).`
-        : `Los importes asignados ($${totalAssignedPurchasePayments.toLocaleString()}) superan el total de la compra ($${totalPurchaseComputed.toLocaleString()}).`
-      );
+    if (isPurchaseEntityBlocked) {
+      alert('Debés asignar una entidad para registrar un saldo pendiente.');
       return;
+    }
+
+    if (isPurchaseFalta) {
+      alert(`Faltan $${purchaseFaltante.toLocaleString()} por asignar para completar el total de la compra ($${totalPurchaseComputed.toLocaleString()}).`);
+      return;
+    }
+
+    // Si sobra dinero y hay efectivo, autocorregir deduciendo el sobrante del efectivo
+    if (isPurchaseSobra) {
+      const cashIdx = purchasePayments.findIndex(p => p.method === 'Efectivo');
+      if (cashIdx >= 0) {
+        const curCash = Number(purchasePayments[cashIdx].amount) || 0;
+        purchasePayments[cashIdx].amount = Math.max(0, curCash - purchaseSobrante);
+      } else {
+        const last = purchasePayments[purchasePayments.length - 1];
+        last.amount = Math.max(0, (Number(last.amount) || 0) - purchaseSobrante);
+      }
     }
 
     setIsRegisteringPurchase(true);
@@ -1450,28 +1660,47 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                 <X size={20} />
               </button>
             </div>
+          ) : selectedCategory ? (
+            <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedCategory(null);
+                  setSearchQuery('');
+                }}
+                className="p-1.5 -ml-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
+                title="Volver"
+              >
+                <ChevronLeft size={26} strokeWidth={1.8} />
+              </button>
+
+              <div className="text-center">
+                <h2 className="text-xl sm:text-2xl font-black text-slate-800 dark:text-white leading-tight">
+                  {selectedCategory}
+                </h2>
+                <p className="text-xs font-normal text-gray-400 dark:text-gray-500">
+                  {displayedProducts.length} {displayedProducts.length === 1 ? 'producto' : 'productos'}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleOpenRenameCategory(selectedCategory)}
+                className="p-1.5 -mr-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
+                title="Editar nombre de categoría"
+              >
+                <Edit3 size={20} strokeWidth={2} />
+              </button>
+            </div>
           ) : (
             <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                {selectedCategory ? (
-                  <button
-                    type="button"
-                    onClick={() => setSelectedCategory(null)}
-                    className="flex items-center gap-1.5 text-xs font-bold text-slate-500 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
-                  >
-                    <ChevronLeft size={16} />
-                    <span>Volver a Categorías</span>
-                  </button>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
-                      <Store size={18} />
-                    </div>
-                    <h2 className="text-lg font-black tracking-tight text-slate-900 dark:text-white">
-                      Editar Mostrador
-                    </h2>
-                  </div>
-                )}
+                <div className="w-8 h-8 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
+                  <Store size={18} />
+                </div>
+                <h2 className="text-lg font-black tracking-tight text-slate-900 dark:text-white">
+                  Editar Mostrador
+                </h2>
               </div>
 
               <button
@@ -1485,18 +1714,28 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
             </div>
           )}
 
-          {/* Context Banner if inside a category */}
+          {/* Search bar inside category or Switcher for Mostrador */}
           {selectedCategory ? (
-            <div className="px-5 py-3 bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-              <div>
-                <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Categoría</span>
-                <h3 className="text-base font-black text-slate-900 dark:text-white">
-                  {selectedCategory}
-                </h3>
+            <div className="px-5 pt-3 pb-2 border-b border-slate-100 dark:border-slate-800">
+              <div className="relative">
+                <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder={`Buscar en ${selectedCategory}...`}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-9 py-2 text-xs sm:text-sm rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 cursor-pointer"
+                  >
+                    <X size={14} />
+                  </button>
+                )}
               </div>
-              <span className="text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300">
-                {displayedProducts.length} {displayedProducts.length === 1 ? 'producto' : 'productos'}
-              </span>
             </div>
           ) : mode === 'gastos' ? null : (
             /* Main Segmented Switcher: Categorías | Productos (Gastos oculto en modo mostrador) */
@@ -1536,7 +1775,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
 
               {activeTab === 'products' && (
                 <div className="relative flex-1 min-w-[180px] max-w-xs">
-                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                   <input
                     type="text"
                     placeholder="Buscar producto..."
@@ -1544,6 +1783,15 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
                   />
+                  {searchQuery && (
+                    <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                    >
+                      <X size={12} />
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -1644,75 +1892,35 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                     )}
                   </div>
                 ) : (
-                  <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
                     {displayedProducts.map((prod) => {
-                      const cost = Number(prod.purchasePrice || 0);
-                      const sale = Number(prod.salePrice || 0);
-                      const marginMonetary = sale - cost;
-
                       return (
                         <div
                           key={`prod-card-${prod.id}`}
                           onClick={() => setSelectedProduct(prod)}
-                          className="p-4 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-200/90 dark:border-slate-800 hover:border-emerald-300 dark:hover:border-emerald-700 hover:shadow-sm active:scale-[0.99] transition-all cursor-pointer group"
+                          className="p-3.5 rounded-2xl bg-white dark:bg-slate-800 border border-slate-100 dark:border-slate-800 hover:border-emerald-300 dark:hover:border-emerald-700 shadow-xs hover:shadow-sm active:scale-[0.98] transition-all cursor-pointer flex flex-col justify-between min-h-[92px]"
                         >
-                          <div className="grid grid-cols-2 gap-4 items-center">
-                            {/* Lado izquierdo */}
-                            <div className="space-y-2">
-                              <div>
-                                <h4 className="font-bold text-slate-900 dark:text-white text-base leading-tight truncate">
-                                  {prod.name}
-                                </h4>
-                                {!selectedCategory && (
-                                  <span className="text-[11px] font-semibold text-slate-400 truncate block mt-0.5">
-                                    {prod.categoryId}
-                                  </span>
-                                )}
-                              </div>
+                          {/* Arriba: Nombre (izq) y Unidades (der) */}
+                          <div className="flex items-start justify-between gap-1.5">
+                            <h4 className="font-bold text-slate-900 dark:text-white text-sm leading-tight truncate flex-1 min-w-0" title={prod.name}>
+                              {prod.name}
+                            </h4>
+                            <span className={cn(
+                              "text-xs font-bold shrink-0",
+                              prod.stock > 0 ? "text-[#0BA70B]" : "text-rose-500"
+                            )}>
+                              {prod.stock}u
+                            </span>
+                          </div>
 
-                              <div className="space-y-1 text-xs">
-                                <div className="text-slate-500 dark:text-slate-400">
-                                  Costo
-                                </div>
-                                <div className="text-slate-500 dark:text-slate-400">
-                                  Venta
-                                </div>
-                                <div className="font-semibold text-slate-700 dark:text-slate-300">
-                                  Margen
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Lado derecho */}
-                            <div className="space-y-2 text-right">
-                              <div>
-                                <span className={cn(
-                                  "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold",
-                                  prod.stock > 0
-                                    ? "bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200"
-                                    : "bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400"
-                                )}>
-                                  {prod.stock} unidades
-                                </span>
-                              </div>
-
-                              <div className="space-y-1 text-xs font-mono">
-                                <div className="text-slate-800 dark:text-slate-200 font-medium">
-                                  ${cost.toLocaleString()}
-                                </div>
-                                <div className="text-slate-900 dark:text-white font-bold">
-                                  ${sale.toLocaleString()}
-                                </div>
-                                <div className={cn(
-                                  "font-bold",
-                                  marginMonetary >= 0
-                                    ? "text-emerald-600 dark:text-emerald-400"
-                                    : "text-red-600 dark:text-red-400"
-                                )}>
-                                  ${marginMonetary.toLocaleString()}
-                                </div>
-                              </div>
-                            </div>
+                          {/* Abajo: Precio de venta (izq) y Monto (der) */}
+                          <div className="flex items-end justify-between gap-1.5 pt-3">
+                            <span className="text-[10px] text-gray-400 dark:text-gray-500 font-medium">
+                              Precio de venta
+                            </span>
+                            <span className="font-black text-slate-900 dark:text-white text-sm">
+                              ${Number(prod.salePrice || 0).toLocaleString('es-AR')}
+                            </span>
                           </div>
                         </div>
                       );
@@ -1998,14 +2206,24 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                     handleOpenCreateProduct(selectedCategory || undefined);
                   }
                 }}
-                className="w-14 h-14 rounded-full bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white shadow-xl shadow-emerald-950/30 flex items-center justify-center transition-all cursor-pointer group"
+                className="w-14 h-14 rounded-2xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white shadow-xl shadow-green-950/20 flex items-center justify-center cursor-pointer transition-transform"
                 title={
                   activeTab === 'categories' && !selectedCategory
                     ? 'Nueva categoría de productos'
                     : 'Agregar producto'
                 }
               >
-                <Plus size={24} className="group-hover:rotate-90 transition-transform duration-200" />
+                {activeTab === 'categories' && !selectedCategory ? (
+                  <div className="relative flex items-center justify-center">
+                    <Tag size={24} className="text-white" strokeWidth={2.2} />
+                    <span className="absolute -bottom-1 -right-1 text-white font-black text-xs leading-none">+</span>
+                  </div>
+                ) : (
+                  <div className="relative flex items-center justify-center">
+                    <Package size={24} className="text-white" strokeWidth={2.2} />
+                    <span className="absolute -bottom-1 -right-1 text-white font-black text-xs leading-none">+</span>
+                  </div>
+                )}
               </button>
             </div>
           )}
@@ -2071,6 +2289,75 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                       className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-emerald-900/10 transition-all cursor-pointer"
                     >
                       Crear
+                    </button>
+                  </div>
+                </form>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Modal: Renombrar Categoría de Producto */}
+        <AnimatePresence>
+          {isRenameCategoryModalOpen && (
+            <div className="fixed inset-0 z-[80] flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setIsRenameCategoryModalOpen(false)}
+                className="fixed inset-0 bg-black/60 backdrop-blur-xs"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                onClick={(e) => e.stopPropagation()}
+                className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 z-10 space-y-4"
+              >
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-black text-slate-900 dark:text-white">
+                    Editar categoría
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setIsRenameCategoryModalOpen(false)}
+                    className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveRenameCategory} className="space-y-4">
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Nombre de la categoría
+                    </label>
+                    <input
+                      type="text"
+                      autoFocus
+                      required
+                      value={newRenamedCategoryTitle}
+                      onChange={(e) => setNewRenamedCategoryTitle(e.target.value)}
+                      placeholder="Ej. Bebidas"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsRenameCategoryModalOpen(false)}
+                      className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={!newRenamedCategoryTitle.trim()}
+                      className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-emerald-900/10 transition-all cursor-pointer"
+                    >
+                      Guardar
                     </button>
                   </div>
                 </form>
@@ -2306,200 +2593,75 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                   <div className="w-12 h-1.5 bg-slate-300 dark:bg-slate-700 rounded-full" />
                 </div>
 
-                {/* Encabezado: Nombre destacado, Categoría debajo en gris */}
-                <div className="px-6 py-3 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between">
-                  <div>
-                    <h3 className="text-xl font-black text-slate-900 dark:text-white tracking-tight">
+                {/* Encabezado: Volver (izq), Nombre + Categoría (centro), Editar (der) */}
+                <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedProduct(null)}
+                    className="p-1.5 -ml-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
+                    title="Volver"
+                  >
+                    <ChevronLeft size={26} strokeWidth={1.8} />
+                  </button>
+
+                  <div className="text-center">
+                    <h3 className="text-xl font-black text-gray-900 dark:text-white tracking-tight leading-tight">
                       {selectedProduct.name}
                     </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 font-semibold mt-0.5">
+                    <p className="text-xs text-slate-400 dark:text-slate-500 font-semibold mt-0.5">
                       {selectedProduct.categoryId}
                     </p>
                   </div>
 
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => handleOpenEditProduct(selectedProduct)}
-                      className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs"
-                    >
-                      <Edit3 size={14} />
-                      <span>Editar producto</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedProduct(null)}
-                      className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
-                    >
-                      <X size={20} />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenEditProduct(selectedProduct)}
+                    className="p-1.5 -mr-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
+                    title="Editar producto"
+                  >
+                    <Edit3 size={20} strokeWidth={2} />
+                  </button>
                 </div>
 
                 {/* Body: Desplazable internamente */}
-                <div className="p-6 overflow-y-auto space-y-6 pb-20">
-                  {/* Resumen financiero del producto: Costo | Venta | Margen */}
-                  {(() => {
-                    const cost = Number(selectedProduct.purchasePrice || 0);
-                    const sale = Number(selectedProduct.salePrice || 0);
-                    const margin = sale - cost;
-                    const marginPct = sale > 0 ? ((sale - cost) / sale) * 100 : 0;
-
-                    return (
-                      <div className="grid grid-cols-3 gap-2.5">
-                        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-800 text-center">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                            Costo
-                          </span>
-                          <span className="text-base font-black text-slate-900 dark:text-white font-mono mt-1 block">
-                            ${cost.toLocaleString()}
-                          </span>
-                        </div>
-
-                        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-800 text-center">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                            Precio de venta
-                          </span>
-                          <span className="text-base font-black text-slate-900 dark:text-white font-mono mt-1 block">
-                            ${sale.toLocaleString()}
-                          </span>
-                        </div>
-
-                        <div className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/60 dark:border-slate-800 text-center">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                            Margen
-                          </span>
-                          <span className={cn(
-                            "text-base font-black font-mono mt-1 block",
-                            margin >= 0
-                              ? "text-emerald-600 dark:text-emerald-400"
-                              : "text-red-600 dark:text-red-400"
-                          )}>
-                            ${margin.toLocaleString()}
-                          </span>
-                          <span className={cn(
-                            "text-[10px] font-bold",
-                            margin >= 0
-                              ? "text-emerald-600/80 dark:text-emerald-400/80"
-                              : "text-red-500"
-                          )}>
-                            {marginPct.toFixed(1)}%
-                          </span>
-                        </div>
+                <div className="p-5 overflow-y-auto space-y-5 pb-20">
+                  {/* Dos tarjetas superiores centradas: unidades (stock) y Precio de venta */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div
+                      onClick={() => {
+                        setAdjustType('adjustment');
+                        setAdjustQuantity(1);
+                        setAdjustReason('');
+                        setIsAdjustStockOpen(true);
+                      }}
+                      className="p-4 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-100 dark:border-slate-800/80 shadow-xs hover:border-emerald-300 dark:hover:border-emerald-700 cursor-pointer text-center transition-all group active:scale-[0.98]"
+                      title="Registrar pérdida de mercadería"
+                    >
+                      <div className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">
+                        {selectedProduct.stock}
                       </div>
-                    );
-                  })()}
-
-                  {/* Stock actual & Acciones rápidas de ajuste manual */}
-                  <div className="p-4 rounded-2xl bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/60 dark:border-emerald-900/40 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <span className="text-[11px] font-bold text-emerald-800 dark:text-emerald-400 uppercase tracking-wider block">
-                          Stock físico actual
-                        </span>
-                        <div className="text-2xl font-black text-slate-900 dark:text-white mt-0.5">
-                          {selectedProduct.stock} <span className="text-sm font-medium text-slate-500 dark:text-slate-400">unidades</span>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAdjustType('restock');
-                            setAdjustQuantity(1);
-                            setAdjustReason('');
-                            setIsAdjustStockOpen(true);
-                          }}
-                          className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer"
-                        >
-                          + Ajuste físico
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAdjustType('adjustment');
-                            setAdjustQuantity(1);
-                            setAdjustReason('');
-                            setIsAdjustStockOpen(true);
-                          }}
-                          className="px-3 py-2 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold transition-all cursor-pointer"
-                        >
-                          − Retirar
-                        </button>
+                      <div className="text-xs text-gray-400 dark:text-gray-500 font-medium mt-0.5">
+                        unidades
                       </div>
                     </div>
 
-                    {/* Stock adjustment inline form */}
-                    {isAdjustStockOpen && (
-                      <div className="p-3.5 rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 space-y-3 pt-3">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
-                            {adjustType === 'restock' ? 'Ajuste de stock (+)' : 'Ajuste manual de retiro (−)'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setIsAdjustStockOpen(false)}
-                            className="text-slate-400 hover:text-slate-600 text-xs"
-                          >
-                            Cancelar
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[10px] text-slate-500 font-bold block mb-1">
-                              Cantidad
-                            </label>
-                            <input
-                              type="number"
-                              min="1"
-                              value={adjustQuantity}
-                              onChange={(e) => setAdjustQuantity(e.target.value === '' ? '' : Number(e.target.value))}
-                              className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs font-bold text-slate-900 dark:text-white"
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] text-slate-500 font-bold block mb-1">
-                              Motivo / Nota
-                            </label>
-                            <input
-                              type="text"
-                              placeholder={adjustType === 'restock' ? 'Ej. Conteo físico' : 'Ej. Merma o rotura'}
-                              value={adjustReason}
-                              onChange={(e) => setAdjustReason(e.target.value)}
-                              className="w-full px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-xs text-slate-900 dark:text-white"
-                            />
-                          </div>
-                        </div>
-
-                        <button
-                          type="button"
-                          disabled={isSavingStock || !adjustQuantity || Number(adjustQuantity) <= 0}
-                          onClick={handleConfirmStockAdjustment}
-                          className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition-all cursor-pointer"
-                        >
-                          {isSavingStock ? 'Guardando...' : 'Confirmar ajuste físico'}
-                        </button>
+                    <div className="p-4 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-100 dark:border-slate-800/80 shadow-xs text-center">
+                      <div className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">
+                        ${Number(selectedProduct.salePrice || 0).toLocaleString('es-AR')}
                       </div>
-                    )}
+                      <div className="text-xs text-gray-400 dark:text-gray-500 font-medium mt-0.5">
+                        Precio de venta
+                      </div>
+                    </div>
                   </div>
 
                   {/* ------------------------------------------------------------- */}
-                  {/* SECCIÓN TANDAS DE INVENTARIO PEPS (ACTIVAS quantity > 0)       */}
+                  {/* SECCIÓN INVENTARIO (TANDAS PEPS ACTIVAS quantity > 0)          */}
                   {/* ------------------------------------------------------------- */}
                   <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <Layers size={16} className="text-emerald-600" />
-                        <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                          Tandas de Inventario (PEPS)
-                        </h4>
-                      </div>
-                      <span className="text-xs font-semibold text-slate-400">
-                        Primero en entrar, primero en salir
-                      </span>
-                    </div>
+                    <h4 className="text-base font-black text-gray-900 dark:text-white">
+                      Inventario
+                    </h4>
 
                     {(() => {
                       const activeBatches = (Array.isArray(selectedProduct.batches) ? selectedProduct.batches : [])
@@ -2526,66 +2688,47 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                             const unitCost = Number(batch.unitCost || 0);
                             const unitGrossProfit = salePrice - unitCost;
                             const marginPercent = salePrice > 0 ? (unitGrossProfit / salePrice) * 100 : 0;
-                            const isPositive = unitGrossProfit >= 0;
 
                             return (
                               <div
                                 key={`batch-card-${batch.id || bIdx}`}
-                                className="p-3.5 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200/80 dark:border-slate-800 space-y-2"
+                                className="p-3.5 rounded-2xl bg-white dark:bg-slate-800/80 border border-slate-100 dark:border-slate-800 shadow-xs space-y-1.5"
                               >
+                                {/* Renglón 1: Círculo numerado + Orden en gris oscuro + Unidades en gris oscuro */}
                                 <div className="flex items-center justify-between">
                                   <div className="flex items-center gap-2">
-                                    <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 text-[10px] font-black flex items-center justify-center font-mono">
+                                    <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-[#0BA70B] dark:text-emerald-400 text-xs font-bold flex items-center justify-center shrink-0">
                                       {bIdx + 1}
                                     </span>
-                                    <span className="font-bold text-xs text-slate-900 dark:text-white">
-                                      {batch.entityName || (batch.expenseConceptName ? batch.expenseConceptName.replace(/^.*?\s*-\s*/, '') : (batch.purchasePlace ? batch.purchasePlace.replace(/^.*?\s*-\s*/, '') : 'Proveedor'))}
+                                    <span className="font-bold text-xs sm:text-sm text-slate-600 dark:text-slate-300">
+                                      {getBatchOrdinalLabel(bIdx)}
                                     </span>
-                                    {batch.entityType && (
-                                      <span className={cn("px-1.5 py-0.2 rounded-full text-[9px] font-bold shrink-0", getEntityTypeBadgeClass(batch.entityType))}>
-                                        {batch.entityType}
-                                      </span>
-                                    )}
-                                    {bIdx === 0 && (
-                                      <span className="px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 text-[9px] font-black uppercase tracking-wider">
-                                        Próxima a salir
-                                      </span>
-                                    )}
                                   </div>
 
-                                  <div className="text-right">
-                                    <span className="font-mono font-bold text-xs text-slate-900 dark:text-white">
-                                      {batch.quantity} {batch.quantity === 1 ? 'unidad' : 'unidades'}
-                                    </span>
-                                    {batch.initialQuantity !== undefined && batch.initialQuantity !== batch.quantity && (
-                                      <span className="text-[10px] text-slate-400 block font-mono">
-                                        de {batch.initialQuantity}
-                                      </span>
-                                    )}
-                                  </div>
+                                  <span className="font-bold text-xs sm:text-sm text-slate-600 dark:text-slate-300 shrink-0">
+                                    {batch.quantity} {batch.quantity === 1 ? 'unidad' : 'unidades'}
+                                  </span>
                                 </div>
 
-                                <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-200/50 dark:border-slate-700/50 text-[11px] font-mono">
-                                  <div>
-                                    <span className="text-slate-400 text-[10px] block font-sans">Costo unitario</span>
-                                    <span className="font-bold text-slate-800 dark:text-slate-200">
-                                      ${unitCost.toLocaleString()}
-                                    </span>
-                                  </div>
+                                {/* Renglón 2: Ícono Building2 + Entidad o n/n (sin rubro) */}
+                                <div className="pl-7 flex items-center gap-1.5 text-xs font-normal text-gray-400 dark:text-slate-400">
+                                  <Building2 size={13} className="text-gray-400 dark:text-slate-400 shrink-0" />
+                                  <span className="truncate">
+                                    {batch.entityName && batch.entityName.trim() !== '' ? batch.entityName : 'n/n'}
+                                  </span>
+                                </div>
 
-                                  <div>
-                                    <span className="text-slate-400 text-[10px] block font-sans">Ganancia bruta</span>
-                                    <span className={cn("font-bold", isPositive ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400")}>
-                                      {isPositive ? `+$${unitGrossProfit.toLocaleString()}` : `-$${Math.abs(unitGrossProfit).toLocaleString()}`}
-                                    </span>
-                                  </div>
-
-                                  <div className="text-right">
-                                    <span className="text-slate-400 text-[10px] block font-sans">Margen %</span>
-                                    <span className={cn("font-bold", isPositive ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400")}>
-                                      {marginPercent.toFixed(1)}%
-                                    </span>
-                                  </div>
+                                {/* Renglón 3: Costo unitario en ROJO, Ganancia en VERDE y Márgen en GRIS OSCURO */}
+                                <div className="flex items-center justify-between text-xs pl-7 pt-0.5">
+                                  <span className="text-gray-400 dark:text-slate-400">
+                                    Costo unitario <span className="text-rose-500 font-semibold ml-1">${unitCost.toLocaleString('es-AR')}</span>
+                                  </span>
+                                  <span className="text-gray-400 dark:text-slate-400">
+                                    Ganancia <span className="text-[#0BA70B] font-semibold ml-1">${unitGrossProfit.toLocaleString('es-AR')}</span>
+                                  </span>
+                                  <span className="text-gray-400 dark:text-slate-400">
+                                    Márgen <span className="text-slate-600 dark:text-slate-300 font-bold ml-1">%{Math.round(marginPercent)}</span>
+                                  </span>
                                 </div>
                               </div>
                             );
@@ -2595,63 +2738,219 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                     })()}
                   </div>
 
-                  {/* Historial de movimientos de inventario */}
-                  <div className="space-y-3">
-                    <h4 className="text-sm font-black text-slate-900 dark:text-white">
-                      Historial de movimientos
-                    </h4>
+                  {/* ------------------------------------------------------------- */}
+                  {/* SECCIÓN HISTORIAL DE MOVIMIENTOS (ACORDEÓN COLAPSABLE)        */}
+                  {/* ------------------------------------------------------------- */}
+                  <div className="space-y-3 pt-2">
+                    <button
+                      type="button"
+                      onClick={handleToggleHistory}
+                      className="w-full flex items-center justify-between text-base font-black text-gray-900 dark:text-white cursor-pointer py-1"
+                    >
+                      <span className="font-black text-gray-900 dark:text-white">Historial</span>
+                      <ChevronDown
+                        size={18}
+                        className={cn("text-slate-400 transition-transform duration-200", isHistoryExpanded ? "rotate-180" : "")}
+                      />
+                    </button>
 
-                    {productMovements.length === 0 ? (
-                      <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 text-center text-xs text-slate-400">
-                        Aún no hay movimientos de inventario registrados para este producto.
-                      </div>
-                    ) : (
-                      <div className="space-y-2">
-                        {productMovements.map((mov) => {
-                          const isPositive = mov.quantity > 0;
-                          return (
-                            <div
-                              key={`mov-${mov.id}`}
-                              className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3 text-xs"
-                            >
-                              <div className="space-y-0.5">
-                                <div className="flex items-center gap-2">
-                                  <span className={cn(
-                                    "font-black font-mono",
-                                    isPositive ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"
-                                  )}>
-                                    {isPositive ? `+${mov.quantity}` : `${mov.quantity}`} {Math.abs(mov.quantity) === 1 ? 'unidad' : 'unidades'}
-                                  </span>
-                                  <span className="text-slate-400">·</span>
-                                  <span className="font-bold text-slate-800 dark:text-slate-200">
-                                    {mov.typeLabel}
-                                  </span>
-                                </div>
-                                <div className="text-[11px] text-slate-400">
-                                  {formatMovementDate(mov.date, mov.time, mov.createdAt)}
-                                  {mov.actorName && ` · Por ${mov.actorName}`}
-                                </div>
-                                {mov.notes && (
-                                  <p className="text-[10px] text-slate-500 italic mt-0.5">
-                                    {mov.notes}
-                                  </p>
-                                )}
-                              </div>
+                    {isHistoryExpanded && (
+                      <div>
+                        {productMovements.length === 0 ? (
+                          <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 text-center text-xs text-slate-400">
+                            Aún no hay movimientos de inventario registrados para este producto.
+                          </div>
+                        ) : (
+                          <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                            {productMovements.map((mov) => {
+                              const isPositive = mov.quantity > 0;
+                              const isPurchase = mov.type === 'purchase' || mov.type === 'restock' || mov.typeLabel === 'Reposición de stock' || mov.typeLabel?.toLowerCase().includes('compra');
+                              const isSale = !isPurchase && (mov.type === 'sale' || mov.typeLabel === 'Venta' || mov.typeLabel?.toLowerCase().includes('venta'));
+                              const isAdjustment = !isPurchase && !isSale;
 
-                              <div className="text-right shrink-0">
-                                {mov.resultingStock !== undefined && (
-                                  <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">
-                                    Stock: {mov.resultingStock}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
+                              const matchedBatch = (selectedProduct.batches || []).find(
+                                (b) => b.operationId && mov.operationId && b.operationId === mov.operationId
+                              );
+                              const entityDisplay = (mov as any).entityName?.trim() || matchedBatch?.entityName?.trim() || 'n/n';
+
+                              const rawActor = (mov.actorName || '').trim();
+                              const clientDisplay =
+                                !rawActor ||
+                                rawActor.toUpperCase() === 'NN' ||
+                                rawActor === 'Punto de Venta' ||
+                                rawActor === 'Administrador'
+                                  ? 'n/n'
+                                  : rawActor;
+
+                              return (
+                                <div
+                                  key={`mov-${mov.id}`}
+                                  className="py-2.5 flex items-center justify-between gap-3 text-xs"
+                                >
+                                  <div className="space-y-0.5 min-w-0">
+                                    {isPurchase ? (
+                                      <div className="flex items-center gap-1.5 flex-wrap text-xs sm:text-sm">
+                                        <span className="font-bold text-slate-600 dark:text-slate-300">
+                                          Reposición de stock
+                                        </span>
+                                        <span className="text-gray-400 dark:text-slate-500">•</span>
+                                        <span className="inline-flex items-center gap-1 font-normal text-gray-400 dark:text-slate-400">
+                                          <Building2 size={13} className="text-gray-400 dark:text-slate-400 shrink-0" />
+                                          <span>{entityDisplay}</span>
+                                        </span>
+                                      </div>
+                                    ) : isSale ? (
+                                      <div className="flex items-center gap-1.5 flex-wrap text-xs sm:text-sm">
+                                        <span className="font-bold text-slate-600 dark:text-slate-300">
+                                          Venta en mostrador
+                                        </span>
+                                        <span className="text-gray-400 dark:text-slate-500">•</span>
+                                        <span className="inline-flex items-center gap-1 font-normal text-gray-400 dark:text-slate-400">
+                                          <UserIcon size={13} className="text-gray-400 dark:text-slate-400 shrink-0" />
+                                          <span>{clientDisplay}</span>
+                                        </span>
+                                      </div>
+                                    ) : (
+                                      <div className="flex items-center gap-1.5 flex-wrap text-xs sm:text-sm">
+                                        <span className="font-bold text-slate-600 dark:text-slate-300">
+                                          Ajuste de stock
+                                        </span>
+                                      </div>
+                                    )}
+
+                                    <div className="flex items-center gap-2 text-[11px] text-gray-400 dark:text-slate-400 mt-0.5">
+                                      <span className="flex items-center gap-1">
+                                        <Calendar size={12} />
+                                        <span>{formatMovementDateShort(mov.date, mov.createdAt)}</span>
+                                      </span>
+                                      {mov.time && (
+                                        <span className="flex items-center gap-1">
+                                          <Clock size={12} />
+                                          <span>{mov.time}</span>
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {isAdjustment && mov.notes && (
+                                      <div className="flex items-center gap-1.5 text-[11px] text-gray-400 dark:text-slate-400 italic mt-0.5">
+                                        <FileText size={12} className="text-gray-400 dark:text-slate-400 shrink-0 not-italic" />
+                                        <span>{mov.notes}</span>
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  <div className="text-right shrink-0">
+                                    <div className={cn("font-bold text-xs", isPositive ? "text-[#0BA70B]" : "text-rose-500")}>
+                                      {isPositive ? `+${mov.quantity}u` : `${mov.quantity}u`}
+                                    </div>
+                                    {mov.resultingStock !== undefined && (
+                                      <div className="text-[10px] text-gray-400 font-medium">
+                                        Stock, {mov.resultingStock}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
                 </div>
+              </motion.div>
+            </div>
+          )}
+        </AnimatePresence>
+
+        {/* Modal: Pérdida de mercadería */}
+        <AnimatePresence>
+          {isAdjustStockOpen && selectedProduct && (
+            <div className="fixed inset-0 z-[90] flex items-center justify-center p-4">
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setIsAdjustStockOpen(false)}
+                className="fixed inset-0 bg-black/60 backdrop-blur-xs"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                onClick={(e) => e.stopPropagation()}
+                className="relative w-full max-w-sm bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 z-10 space-y-4"
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h3 className="text-base font-black text-slate-900 dark:text-white">
+                      Pérdida de mercadería
+                    </h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {selectedProduct.name} · Stock actual: {selectedProduct.stock}u
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsAdjustStockOpen(false)}
+                    className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
+
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleConfirmStockAdjustment();
+                  }}
+                  className="space-y-3.5"
+                >
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Unidades perdidas / retiradas *
+                    </label>
+                    <input
+                      type="number"
+                      min="1"
+                      max={Math.max(1, selectedProduct.stock)}
+                      required
+                      value={adjustQuantity}
+                      onChange={(e) => setAdjustQuantity(e.target.value === '' ? '' : Number(e.target.value))}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                      Motivo de la pérdida
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="Ej. Rotura, Vencimiento, Consumo interno"
+                      value={adjustReason}
+                      onChange={(e) => setAdjustReason(e.target.value)}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsAdjustStockOpen(false)}
+                      className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSavingStock || !adjustQuantity || Number(adjustQuantity) <= 0 || Number(adjustQuantity) > selectedProduct.stock}
+                      className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-emerald-900/10 transition-all cursor-pointer"
+                    >
+                      {isSavingStock ? 'Guardando...' : 'Confirmar pérdida'}
+                    </button>
+                  </div>
+                </form>
               </motion.div>
             </div>
           )}
@@ -2663,72 +2962,79 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
         {/* ------------------------------------------------------------- */}
         <AnimatePresence>
           {isProductModalOpen && (
-            <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <div 
+              className="fixed inset-0 z-[70] flex flex-col justify-end sm:justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4 select-none"
+              onClick={() => setIsProductModalOpen(false)}
+            >
               <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                onClick={() => setIsProductModalOpen(false)}
-                className="fixed inset-0 bg-black/60 backdrop-blur-xs"
-              />
-              <motion.div
-                initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                onClick={(e) => e.stopPropagation()}
-                className="relative w-full max-w-lg bg-white dark:bg-slate-900 rounded-3xl p-6 shadow-2xl border border-slate-200 dark:border-slate-800 z-10 space-y-4 max-h-[92vh] overflow-y-auto"
+                initial={{ y: '100%' }}
+                animate={{ y: 0 }}
+                exit={{ y: '100%' }}
+                transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeletePurchaseMenuRowId(null);
+                }}
+                className="bg-[#f8fafc] dark:bg-slate-900 w-full max-w-2xl max-h-[96vh] sm:max-h-[90vh] rounded-t-[32px] sm:rounded-3xl shadow-2xl border border-gray-100 dark:border-slate-800 flex flex-col overflow-hidden mx-auto relative"
               >
-                {/* Header modal */}
-                <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
-                  <div>
-                    <h3 className="text-base font-black text-slate-900 dark:text-white">
-                      {productModalMode === 'create' ? 'Nuevo producto' : `Editar: ${productForm.name || 'Producto'}`}
-                    </h3>
-                    {productModalMode === 'edit' && (
-                      <p className="text-[11px] text-slate-400 font-medium">
-                        Administrá la ficha técnica o registrá reposiciones con PEPS
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setIsProductModalOpen(false)}
-                    className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
-                  >
-                    <X size={18} />
-                  </button>
-                </div>
+                {/* Pastilla gris superior de arrastre */}
+                <div className="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mt-3 mb-1 shrink-0" />
 
-                {/* Sub-tabs en modo edición: Datos | Compras (Navegable por touch/clic y swipe) */}
-                {productModalMode === 'edit' && (
-                  <div className="flex items-center p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl">
-                    <button
-                      type="button"
-                      onClick={() => setEditProductSubTab('datos')}
-                      className={cn(
-                        "flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer text-center flex items-center justify-center gap-1.5",
-                        editProductSubTab === 'datos'
-                          ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs"
-                          : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
-                      )}
-                    >
-                      <Package size={14} />
-                      <span>Datos</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditProductSubTab('compras')}
-                      className={cn(
-                        "flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer text-center flex items-center justify-center gap-1.5",
-                        editProductSubTab === 'compras'
-                          ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs"
-                          : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
-                      )}
-                    >
-                      <ShoppingBag size={14} />
-                      <span>Compras</span>
-                    </button>
-                  </div>
+                {!(productModalMode === 'edit' && editProductSubTab === 'compras' && purchaseStep === 2) && (
+                  <>
+                    {/* Header modal */}
+                    <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                      <div>
+                        <h3 className="text-base font-black text-slate-900 dark:text-white">
+                          {productModalMode === 'create' ? 'Nuevo producto' : `Editar: ${productForm.name || 'Producto'}`}
+                        </h3>
+                        {productModalMode === 'edit' && (
+                          <p className="text-[11px] text-slate-400 font-medium">
+                            Administrá la ficha técnica o registrá reposiciones con PEPS
+                          </p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsProductModalOpen(false)}
+                        className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-white rounded-full cursor-pointer"
+                      >
+                        <X size={18} />
+                      </button>
+                    </div>
+
+                    {/* Sub-tabs en modo edición: Datos | Compras (Navegable por touch/clic y swipe) */}
+                    {productModalMode === 'edit' && (
+                      <div className="flex items-center p-1 bg-slate-100 dark:bg-slate-800 rounded-2xl">
+                        <button
+                          type="button"
+                          onClick={() => setEditProductSubTab('datos')}
+                          className={cn(
+                            "flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer text-center flex items-center justify-center gap-1.5",
+                            editProductSubTab === 'datos'
+                              ? "bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs"
+                              : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                          )}
+                        >
+                          <Package size={14} />
+                          <span>Datos</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditProductSubTab('compras')}
+                          className={cn(
+                            "flex-1 py-2 text-xs font-bold rounded-xl transition-all cursor-pointer text-center flex items-center justify-center gap-1.5",
+                            editProductSubTab === 'compras'
+                              ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs"
+                              : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                          )}
+                        >
+                          <ShoppingBag size={14} />
+                          <span>Compras</span>
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {/* Contenido con soporte de gesto swipe horizontal */}
@@ -2749,53 +3055,54 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                   {/* SECCIÓN 1: DATOS GENERALES DEL PRODUCTO */}
                   {(productModalMode === 'create' || editProductSubTab === 'datos') && (
                     <form onSubmit={handleSaveProduct} className="space-y-4">
-                      {/* Nombre */}
-                      <div>
-                        <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                          Nombre del producto *
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="Ej. Coca-Cola 500 ml"
-                          value={productForm.name}
-                          onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
-                          className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                        />
-                      </div>
-
-                      {/* Categoría */}
-                      <div>
-                        <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                          Categoría *
-                        </label>
-                        {categories.length > 0 ? (
-                          <select
-                            value={productForm.categoryId}
-                            onChange={(e) => setProductForm({ ...productForm, categoryId: e.target.value })}
-                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer"
-                          >
-                            {categories.map((c) => (
-                              <option key={`opt-cat-prod-${c}`} value={c}>
-                                {c}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
+                      {/* Fila 1: Nombre (izq) y Categoría (der) */}
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                            Nombre del producto *
+                          </label>
                           <input
                             type="text"
-                            placeholder="Categoría"
-                            value={productForm.categoryId}
-                            onChange={(e) => setProductForm({ ...productForm, categoryId: e.target.value })}
-                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white"
+                            placeholder="Ej. Coca-Cola 500 ml"
+                            value={productForm.name}
+                            onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
+                            className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
                           />
-                        )}
+                        </div>
+
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                            Categoría *
+                          </label>
+                          {categories.length > 0 ? (
+                            <select
+                              value={productForm.categoryId}
+                              onChange={(e) => setProductForm({ ...productForm, categoryId: e.target.value })}
+                              className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer"
+                            >
+                              {categories.map((c) => (
+                                <option key={`opt-cat-prod-${c}`} value={c}>
+                                  {c}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              placeholder="Categoría"
+                              value={productForm.categoryId}
+                              onChange={(e) => setProductForm({ ...productForm, categoryId: e.target.value })}
+                              className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white"
+                            />
+                          )}
+                        </div>
                       </div>
 
-                      {/* Precio de venta general */}
-                      <div className="grid grid-cols-2 gap-3">
+                      {/* Fila 2: Precio de venta (col 1) y Estado (col 2) */}
+                      <div className="grid grid-cols-2 gap-2.5 items-end">
                         <div>
-                          <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                            Precio de venta general ($) *
+                          <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                            Precio de venta ($) *
                           </label>
                           <input
                             type="number"
@@ -2803,71 +3110,40 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                             placeholder="Ej. 1500"
                             value={productForm.salePrice}
                             onChange={(e) => setProductForm({ ...productForm, salePrice: e.target.value === '' ? '' : Number(e.target.value) })}
-                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                            className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
                           />
                         </div>
 
-                        {/* Unidades de stock físico (Ajuste físico de inventario, sin movimiento de dinero) */}
                         <div>
-                          <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                            Unidades de stock físico *
+                          <label className="text-[11px] font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                            Estado
                           </label>
-                          <input
-                            type="number"
-                            min="0"
-                            value={productForm.stock}
-                            onChange={(e) => setProductForm({ ...productForm, stock: e.target.value === '' ? '' : Number(e.target.value) })}
-                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                          />
-                        </div>
-                      </div>
-
-                      {productModalMode === 'create' && (
-                        <div>
-                          <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                            Costo inicial unitario ($)
-                          </label>
-                          <input
-                            type="number"
-                            min="0"
-                            placeholder="Ej. 800"
-                            value={productForm.purchasePrice}
-                            onChange={(e) => setProductForm({ ...productForm, purchasePrice: e.target.value === '' ? '' : Number(e.target.value) })}
-                            className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
-                          />
-                        </div>
-                      )}
-
-                      {/* Estado: Activo / Inactivo */}
-                      <div>
-                        <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                          Estado del producto
-                        </label>
-                        <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 dark:bg-slate-800 rounded-xl">
-                          <button
-                            type="button"
-                            onClick={() => setProductForm({ ...productForm, status: 'activo' })}
-                            className={cn(
-                              "py-2 text-xs font-bold rounded-lg transition-all cursor-pointer",
-                              productForm.status === 'activo'
-                                ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs"
-                                : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
-                            )}
-                          >
-                            Activo
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setProductForm({ ...productForm, status: 'inactivo' })}
-                            className={cn(
-                              "py-2 text-xs font-bold rounded-lg transition-all cursor-pointer",
-                              productForm.status === 'inactivo'
-                                ? "bg-white dark:bg-slate-900 text-red-600 dark:text-red-400 shadow-xs"
-                                : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
-                            )}
-                          >
-                            Inactivo
-                          </button>
+                          <div className="inline-flex w-full items-center p-1 bg-slate-200/70 dark:bg-slate-800 rounded-xl gap-1 h-9.5">
+                            <button
+                              type="button"
+                              onClick={() => setProductForm({ ...productForm, status: 'activo' })}
+                              className={cn(
+                                "flex-1 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer text-center",
+                                productForm.status === 'activo'
+                                  ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs"
+                                  : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                              )}
+                            >
+                              Activo
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setProductForm({ ...productForm, status: 'inactivo' })}
+                              className={cn(
+                                "flex-1 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer text-center",
+                                productForm.status === 'inactivo'
+                                  ? "bg-white dark:bg-slate-900 text-red-600 dark:text-red-400 shadow-xs"
+                                  : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
+                              )}
+                            >
+                              Inactivo
+                            </button>
+                          </div>
                         </div>
                       </div>
 
@@ -2901,11 +3177,11 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                             Cada compra ingresa como una nueva tanda PEPS, actualiza el stock, registra el egreso y guarda saldos a pagar si corresponde.
                           </div>
 
-                          {/* Unidades compradas y Costo por unidad */}
-                          <div className="grid grid-cols-2 gap-3">
+                          {/* Fila 1: Cantidad y Costo por unidad */}
+                          <div className="grid grid-cols-2 gap-2.5">
                             <div>
                               <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                                Unidades compradas *
+                                Cantidad *
                               </label>
                               <input
                                 type="number"
@@ -2925,7 +3201,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
 
                             <div>
                               <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                                Costo por unidad ($) *
+                                Costo unitario ($) *
                               </label>
                               <input
                                 type="number"
@@ -2944,334 +3220,149 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                             </div>
                           </div>
 
-                          {/* Selector 1: Rubro de Gastos */}
-                          <div className="relative" ref={rubroDropdownRef}>
-                            <div className="flex items-center justify-between mb-1">
-                              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                                <span>Rubro</span>
-                                {selectedPurchaseRubro ? (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded-md">
-                                    <span>{selectedPurchaseRubro.name}</span>
-                                    <button
-                                      type="button"
-                                      onClick={handleClearPurchaseRubro}
-                                      className="hover:text-red-500 cursor-pointer ml-0.5"
-                                      title="Quitar rubro seleccionado"
-                                    >
-                                      <X size={11} />
-                                    </button>
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] text-slate-400 font-normal">
-                                    (Sin seleccionar)
-                                  </span>
-                                )}
+                          {/* Fila 2: Rubro y Concepto */}
+                          <div className="grid grid-cols-2 gap-2.5">
+                            {/* Selector 1: Rubro de Gastos */}
+                            <div className="relative" ref={rubroDropdownRef}>
+                              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                                Rubro
                               </label>
-                              <button
-                                type="button"
-                                onClick={handleOpenAddRubroFromPurchase}
-                                className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:text-emerald-800 dark:hover:text-emerald-200 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
-                                title="Crear nuevo rubro de gastos"
-                              >
-                                <Plus size={13} className="stroke-[3]" />
-                                <span>+ Rubro</span>
-                              </button>
-                            </div>
-
-                            <div className="relative">
-                              <input
-                                type="text"
-                                placeholder="Elegir o buscar «Rubro» (ej. Proveedores, Bebidas)..."
-                                value={purchaseRubroSearch}
-                                onFocus={() => setIsPurchaseRubroDropdownOpen(true)}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setPurchaseRubroSearch(val);
-                                  setIsPurchaseRubroDropdownOpen(true);
-                                  if (!val) {
-                                    setSelectedPurchaseRubro(null);
-                                    if (selectedPurchaseConcept) {
-                                      setPurchaseForm(prev => ({ ...prev, purchasePlace: selectedPurchaseConcept.name }));
-                                    } else {
-                                      setPurchaseForm(prev => ({ ...prev, purchasePlace: '', supplierId: undefined }));
-                                    }
-                                  }
-                                }}
-                                className="w-full px-3.5 py-2.5 pr-8 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                              />
-                              {purchaseRubroSearch ? (
-                                <button
-                                  type="button"
-                                  onClick={handleClearPurchaseRubro}
-                                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                                  title="Limpiar búsqueda y quitar rubro"
-                                >
-                                  <X size={14} />
-                                </button>
-                              ) : (
-                                <ChevronDown size={15} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                              )}
-                            </div>
-
-                            {/* Dropdown Rubros */}
-                            {isPurchaseRubroDropdownOpen && (
-                              <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700/50">
-                                {filteredPurchaseRubros.length > 0 ? (
-                                  filteredPurchaseRubros.map((r) => {
-                                    const isSelected = selectedPurchaseRubro?.id === r.id;
-                                    return (
-                                      <button
-                                        key={`purch-bs-rubro-${r.id}`}
-                                        type="button"
-                                        onClick={() => handleSelectPurchaseRubro(r)}
-                                        className={`w-full text-left px-3.5 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
-                                          isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-slate-700 dark:text-slate-200'
-                                        }`}
-                                      >
-                                        <span>{r.name}</span>
-                                        {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
-                                      </button>
-                                    );
-                                  })
-                                ) : (
-                                  <div className="p-3 text-center text-xs text-slate-400 dark:text-slate-400">
-                                    <p className="mb-1.5">No se encontraron rubros con "{purchaseRubroSearch}".</p>
-                                    <button
-                                      type="button"
-                                      onClick={handleOpenAddRubroFromPurchase}
-                                      className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
-                                    >
-                                      <Plus size={12} />
-                                      <span>Crear "{purchaseRubroSearch}" como Rubro</span>
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Selector 2: Concepto de Gasto / Proveedor */}
-                          <div className="relative" ref={conceptDropdownRef}>
-                            <div className="flex items-center justify-between mb-1">
-                              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                                <span>Concepto</span>
-                                {selectedPurchaseConcept && (
-                                  <span className="text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded-md">
-                                    {selectedPurchaseConcept.categoryName || selectedPurchaseConcept.categoryId}
-                                  </span>
-                                )}
-                              </label>
-                              <button
-                                type="button"
-                                onClick={handleOpenAddConceptFromPurchase}
-                                className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:text-emerald-800 dark:hover:text-emerald-200 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
-                                title="Crear nuevo concepto de gastos"
-                              >
-                                <Plus size={13} className="stroke-[3]" />
-                                <span>+ Agregar concepto</span>
-                              </button>
-                            </div>
-
-                            <div className="relative">
-                              <input
-                                type="text"
-                                placeholder={selectedPurchaseRubro ? `Elegir o buscar «Concepto» en ${selectedPurchaseRubro.name}...` : "Elegir o buscar «Concepto» (ej. Cervecería Quilmes, Distribuidora)..."}
-                                value={purchaseConceptSearch}
-                                onFocus={() => setIsPurchaseConceptDropdownOpen(true)}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setPurchaseConceptSearch(val);
-                                  setPurchaseForm(prev => ({ ...prev, purchasePlace: val }));
-                                  setIsPurchaseConceptDropdownOpen(true);
-                                  if (!val) {
-                                    setSelectedPurchaseConcept(null);
-                                  }
-                                }}
-                                className="w-full px-3.5 py-2.5 pr-8 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
-                              />
-                              {purchaseConceptSearch ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setSelectedPurchaseConcept(null);
-                                    setPurchaseConceptSearch('');
-                                    setPurchaseForm(prev => ({ ...prev, purchasePlace: '', supplierId: undefined }));
-                                  }}
-                                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
-                                >
-                                  <X size={14} />
-                                </button>
-                              ) : (
-                                <ChevronDown size={15} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-                              )}
-                            </div>
-
-                            {/* Dropdown Conceptos */}
-                            {isPurchaseConceptDropdownOpen && (
-                              <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700/50">
-                                {filteredPurchaseConcepts.length > 0 ? (
-                                  filteredPurchaseConcepts.map((c) => {
-                                    const isSelected = selectedPurchaseConcept?.id === c.id;
-                                    const price = Number(c.purchasePrice || c.price || 0);
-                                    return (
-                                      <button
-                                        key={`purch-bs-concept-${c.id}`}
-                                        type="button"
-                                        onClick={() => handleSelectPurchaseConcept(c)}
-                                        className={`w-full text-left px-3.5 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
-                                          isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-slate-700 dark:text-slate-200'
-                                        }`}
-                                      >
-                                        <div className="flex flex-col">
-                                          <span>{c.name}</span>
-                                          <span className="text-[10px] text-slate-400">
-                                            {c.categoryName || c.categoryId} {price > 0 ? `· $${price.toLocaleString()}` : ''}
-                                          </span>
-                                        </div>
-                                        {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
-                                      </button>
-                                    );
-                                  })
-                                ) : (
-                                  <div className="p-3 text-center text-xs text-slate-400 dark:text-slate-400">
-                                    <p className="mb-1.5">No se encontraron conceptos con "{purchaseConceptSearch}".</p>
-                                    <button
-                                      type="button"
-                                      onClick={handleOpenAddConceptFromPurchase}
-                                      className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
-                                    >
-                                      <Plus size={12} />
-                                      <span>Crear "{purchaseConceptSearch}" como Concepto</span>
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Selector 3: Entidad (opcional) - Arquitectura de 3 Dimensiones */}
-                          <div className="relative" ref={entityPurchaseDropdownRef}>
-                            <div className="flex items-center justify-between mb-1">
-                              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                                <span>Entidad (opcional)</span>
-                                {selectedPurchaseEntity && (
-                                  <span className={cn("text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-1", getEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
-                                    <span>{selectedPurchaseEntity.type}</span>
-                                  </span>
-                                )}
-                              </label>
-                              <button
-                                type="button"
-                                onClick={handleOpenAddEntityFromPurchase}
-                                className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:text-emerald-800 dark:hover:text-emerald-200 flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
-                                title="Crear nueva entidad"
-                              >
-                                <Plus size={13} className="stroke-[3]" />
-                                <span>+ Entidad</span>
-                              </button>
-                            </div>
-
-                            {/* Si hay entidad seleccionada, mostrar Chip/Pill con X para deseleccionar */}
-                            {selectedPurchaseEntity ? (
-                              <div className="flex items-center justify-between p-2.5 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-950/40">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <Building2 size={16} className="text-emerald-700 dark:text-emerald-400 shrink-0" />
-                                  <span className="text-xs font-bold text-slate-900 dark:text-white truncate">
-                                    {selectedPurchaseEntity.name}
-                                  </span>
-                                  <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full shrink-0", getEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
-                                    {selectedPurchaseEntity.type}
-                                  </span>
-                                  {selectedPurchaseEntity.cuit && (
-                                    <span className="text-[10px] text-slate-500 font-mono hidden sm:inline">
-                                      {selectedPurchaseEntity.cuit}
-                                    </span>
-                                  )}
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={handleClearPurchaseEntity}
-                                  className="p-1 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
-                                  title="Quitar entidad"
-                                >
-                                  <X size={15} />
-                                </button>
-                              </div>
-                            ) : (
                               <div className="relative">
                                 <input
                                   type="text"
-                                  placeholder="Elegir o buscar «Entidad» (empresa, proveedor, persona)..."
-                                  value={purchaseEntitySearch}
-                                  onFocus={() => setIsPurchaseEntityDropdownOpen(true)}
+                                  placeholder="Elegir o buscar rubro..."
+                                  value={purchaseRubroSearch}
+                                  onFocus={() => setIsPurchaseRubroDropdownOpen(true)}
                                   onChange={(e) => {
                                     const val = e.target.value;
-                                    setPurchaseEntitySearch(val);
-                                    setIsPurchaseEntityDropdownOpen(true);
+                                    setPurchaseRubroSearch(val);
+                                    setIsPurchaseRubroDropdownOpen(true);
+                                    if (!val) {
+                                      setSelectedPurchaseRubro(null);
+                                      if (selectedPurchaseConcept) {
+                                        setPurchaseForm(prev => ({ ...prev, purchasePlace: selectedPurchaseConcept.name }));
+                                      } else {
+                                        setPurchaseForm(prev => ({ ...prev, purchasePlace: '', supplierId: undefined }));
+                                      }
+                                    }
                                   }}
-                                  className="w-full px-3.5 py-2.5 pr-8 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
+                                  className="w-full px-3 py-2.5 pr-7 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 truncate"
                                 />
-                                {purchaseEntitySearch ? (
+                                {purchaseRubroSearch ? (
+                                  <button
+                                    type="button"
+                                    onClick={handleClearPurchaseRubro}
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                                    title="Limpiar rubro"
+                                  >
+                                    <X size={13} />
+                                  </button>
+                                ) : (
+                                  <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                                )}
+                              </div>
+
+                              {/* Dropdown Rubros */}
+                              {isPurchaseRubroDropdownOpen && (
+                                <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-44 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700/50">
+                                  {filteredPurchaseRubros.length > 0 ? (
+                                    filteredPurchaseRubros.map((r) => {
+                                      const isSelected = selectedPurchaseRubro?.id === r.id;
+                                      return (
+                                        <button
+                                          key={`purch-bs-rubro-${r.id}`}
+                                          type="button"
+                                          onClick={() => handleSelectPurchaseRubro(r)}
+                                          className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
+                                            isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-slate-700 dark:text-slate-200'
+                                          }`}
+                                        >
+                                          <span className="truncate">{r.name}</span>
+                                          {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0 ml-1" />}
+                                        </button>
+                                      );
+                                    })
+                                  ) : (
+                                    <div className="p-2.5 text-center text-xs text-slate-400 dark:text-slate-400">
+                                      Sin resultados
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Selector 2: Concepto de Gasto / Proveedor */}
+                            <div className="relative" ref={conceptDropdownRef}>
+                              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                                Concepto
+                              </label>
+                              <div className="relative">
+                                <input
+                                  type="text"
+                                  placeholder={selectedPurchaseRubro ? `Concepto en ${selectedPurchaseRubro.name}...` : "Elegir concepto..."}
+                                  value={purchaseConceptSearch}
+                                  onFocus={() => setIsPurchaseConceptDropdownOpen(true)}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setPurchaseConceptSearch(val);
+                                    setPurchaseForm(prev => ({ ...prev, purchasePlace: val }));
+                                    setIsPurchaseConceptDropdownOpen(true);
+                                    if (!val) {
+                                      setSelectedPurchaseConcept(null);
+                                    }
+                                  }}
+                                  className="w-full px-3 py-2.5 pr-7 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 truncate"
+                                />
+                                {purchaseConceptSearch ? (
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      setPurchaseEntitySearch('');
+                                      setSelectedPurchaseConcept(null);
+                                      setPurchaseConceptSearch('');
+                                      setPurchaseForm(prev => ({ ...prev, purchasePlace: '', supplierId: undefined }));
                                     }}
-                                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                                    className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
                                   >
-                                    <X size={14} />
+                                    <X size={13} />
                                   </button>
                                 ) : (
-                                  <ChevronDown size={15} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                                  <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                                 )}
                               </div>
-                            )}
 
-                            {/* Dropdown Entidades */}
-                            {isPurchaseEntityDropdownOpen && !selectedPurchaseEntity && (
-                              <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-48 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700/50">
-                                {filteredPurchaseEntities.length > 0 ? (
-                                  filteredPurchaseEntities.map((ent) => {
-                                    const isSelected = selectedPurchaseEntity?.id === ent.id;
-                                    return (
-                                      <button
-                                        key={`purch-bs-ent-${ent.id}`}
-                                        type="button"
-                                        onClick={() => handleSelectPurchaseEntity(ent)}
-                                        className={`w-full text-left px-3.5 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
-                                          isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-slate-700 dark:text-slate-200'
-                                        }`}
-                                      >
-                                        <div className="flex flex-col min-w-0 pr-2">
-                                          <div className="flex items-center gap-1.5">
-                                            <span className="font-semibold truncate">{ent.name}</span>
-                                            <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full", getEntityTypeBadgeClass(ent.type))}>
-                                              {ent.type}
+                              {/* Dropdown Conceptos */}
+                              {isPurchaseConceptDropdownOpen && (
+                                <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-44 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700/50">
+                                  {filteredPurchaseConcepts.length > 0 ? (
+                                    filteredPurchaseConcepts.map((c) => {
+                                      const isSelected = selectedPurchaseConcept?.id === c.id;
+                                      return (
+                                        <button
+                                          key={`purch-bs-concept-${c.id}`}
+                                          type="button"
+                                          onClick={() => handleSelectPurchaseConcept(c)}
+                                          className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
+                                            isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-slate-700 dark:text-slate-200'
+                                          }`}
+                                        >
+                                          <div className="flex flex-col min-w-0 pr-1">
+                                            <span className="truncate">{c.name}</span>
+                                            <span className="text-[10px] text-slate-400 truncate">
+                                              {c.categoryName || c.categoryId}
                                             </span>
                                           </div>
-                                          <span className="text-[10px] text-slate-400 mt-0.5">
-                                            {ent.cuit ? `CUIT: ${ent.cuit}` : ''} {ent.phone ? `· Tel: ${ent.phone}` : ''}
-                                          </span>
-                                        </div>
-                                        {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
-                                      </button>
-                                    );
-                                  })
-                                ) : (
-                                  <div className="p-3 text-center text-xs text-slate-400 dark:text-slate-400">
-                                    <p className="mb-1.5">No se encontraron entidades con "{purchaseEntitySearch}".</p>
-                                    <button
-                                      type="button"
-                                      onClick={handleOpenAddEntityFromPurchase}
-                                      className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
-                                    >
-                                      <Plus size={12} />
-                                      <span>Crear "{purchaseEntitySearch || 'nueva'}" como Entidad</span>
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            )}
+                                          {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0 ml-1" />}
+                                        </button>
+                                      );
+                                    })
+                                  ) : (
+                                    <div className="p-2.5 text-center text-xs text-slate-400 dark:text-slate-400">
+                                      Sin resultados
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           </div>
 
                           {/* Resumen previo de compra */}
@@ -3308,271 +3399,392 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                           </div>
                         </div>
                       ) : (
-                        /* PASO 2: REGISTRAR EL PAGO DE LA COMPRA (PAGOS MIXTOS) */
-                        <form onSubmit={handleConfirmPurchase} className="space-y-4">
-                          {/* Resumen reactivo de la compra */}
-                          <div className="p-3.5 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-800/40 space-y-2">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 block">
-                                  Total a Pagar · Compra
-                                </span>
-                                <span className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white font-mono">
-                                  ${totalPurchaseComputed.toLocaleString()}
-                                </span>
-                              </div>
-                              <div className="text-right">
-                                <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block truncate max-w-[160px]">
-                                  {productForm.name}
-                                </span>
-                                <span className="text-[11px] font-mono text-slate-500">
-                                  {purchaseForm.quantity} u. x ${Number(purchaseForm.unitCost || 0).toLocaleString()}
-                                </span>
-                              </div>
-                            </div>
-
-                            <div className="pt-2 border-t border-emerald-200/50 dark:border-emerald-800/40 flex flex-col gap-1 text-[11px] text-slate-600 dark:text-slate-300">
-                              <div className="flex items-center justify-between">
-                                <span>Concepto: <strong className="text-slate-900 dark:text-white">{selectedPurchaseConcept?.name || purchaseForm.purchasePlace.trim() || 'Mayorista'}</strong></span>
-                                <span className="font-mono text-slate-500">
-                                  Asignado: ${totalAssignedPurchasePayments.toLocaleString()}
-                                </span>
-                              </div>
-                              {selectedPurchaseEntity && (
-                                <div className="flex items-center gap-1.5 text-[11px]">
-                                  <span className="text-slate-500">Entidad:</span>
-                                  <strong className="text-slate-900 dark:text-white">{selectedPurchaseEntity.name}</strong>
-                                  <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full", getEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
-                                    {selectedPurchaseEntity.type}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-
-                          {/* Atajos Rápidos */}
-                          <div className="grid grid-cols-3 gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPurchasePayments([{ id: `purch_p_${Date.now()}`, method: 'Efectivo', amount: totalPurchaseComputed }]);
-                              }}
-                              className="py-1.5 px-1 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 transition-colors text-center cursor-pointer"
-                            >
-                              100% Efectivo
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPurchasePayments([{ id: `purch_p_${Date.now()}`, method: 'Transferencia', amount: totalPurchaseComputed }]);
-                              }}
-                              className="py-1.5 px-1 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 transition-colors text-center cursor-pointer"
-                            >
-                              100% Transf.
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPurchasePayments([{ id: `purch_p_${Date.now()}`, method: 'Pendiente', amount: totalPurchaseComputed }]);
-                              }}
-                              className="py-1.5 px-1 bg-slate-50 dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold text-amber-600 dark:text-amber-400 transition-colors text-center cursor-pointer"
-                            >
-                              100% Pendiente
-                            </button>
-                          </div>
-
-                          {/* Distribución de Medios de Pago */}
-                          <div className="space-y-2.5 pt-2 border-t border-slate-200 dark:border-slate-700">
-                            <div className="flex items-center justify-between">
-                              <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
-                                Distribución de Medios de Pago
-                              </label>
-                              <span className="text-[11px] font-mono text-slate-400">
-                                Asignado: ${totalAssignedPurchasePayments.toLocaleString()} / ${totalPurchaseComputed.toLocaleString()}
-                              </span>
-                            </div>
-
-                            {/* Filas de pago */}
-                            <div className="space-y-2">
-                              {purchasePayments.map((p, idx) => (
-                                <div
-                                  key={`purch-pay-row-${p.id}`}
-                                  className="p-3 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-2xs space-y-2"
-                                >
-                                  <div className="flex items-center justify-between gap-2">
-                                    <div className="flex items-center gap-1 flex-wrap">
-                                      {(['Efectivo', 'Transferencia', 'Crédito', 'Pendiente'] as const).map((m) => {
-                                        const isSelected = p.method === m;
-                                        const isPend = m === 'Pendiente';
-                                        return (
-                                          <button
-                                            key={`purch-btn-${p.id}-${m}`}
-                                            type="button"
-                                            onClick={() => handleChangePurchaseBlockMethod(idx, m)}
-                                            className={cn(
-                                              "px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer",
-                                              isSelected
-                                                ? isPend
-                                                  ? "bg-amber-600 text-white shadow-2xs"
-                                                  : "bg-emerald-600 text-white shadow-2xs"
-                                                : "bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200"
-                                            )}
-                                          >
-                                            {m}
-                                          </button>
-                                        );
-                                      })}
-                                    </div>
-
-                                    {purchasePayments.length > 1 && (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleRemovePurchasePaymentBlock(p.id)}
-                                        className="p-1 text-slate-400 hover:text-red-500 rounded cursor-pointer shrink-0"
-                                        title="Eliminar método"
-                                      >
-                                        <Trash2 size={15} />
-                                      </button>
-                                    )}
-                                  </div>
-
-                                  <div className="flex items-center justify-between gap-3 pt-1">
-                                    <div className="flex items-center gap-2 text-xs font-bold text-slate-500">
-                                      <button
-                                        type="button"
-                                        onClick={() => {
-                                          setPurchasePayments(prev => {
-                                            const copy = [...prev];
-                                            copy[idx] = { ...copy[idx], amount: totalPurchaseComputed };
-                                            return copy;
-                                          });
-                                        }}
-                                        className="text-[11px] font-bold text-slate-400 hover:text-slate-900 dark:hover:text-white underline cursor-pointer"
-                                      >
-                                        Total
-                                      </button>
-
-                                      {purchaseFaltante > 0 && (
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setPurchasePayments(prev => {
-                                              const copy = [...prev];
-                                              const cur = Number(copy[idx].amount) || 0;
-                                              copy[idx] = { ...copy[idx], amount: cur + purchaseFaltante };
-                                              return copy;
-                                            });
-                                          }}
-                                          className="text-[11px] font-black text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                                        >
-                                          Restante: ${purchaseFaltante.toLocaleString()}
-                                        </button>
-                                      )}
-                                    </div>
-
-                                    <div className="relative w-36 sm:w-40">
-                                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-xs">$</span>
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        placeholder={String(totalPurchaseComputed)}
-                                        value={p.amount}
-                                        onChange={(e) => {
-                                          const val = e.target.value;
-                                          setPurchasePayments(prev => {
-                                            const copy = [...prev];
-                                            copy[idx] = { ...copy[idx], amount: val === '' ? '' : Number(val) };
-                                            return copy;
-                                          });
-                                        }}
-                                        className="w-full h-9 pl-6 pr-2.5 rounded-xl bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-xs sm:text-sm font-black text-slate-900 dark:text-white font-mono outline-none focus:ring-2 focus:ring-emerald-500 text-right"
-                                      />
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-
-                            {/* Sobran / Faltan */}
-                            {isPurchaseSobra && (
-                              <div className="pt-0.5">
-                                <button
-                                  type="button"
-                                  onClick={handleAutocorrectPurchaseSobrante}
-                                  className="text-xs font-black text-emerald-600 hover:underline cursor-pointer flex items-center gap-1"
-                                >
-                                  <span>Sobran ${purchaseSobrante.toLocaleString()}</span>
-                                  <span className="text-[10px] text-slate-400 font-normal">(Tocar para autocorregir)</span>
-                                </button>
-                              </div>
-                            )}
-
-                            {isPurchaseFalta && (
-                              <div className="flex items-center justify-between pt-0.5">
-                                <button
-                                  type="button"
-                                  onClick={() => handleAddNewPurchasePaymentMethod()}
-                                  className="text-xs font-black text-amber-600 hover:text-amber-700 cursor-pointer"
-                                >
-                                  <span>Faltan ${purchaseFaltante.toLocaleString()}</span>
-                                  <span className="text-[10px] text-slate-400 font-normal underline ml-1">(Tocar para autocompletar)</span>
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => handleAddNewPurchasePaymentMethod()}
-                                  className="text-xs font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 cursor-pointer"
-                                >
-                                  <Plus size={13} />
-                                  <span>Dividir pago</span>
-                                </button>
-                              </div>
-                            )}
-
-                            {isPurchaseMathExact && purchasePayments.length < 4 && (
-                              <div className="pt-0.5">
-                                <button
-                                  type="button"
-                                  onClick={() => handleAddNewPurchasePaymentMethod()}
-                                  className="text-xs font-bold text-slate-500 hover:text-slate-800 dark:hover:text-white flex items-center gap-1 cursor-pointer"
-                                >
-                                  <Plus size={13} />
-                                  <span>Dividir con otro medio</span>
-                                </button>
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Actions Paso 2 */}
-                          <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                        /* PASO 2: REGISTRAR EL PAGO DE LA COMPRA (UNIFICADO CON GASTOS/MOSTRADOR/RESERVAS) */
+                        <form onSubmit={handleConfirmPurchase} className="flex flex-col">
+                          {/* Cabecera Paso 2 unificada */}
+                          <div className="shrink-0 px-4 py-3 sm:px-5 sm:py-3.5 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 z-20">
                             <button
                               type="button"
                               onClick={() => setPurchaseStep(1)}
-                              className="py-2.5 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1"
+                              className="p-1 -ml-1 text-slate-500 hover:text-slate-800 dark:hover:text-white rounded-full transition-colors cursor-pointer"
                             >
-                              <ChevronLeft size={16} />
-                              <span>Volver</span>
+                              <ChevronLeft size={24} />
                             </button>
-                            <button
-                              type="submit"
-                              disabled={isRegisteringPurchase || !isPurchaseMathExact}
-                              className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-emerald-900/10 transition-all cursor-pointer flex items-center justify-center gap-1.5"
-                            >
-                              {isRegisteringPurchase ? (
-                                <span>Registrando...</span>
+                            <h3 className="text-base sm:text-lg font-black text-gray-900 dark:text-white flex-1 text-center pr-6">
+                              Pago de compras
+                            </h3>
+                          </div>
+
+                          <div className="p-4 sm:p-5 space-y-4">
+                            {/* Resumen central */}
+                            <div className="text-center pt-1 pb-2">
+                              <span className="text-xs text-gray-400 font-medium lowercase block">total a pagar</span>
+                              <span className="text-4xl font-black text-gray-900 dark:text-white font-mono tracking-tight block my-1">
+                                ${totalPurchaseComputed.toLocaleString()}
+                              </span>
+                              <div className="max-w-[240px] sm:max-w-[260px] mx-auto pt-1.5 flex items-start justify-between gap-4 border-t border-gray-100 dark:border-slate-800">
+                                <div className="text-left min-w-0">
+                                  <span className="text-xs font-medium text-gray-500 dark:text-slate-400 truncate leading-tight block">
+                                    {selectedProduct?.name || 'Mercadería'}
+                                  </span>
+                                  <span className="text-[10px] text-gray-400 dark:text-slate-500 leading-tight block mt-0.5">
+                                    {purchaseForm.quantity}u x ${Number(purchaseForm.unitCost || 0).toLocaleString()} c/u
+                                  </span>
+                                </div>
+                                <span className="text-xs font-medium text-gray-500 dark:text-slate-400 shrink-0 leading-tight">
+                                  ${totalPurchaseComputed.toLocaleString()}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Fila Entidad idéntica a POSModal.tsx */}
+                            <div ref={entityPurchaseDropdownRef} className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                              {!selectedPurchaseEntity ? (
+                                <div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setIsPurchaseEntityDropdownOpen(!isPurchaseEntityDropdownOpen)}
+                                    className={`text-left font-bold text-sm cursor-pointer block ${
+                                      isPurchaseEntityBlocked
+                                        ? 'text-red-600'
+                                        : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-white'
+                                    }`}
+                                  >
+                                    {isPurchaseEntityBlocked ? '+ Añadir entidad (Obligatorio) *' : '+ Añadir entidad (opcional)'}
+                                  </button>
+
+                                  {isPurchaseEntityDropdownOpen && (
+                                    <div className="mt-2 p-3 bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-slate-700 shadow-lg space-y-2">
+                                      <div className="relative">
+                                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                                        <input
+                                          type="text"
+                                          placeholder="Buscar por nombre, CUIT o teléfono..."
+                                          value={purchaseEntitySearch}
+                                          onChange={(e) => setPurchaseEntitySearch(e.target.value)}
+                                          className="w-full h-8 pl-8 pr-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[#7c12e8]"
+                                          autoFocus
+                                        />
+                                      </div>
+
+                                      <div className="max-h-28 overflow-y-auto divide-y divide-gray-100 dark:divide-slate-700 text-xs">
+                                        {filteredPurchaseEntities.length === 0 ? (
+                                          <p className="p-2 text-gray-400 text-center">No hay entidades disponibles</p>
+                                        ) : (
+                                          filteredPurchaseEntities.map((ent) => (
+                                            <div
+                                              key={`purch-ent-opt-${ent.id}`}
+                                              onClick={() => {
+                                                setSelectedPurchaseEntity(ent);
+                                                setIsPurchaseEntityDropdownOpen(false);
+                                                setPurchaseEntitySearch('');
+                                              }}
+                                              className="p-2 hover:bg-purple-50 dark:hover:bg-slate-700/60 rounded-lg flex items-center justify-between cursor-pointer transition-colors"
+                                            >
+                                              <div>
+                                                <div className="flex items-center gap-1.5">
+                                                  <span className="font-bold text-gray-900 dark:text-white">
+                                                    {ent.name}
+                                                  </span>
+                                                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300">
+                                                    {ent.type}
+                                                  </span>
+                                                </div>
+                                                <span className="text-[11px] text-[#0BA70B]">
+                                                  {ent.phone || ent.cuit || '-'}
+                                                </span>
+                                              </div>
+                                            </div>
+                                          ))
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
                               ) : (
-                                <>
-                                  <Check size={16} />
-                                  <span>Confirmar compra · ${totalPurchaseComputed.toLocaleString()}</span>
-                                </>
+                                <div className="flex items-center justify-between py-1">
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <p className="text-sm font-bold text-gray-900 dark:text-white truncate">
+                                        {selectedPurchaseEntity.name}
+                                      </p>
+                                      <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-gray-100 text-gray-600 dark:bg-slate-700 dark:text-slate-300">
+                                        {selectedPurchaseEntity.type}
+                                      </span>
+                                    </div>
+                                    <p className="text-xs font-mono text-[#0BA70B]">
+                                      {selectedPurchaseEntity.phone || selectedPurchaseEntity.cuit || '-'}
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedPurchaseEntity(null)}
+                                    className="p-1.5 text-gray-400 hover:text-rose-500 rounded-lg cursor-pointer transition-colors"
+                                    title="Quitar entidad"
+                                  >
+                                    <Trash2 size={16} />
+                                  </button>
+                                </div>
                               )}
-                            </button>
+                            </div>
+
+                            {/* Filas de Métodos de Pago: transparentes, alineadas en la misma línea horizontal, monto sin borde */}
+                            <div className="space-y-2 pt-1">
+                              <div className="text-sm font-bold text-gray-600 dark:text-slate-300 text-left">
+                                Método de pago
+                              </div>
+
+                              <div className="space-y-1.5">
+                                {purchasePayments.map((p, idx) => {
+                                  const isDeleteOpen = deletePurchaseMenuRowId === p.id;
+
+                                  return (
+                                    <div
+                                      key={`purch-pay-block-${p.id}`}
+                                      className={cn("bg-transparent border-none shadow-none py-1.5 relative", isDeleteOpen ? "z-40" : "z-10")}
+                                    >
+                                      {/* Fila principal en una sola línea horizontal */}
+                                      <div className="flex items-center justify-between w-full">
+                                        {/* Zona 1: Icono + Nombre del método */}
+                                        <div 
+                                          onClick={() => {
+                                            setEditingPurchasePaymentIndex(idx);
+                                            setIsPurchasePaymentSheetOpen(true);
+                                          }}
+                                          className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer py-1"
+                                        >
+                                          {renderPurchaseMethodIcon(p.method)}
+                                          <span className="font-black text-sm text-gray-900 dark:text-white truncate">
+                                            {p.method}
+                                          </span>
+                                        </div>
+
+                                        {/* Zona 2: Badge de Monto SIN BORDE */}
+                                        <div className="flex items-center gap-2 shrink-0">
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            placeholder="0"
+                                            value={p.amount}
+                                            onChange={(e) => {
+                                              const val = e.target.value;
+                                              setPurchasePayments((prev) => {
+                                                const copy = [...prev];
+                                                copy[idx] = { ...copy[idx], amount: val === '' ? '' : Number(val) };
+                                                return copy;
+                                              });
+                                            }}
+                                            className={`border-0 border-none ring-0 focus:ring-0 outline-none rounded-lg px-3 py-1.5 w-24 text-center font-bold text-xs sm:text-sm text-gray-900 dark:text-white transition-colors ${
+                                              isPurchaseFalta 
+                                                ? 'bg-[#fce8e8] dark:bg-red-950/50' 
+                                                : 'bg-[#f1e8fc] dark:bg-purple-950/50'
+                                            }`}
+                                          />
+
+                                          {/* Zona 3: Flecha > con Popover de Borrado en letra gris */}
+                                          <div className="relative shrink-0">
+                                            <button
+                                              type="button"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                setDeletePurchaseMenuRowId(isDeleteOpen ? null : p.id);
+                                              }}
+                                              className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer transition-colors"
+                                            >
+                                              <ChevronRight size={18} />
+                                            </button>
+
+                                            {isDeleteOpen && (
+                                              <div className="absolute right-0 top-full mt-1 z-50 animate-in fade-in zoom-in-95 duration-150">
+                                                <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleRemovePurchasePaymentBlock(p.id);
+                                                    setDeletePurchaseMenuRowId(null);
+                                                  }}
+                                                  disabled={purchasePayments.length <= 1}
+                                                  className="px-3 py-1.5 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-gray-200 dark:border-slate-700 text-gray-500 dark:text-slate-300 hover:text-gray-700 text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-40"
+                                                >
+                                                  <Trash2 size={13} />
+                                                  <span>Borrar método de pago</span>
+                                                </button>
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
+
+                                      {/* Renglón inferior alineado bajo el badge para no desalinear la fila */}
+                                      {purchaseFaltante > 0 && (
+                                        <div className="text-right pr-7 mt-0.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setPurchasePayments((prev) => {
+                                                const copy = [...prev];
+                                                const cur = Number(copy[idx].amount) || 0;
+                                                copy[idx] = { ...copy[idx], amount: cur + purchaseFaltante };
+                                                return copy;
+                                              });
+                                            }}
+                                            className="text-[11px] font-bold text-rose-600 underline cursor-pointer"
+                                          >
+                                            Faltan ${purchaseFaltante.toLocaleString()}
+                                          </button>
+                                        </div>
+                                      )}
+
+                                      {purchaseSobrante > 0 && (
+                                        <div className="text-right pr-7 mt-0.5">
+                                          <button
+                                            type="button"
+                                            onClick={handleAutocorrectPurchaseSobrante}
+                                            className="text-[11px] font-bold text-[#7c12e8] underline cursor-pointer"
+                                          >
+                                            Sobran ${purchaseSobrante.toLocaleString()}
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              {/* Botón "+ agregar método de pago" con fondo transparente */}
+                              {purchaseFaltante > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingPurchasePaymentIndex(null);
+                                    setIsPurchasePaymentSheetOpen(true);
+                                  }}
+                                  className="w-full py-2.5 rounded-xl bg-transparent border border-gray-200 dark:border-slate-700 text-center font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-100 hover:bg-gray-50/50 transition-colors cursor-pointer"
+                                >
+                                  + agregar método de pago
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Botón Principal Inferior en Paso 2 de Compras */}
+                            <div className="pt-2">
+                              <button
+                                type="button"
+                                onClick={() => handleConfirmPurchase()}
+                                disabled={!canFinalizePurchase}
+                                className={`w-full py-4 px-4 rounded-2xl font-black text-sm sm:text-base flex items-center justify-center gap-2 shadow-lg transition-all ${
+                                  canFinalizePurchase
+                                    ? 'bg-[#7c12e8] hover:bg-[#680fc5] text-white shadow-[#7c12e8]/25 active:scale-98 cursor-pointer'
+                                    : 'bg-gray-200 dark:bg-slate-800 text-gray-400 dark:text-slate-600 cursor-not-allowed shadow-none'
+                                }`}
+                              >
+                                {isRegisteringPurchase ? (
+                                  <>
+                                    <RefreshCw size={18} className="animate-spin" />
+                                    <span>Registrando compra...</span>
+                                  </>
+                                ) : (
+                                  <span>
+                                    {isPurchaseFalta
+                                      ? `Faltan $${purchaseFaltante.toLocaleString()}`
+                                      : isPurchaseEntityBlocked
+                                      ? 'Asigná una entidad para saldo pendiente'
+                                      : 'Finalizar compra'}
+                                  </span>
+                                )}
+                              </button>
+                            </div>
                           </div>
                         </form>
                       )}
                     </div>
                   )}
                 </motion.div>
+
+                {/* Sub-bottom sheet para seleccionar método de pago en Compra */}
+                <AnimatePresence>
+                  {isPurchasePaymentSheetOpen && (
+                    <div
+                      className="fixed inset-0 z-[80] flex flex-col justify-end bg-black/60 backdrop-blur-xs select-none"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setIsPurchasePaymentSheetOpen(false);
+                        setEditingPurchasePaymentIndex(null);
+                      }}
+                    >
+                      <motion.div
+                        drag="y"
+                        dragListener={false}
+                        dragControls={purchaseSheetDragControls}
+                        dragConstraints={{ top: 0, bottom: 0 }}
+                        dragElastic={{ top: 0, bottom: 0.9 }}
+                        onDragEnd={(_, info) => {
+                          if (info.offset.y > 100) {
+                            setIsPurchasePaymentSheetOpen(false);
+                            setEditingPurchasePaymentIndex(null);
+                          }
+                        }}
+                        initial={{ y: '100%' }}
+                        animate={{ y: 0 }}
+                        exit={{ y: '100%' }}
+                        transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="bg-white dark:bg-slate-900 rounded-t-[32px] sm:rounded-3xl p-5 shadow-2xl border border-gray-100 dark:border-slate-800 w-full max-w-md mx-auto space-y-4"
+                      >
+                        <div 
+                          onPointerDown={(e) => purchaseSheetDragControls.start(e)}
+                          className="touch-none cursor-grab active:cursor-grabbing text-center space-y-1 -mt-1 mb-2"
+                        >
+                          <div className="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mb-2 shrink-0" />
+                          <h4 className="font-black text-base text-gray-900 dark:text-white">
+                            {editingPurchasePaymentIndex !== null ? 'Cambiar método de pago' : 'Agregar método de pago'}
+                          </h4>
+                          <p className="text-xs text-gray-400">
+                            mantené presionado para ordenar los métodos de pago según tu preferencia
+                          </p>
+                        </div>
+
+                        <Reorder.Group
+                          axis="y"
+                          values={orderedPurchaseMethods}
+                          onReorder={handleSavePurchaseMethodsOrder}
+                          className="space-y-2 py-2"
+                        >
+                          {orderedPurchaseMethods.map((m) => (
+                            <Reorder.Item
+                              key={`reorder-purch-sheet-${m}`}
+                              value={m}
+                              className="p-3.5 bg-gray-50 dark:bg-slate-800 rounded-2xl border border-gray-200/80 dark:border-slate-700 flex items-center justify-between cursor-pointer hover:border-gray-400 transition-colors shadow-2xs"
+                              onClick={() => {
+                                const targetMethod = (m === 'Tarjeta' ? 'Crédito' : m) as 'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente';
+                                if (editingPurchasePaymentIndex !== null) {
+                                  handleChangePurchaseBlockMethod(editingPurchasePaymentIndex, targetMethod);
+                                } else {
+                                  handleAddNewPurchasePaymentMethod(targetMethod);
+                                }
+                                setIsPurchasePaymentSheetOpen(false);
+                                setEditingPurchasePaymentIndex(null);
+                              }}
+                            >
+                              <div className="flex items-center gap-3">
+                                {renderPurchaseMethodIcon(m)}
+                                <span className="font-black text-sm text-gray-900 dark:text-white">
+                                  {m}
+                                </span>
+                              </div>
+                              <div
+                                onPointerDown={(e) => e.stopPropagation()}
+                                className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 cursor-grab active:cursor-grabbing touch-none"
+                              >
+                                <GripVertical size={18} />
+                              </div>
+                            </Reorder.Item>
+                          ))}
+                        </Reorder.Group>
+                      </motion.div>
+                    </div>
+                  )}
+                </AnimatePresence>
               </motion.div>
             </div>
           )}

@@ -18,9 +18,15 @@ import {
   ChevronRight,
   ChevronLeft,
   ChevronDown,
-  Building2
+  Building2,
+  CreditCard,
+  Landmark,
+  CircleDollarSign,
+  History,
+  GripVertical,
+  RefreshCw
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, Reorder, useDragControls } from 'motion/react';
 import type { Product, ProductCategory, FinancialPaymentMethod, ExpenseEntity, ExpenseEntityType } from '../types';
 import { getExpenseEntityTypeBadgeClass } from '../types';
 import { cn } from '../lib/utils';
@@ -134,6 +140,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
   const conceptDropdownRef = useRef<HTMLDivElement>(null);
   const entityDropdownRef = useRef<HTMLDivElement>(null);
   const hasInitializedPurchaseRubroRef = useRef(false);
+
 
   // -------------------------------------------------------------
   // ESTADOS DE GASTOS (RUBROS Y CONCEPTOS)
@@ -590,7 +597,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
       categoryId: categories[0] || 'Kiosco',
       purchasePrice: 0,
       salePrice: 0,
-      stock: 10,
+      stock: 0,
       status: 'activo'
     });
     setIsProductModalOpen(true);
@@ -607,7 +614,17 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
     setIsSubmitting(true);
     setActionError(null);
     try {
-      await saveProductInFirestore(targetId, editingProduct);
+      const finalStock = editingProduct.id
+        ? (products.find(p => p.id === editingProduct.id)?.stock ?? Number(editingProduct.stock || 0))
+        : 0;
+      const finalPurchasePrice = editingProduct.id
+        ? Number(editingProduct.purchasePrice || 0)
+        : 0;
+      await saveProductInFirestore(targetId, {
+        ...editingProduct,
+        stock: finalStock,
+        purchasePrice: finalPurchasePrice
+      });
       setIsProductModalOpen(false);
       setEditingProduct(null);
     } catch (err: any) {
@@ -666,6 +683,102 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
 
   const amountPendingComputed = Math.max(0, totalPurchaseComputed - totalPaidComputed);
 
+  const hasPurchasePendingPayment = useMemo(() => {
+    return purchasePayments.some(p => p.method === 'Pendiente' && (Number(p.amount) || 0) > 0);
+  }, [purchasePayments]);
+
+  const isPurchaseEntityBlocked = hasPurchasePendingPayment && !selectedPurchaseEntity;
+  const canConfirmPurchase = totalPurchaseComputed > 0 && !isPurchaseFalta && !isPurchaseEntityBlocked;
+  const canFinalizePurchase = canConfirmPurchase;
+  const isRegisteringPurchase = isSubmittingPurchase;
+
+  // Estados para pantalla y sub-bottom sheet de pago de compras (unificado con POSModal/Gastos/Reservas)
+  const [deletePurchaseMenuRowId, setDeletePurchaseMenuRowId] = useState<string | null>(null);
+  const [isPurchasePaymentSheetOpen, setIsPurchasePaymentSheetOpen] = useState(false);
+  const [editingPurchasePaymentIndex, setEditingPurchasePaymentIndex] = useState<number | null>(null);
+  const [orderedPurchaseMethods, setOrderedPurchaseMethods] = useState<string[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('jogo_payment_methods_order');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const normalized = parsed.map((m: string) =>
+              m === 'Fiado' ? 'Pendiente' : (m === 'Crédito' || m === 'Credito') ? 'Tarjeta' : m
+            );
+            const defs = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
+            defs.forEach(d => {
+              if (!normalized.includes(d)) normalized.push(d);
+            });
+            return Array.from(new Set(normalized));
+          }
+        }
+      } catch (e) {}
+    }
+    return ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
+  });
+
+  useEffect(() => {
+    const handleOrderChange = () => {
+      try {
+        const saved = localStorage.getItem('jogo_payment_methods_order');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const normalized = parsed.map((m: string) =>
+              m === 'Fiado' ? 'Pendiente' : (m === 'Crédito' || m === 'Credito') ? 'Tarjeta' : m
+            );
+            const defs = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
+            defs.forEach(d => {
+              if (!normalized.includes(d)) normalized.push(d);
+            });
+            const newOrder = Array.from(new Set(normalized));
+            setOrderedPurchaseMethods(newOrder);
+            setPurchasePayments(prev => prev.length === 1 ? [{ ...prev[0], method: newOrder[0] as any || 'Efectivo' }] : prev);
+          }
+        }
+      } catch (e) {}
+    };
+    window.addEventListener('jogo_payment_methods_order_changed', handleOrderChange);
+    return () => window.removeEventListener('jogo_payment_methods_order_changed', handleOrderChange);
+  }, []);
+
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      setDeletePurchaseMenuRowId(null);
+    };
+    window.addEventListener('mousedown', handleGlobalClick);
+    window.addEventListener('touchstart', handleGlobalClick);
+    return () => {
+      window.removeEventListener('mousedown', handleGlobalClick);
+      window.removeEventListener('touchstart', handleGlobalClick);
+    };
+  }, []);
+
+  const handleSavePurchaseMethodsOrder = (newOrder: string[]) => {
+    setOrderedPurchaseMethods(newOrder);
+    try {
+      localStorage.setItem('jogo_payment_methods_order', JSON.stringify(newOrder));
+      window.dispatchEvent(new Event('jogo_payment_methods_order_changed'));
+    } catch (e) {}
+    setPurchasePayments(prev => prev.length === 1 ? [{ ...prev[0], method: newOrder[0] as any || 'Efectivo' }] : prev);
+  };
+  const purchaseSheetDragControls = useDragControls();
+
+  const renderPurchaseMethodIcon = (method: string) => {
+    const m = method.toLowerCase();
+    if (m.includes('transf') || m.includes('transfer')) {
+      return <Landmark size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+    }
+    if (m.includes('tarjeta') || m.includes('crédito') || m.includes('credito') || m.includes('credit')) {
+      return <CreditCard size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+    }
+    if (m.includes('pendiente') || m.includes('fiado')) {
+      return <History size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+    }
+    return <CircleDollarSign size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+  };
+
   const handleOpenPurchaseModal = (prod: Product) => {
     setSelectedProductForPurchase(prod);
     setPurchaseStep(1);
@@ -697,8 +810,9 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
     setSelectedPurchaseEntity(null);
     setPurchaseEntitySearch('');
     setIsPurchaseEntityDropdownOpen(false);
+    const firstMethod = (orderedPurchaseMethods[0] as any) || 'Efectivo';
     setPurchasePayments([
-      { id: `purch_p_${Date.now()}`, method: 'Efectivo', amount: cost * 10 > 0 ? cost * 10 : '' }
+      { id: `purch_p_${Date.now()}`, method: firstMethod, amount: cost * 10 > 0 ? cost * 10 : '' }
     ]);
     setIsPurchaseModalOpen(true);
   };
@@ -719,9 +833,10 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
       return;
     }
 
+    const firstMethod = (orderedPurchaseMethods[0] as any) || 'Efectivo';
     if (purchasePayments.length <= 1 && (!purchasePayments[0]?.amount || Number(purchasePayments[0]?.amount) === 0)) {
       setPurchasePayments([
-        { id: `purch_p_${Date.now()}`, method: 'Efectivo', amount: totalPurchaseComputed }
+        { id: `purch_p_${Date.now()}`, method: firstMethod, amount: totalPurchaseComputed }
       ]);
     } else if (purchasePayments.length === 1) {
       setPurchasePayments([
@@ -788,12 +903,26 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
       return;
     }
 
-    if (!isPurchaseMathExact) {
-      alert(isPurchaseFalta
-        ? `Faltan $${purchaseFaltante.toLocaleString()} por asignar para completar el total de la compra ($${totalPurchaseComputed.toLocaleString()}).`
-        : `Los importes asignados ($${totalAssignedPurchasePayments.toLocaleString()}) superan el total de la compra ($${totalPurchaseComputed.toLocaleString()}).`
-      );
+    if (isPurchaseEntityBlocked) {
+      alert('Debés asignar una entidad para registrar un saldo pendiente.');
       return;
+    }
+
+    if (isPurchaseFalta) {
+      alert(`Faltan $${purchaseFaltante.toLocaleString()} por asignar para completar el total de la compra ($${totalPurchaseComputed.toLocaleString()}).`);
+      return;
+    }
+
+    // Si sobra dinero y hay efectivo, autocorregir deduciendo el sobrante del efectivo
+    if (isPurchaseSobra) {
+      const cashIdx = purchasePayments.findIndex(p => p.method === 'Efectivo');
+      if (cashIdx >= 0) {
+        const curCash = Number(purchasePayments[cashIdx].amount) || 0;
+        purchasePayments[cashIdx].amount = Math.max(0, curCash - purchaseSobrante);
+      } else {
+        const last = purchasePayments[purchasePayments.length - 1];
+        last.amount = Math.max(0, (Number(last.amount) || 0) - purchaseSobrante);
+      }
     }
 
     setIsSubmittingPurchase(true);
@@ -1218,58 +1347,52 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
       <AnimatePresence>
         {isPurchaseModalOpen && selectedProductForPurchase && (
           <div 
-            className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4 select-none"
+            className="fixed inset-0 z-[70] flex flex-col justify-end sm:justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4 select-none"
             onClick={() => setIsPurchaseModalOpen(false)}
           >
             <motion.div 
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 30 }}
-              onClick={(e) => e.stopPropagation()}
-              className="bg-white dark:bg-slate-900 rounded-t-2xl sm:rounded-2xl shadow-2xl border border-gray-100 dark:border-slate-800 w-full max-w-lg p-4 sm:p-5 space-y-3.5 max-h-[90vh] overflow-y-auto"
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setDeletePurchaseMenuRowId(null);
+              }}
+              className="bg-[#f8fafc] dark:bg-slate-900 w-full max-w-2xl max-h-[96vh] sm:max-h-[90vh] rounded-t-[32px] sm:rounded-3xl shadow-2xl border border-gray-100 dark:border-slate-800 flex flex-col overflow-hidden mx-auto relative"
             >
-              <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
-                <div className="flex items-center gap-2">
-                  {purchaseStep === 2 && (
-                    <button
-                      type="button"
-                      onClick={() => setPurchaseStep(1)}
-                      className="p-1 text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-white rounded-lg hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                      title="Volver a los datos de la compra"
-                    >
-                      <ChevronLeft size={20} />
-                    </button>
-                  )}
-                  <div>
-                    <h4 className="font-black text-sm sm:text-base text-gray-900 dark:text-white flex items-center gap-1.5">
-                      <PackagePlus className="text-emerald-600" size={18} />
-                      <span>{purchaseStep === 1 ? 'Registrar Compra de Mercadería' : 'Registrar Pago de Compra'}</span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 ml-1">
-                        Paso {purchaseStep} de 2
-                      </span>
-                    </h4>
-                    <p className="text-xs text-gray-500 dark:text-slate-400">
-                      {purchaseStep === 1 
-                        ? `${selectedProductForPurchase.name} · Stock actual: ${selectedProductForPurchase.stock} u.`
-                        : `Distribución de pago · Total: $${totalPurchaseComputed.toLocaleString()}`}
-                    </p>
+              {/* Pill capsule drag handle */}
+              <div className="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mt-3 mb-1 shrink-0" />
+
+              {purchaseStep === 1 && (
+                <div className="flex items-center justify-between px-5 py-2.5 border-b border-gray-100 dark:border-slate-800 shrink-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <PackagePlus className="text-emerald-600 shrink-0" size={18} />
+                    <div className="min-w-0">
+                      <h4 className="font-black text-sm sm:text-base text-gray-900 dark:text-white truncate">
+                        Registrar Compra de Mercadería
+                      </h4>
+                      <p className="text-xs text-gray-500 dark:text-slate-400 truncate">
+                        {selectedProductForPurchase.name} · Stock actual: {selectedProductForPurchase.stock} u.
+                      </p>
+                    </div>
                   </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsPurchaseModalOpen(false)}
+                    className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer shrink-0 ml-2"
+                  >
+                    <X size={18} />
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setIsPurchaseModalOpen(false)}
-                  className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer"
-                >
-                  <X size={18} />
-                </button>
-              </div>
+              )}
 
               {/* PASO 1: DATOS DE LA COMPRA (PRODUCTO, CANTIDAD, COSTO, PROVEEDOR) */}
               {purchaseStep === 1 ? (
-                <div className="space-y-3.5">
+                <div className="p-4 sm:p-5 space-y-3.5 overflow-y-auto">
                   {/* Selector si hay múltiples productos */}
                   <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
                       Producto a Reponer
                     </label>
                     <select
@@ -1282,7 +1405,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                           if (cost > 0) setPurchaseUnitCost(cost);
                         }
                       }}
-                      className="w-full h-9.5 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-bold text-gray-900 dark:text-white outline-none"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-bold text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500/20"
                     >
                       {products.map(p => (
                         <option key={`purch-opt-${p.id}`} value={p.id}>
@@ -1292,24 +1415,24 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                     </select>
                   </div>
 
-                  {/* Cantidad y Costo Unitario */}
+                  {/* Fila 1: Cantidad y Costo por unidad */}
                   <div className="grid grid-cols-2 gap-2.5">
                     <div>
-                      <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                        Cantidad a Ingresar *
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                        Cantidad *
                       </label>
                       <input
                         type="number"
                         min={1}
                         value={purchaseQty}
                         onChange={(e) => setPurchaseQty(e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 1))}
-                        className="w-full h-9.5 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 font-mono text-sm font-bold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                        Costo Unitario ($) *
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                        Costo unitario ($) *
                       </label>
                       <input
                         type="number"
@@ -1317,51 +1440,22 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                         placeholder="0"
                         value={purchaseUnitCost}
                         onChange={(e) => setPurchaseUnitCost(e.target.value === '' ? '' : Number(e.target.value))}
-                        className="w-full h-9.5 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 font-mono text-sm font-bold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20"
                       />
                     </div>
                   </div>
 
-                  {/* SELECTORES DE RUBRO Y CONCEPTO DE GASTO / PROVEEDOR */}
-                  <div className="space-y-2.5">
+                  {/* Fila 2: Rubro y Concepto */}
+                  <div className="grid grid-cols-2 gap-2.5">
                     {/* Selector 1: Rubro de Gasto */}
                     <div className="relative" ref={rubroDropdownRef}>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
-                          <span>Rubro</span>
-                          {selectedPurchaseRubro ? (
-                            <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.5 rounded">
-                              <span>{selectedPurchaseRubro.name}</span>
-                              <button
-                                type="button"
-                                onClick={handleClearPurchaseRubro}
-                                className="hover:text-red-500 cursor-pointer ml-0.5"
-                                title="Quitar rubro seleccionado"
-                              >
-                                <X size={10} />
-                              </button>
-                            </span>
-                          ) : (
-                            <span className="text-[9px] text-gray-400 font-normal">
-                              (Sin seleccionar)
-                            </span>
-                          )}
-                        </label>
-                        <button
-                          type="button"
-                          onClick={handleOpenAddRubroFromPurchase}
-                          className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:text-emerald-800 dark:hover:text-emerald-200 flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
-                          title="Crear nuevo rubro de gastos"
-                        >
-                          <Plus size={12} className="stroke-[3]" />
-                          <span>+ Rubro</span>
-                        </button>
-                      </div>
-
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                        Rubro
+                      </label>
                       <div className="relative">
                         <input
                           type="text"
-                          placeholder="Elegir o buscar «Rubro» (ej. Proveedores, Bebidas)..."
+                          placeholder="Elegir o buscar rubro..."
                           value={purchaseRubroSearch}
                           onFocus={() => setIsPurchaseRubroDropdownOpen(true)}
                           onChange={(e) => {
@@ -1377,25 +1471,25 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                               }
                             }
                           }}
-                          className="w-full h-9.5 pl-3 pr-8 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                          className="w-full px-3 py-2.5 pr-7 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 truncate"
                         />
                         {purchaseRubroSearch ? (
                           <button
                             type="button"
                             onClick={handleClearPurchaseRubro}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 cursor-pointer"
-                            title="Limpiar búsqueda y quitar selección"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
+                            title="Limpiar rubro"
                           >
                             <X size={13} />
                           </button>
                         ) : (
-                          <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                          <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                         )}
                       </div>
 
                       {/* Dropdown Rubros */}
                       {isPurchaseRubroDropdownOpen && (
-                        <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-48 overflow-y-auto divide-y divide-gray-100 dark:divide-slate-700/50">
+                        <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-44 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700/50">
                           {filteredPurchaseRubros.length > 0 ? (
                             filteredPurchaseRubros.map((r) => {
                               const isSelected = selectedPurchaseRubro?.id === r.id;
@@ -1405,25 +1499,17 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                                   type="button"
                                   onClick={() => handleSelectPurchaseRubro(r)}
                                   className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
-                                    isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-gray-700 dark:text-slate-200'
+                                    isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-slate-700 dark:text-slate-200'
                                   }`}
                                 >
-                                  <span>{r.name}</span>
-                                  {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
+                                  <span className="truncate">{r.name}</span>
+                                  {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0 ml-1" />}
                                 </button>
                               );
                             })
                           ) : (
-                            <div className="p-3 text-center text-xs text-gray-400 dark:text-slate-400">
-                              <p className="mb-1.5">No se encontraron rubros con "{purchaseRubroSearch}".</p>
-                              <button
-                                type="button"
-                                onClick={handleOpenAddRubroFromPurchase}
-                                className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
-                              >
-                                <Plus size={12} />
-                                <span>Crear "{purchaseRubroSearch}" como Rubro</span>
-                              </button>
+                            <div className="p-2.5 text-center text-xs text-slate-400 dark:text-slate-400">
+                              Sin resultados
                             </div>
                           )}
                         </div>
@@ -1432,30 +1518,13 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
 
                     {/* Selector 2: Concepto de Gasto / Proveedor */}
                     <div className="relative" ref={conceptDropdownRef}>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1">
-                          <span>Concepto</span>
-                          {selectedPurchaseConcept && (
-                            <span className="text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-1.5 py-0.2 rounded">
-                              {selectedPurchaseConcept.categoryName || selectedPurchaseConcept.categoryId}
-                            </span>
-                          )}
-                        </label>
-                        <button
-                          type="button"
-                          onClick={handleOpenAddConceptFromPurchase}
-                          className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:text-emerald-800 dark:hover:text-emerald-200 flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
-                          title="Crear nuevo concepto de gastos"
-                        >
-                          <Plus size={12} className="stroke-[3]" />
-                          <span>+ Agregar concepto</span>
-                        </button>
-                      </div>
-
+                      <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
+                        Concepto
+                      </label>
                       <div className="relative">
                         <input
                           type="text"
-                          placeholder={selectedPurchaseRubro ? `Elegir o buscar «Concepto» en ${selectedPurchaseRubro.name}...` : "Elegir o buscar «Concepto» (ej. Cervecería Quilmes, Distribuidora)..."}
+                          placeholder={selectedPurchaseRubro ? `Concepto en ${selectedPurchaseRubro.name}...` : "Elegir concepto..."}
                           value={purchaseConceptSearch}
                           onFocus={() => setIsPurchaseConceptDropdownOpen(true)}
                           onChange={(e) => {
@@ -1467,7 +1536,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                               setSelectedPurchaseConcept(null);
                             }
                           }}
-                          className="w-full h-9.5 pl-3 pr-8 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
+                          className="w-full px-3 py-2.5 pr-7 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-semibold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 truncate"
                         />
                         {purchaseConceptSearch ? (
                           <button
@@ -1477,219 +1546,47 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                               setPurchaseConceptSearch('');
                               setPurchasePlace('');
                             }}
-                            className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 cursor-pointer"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer"
                           >
                             <X size={13} />
                           </button>
                         ) : (
-                          <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
+                          <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
                         )}
                       </div>
 
                       {/* Dropdown Conceptos */}
                       {isPurchaseConceptDropdownOpen && (
-                        <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-52 overflow-y-auto divide-y divide-gray-100 dark:divide-slate-700/50">
+                        <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-44 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-700/50">
                           {filteredPurchaseConcepts.length > 0 ? (
                             filteredPurchaseConcepts.map((c) => {
                               const isSelected = selectedPurchaseConcept?.id === c.id;
-                              const cRubro = c.categoryName || c.categoryId || '';
-                              const cPrice = Number(c.purchasePrice || c.price || 0);
                               return (
                                 <button
                                   key={`purch-concept-${c.id}`}
                                   type="button"
                                   onClick={() => handleSelectPurchaseConcept(c)}
                                   className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
-                                    isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-gray-700 dark:text-slate-200'
+                                    isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-slate-700 dark:text-slate-200'
                                   }`}
                                 >
-                                  <div className="min-w-0 pr-2">
-                                    <div className="truncate font-semibold">{c.name}</div>
-                                    <div className="text-[10px] text-gray-400 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
-                                      <span className="px-1.5 py-0.2 rounded bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300">{cRubro}</span>
-                                      {cPrice > 0 && <span className="font-mono">${cPrice.toLocaleString()} ref.</span>}
-                                    </div>
+                                  <div className="flex flex-col min-w-0 pr-1">
+                                    <span className="truncate">{c.name}</span>
+                                    <span className="text-[10px] text-slate-400 truncate">
+                                      {c.categoryName || c.categoryId}
+                                    </span>
                                   </div>
-                                  {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
+                                  {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0 ml-1" />}
                                 </button>
                               );
                             })
                           ) : (
-                            <div className="p-3 text-center text-xs text-gray-400 dark:text-slate-400">
-                              <p className="mb-1.5">No se encontraron conceptos con "{purchaseConceptSearch}".</p>
-                              <button
-                                type="button"
-                                onClick={handleOpenAddConceptFromPurchase}
-                                className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
-                              >
-                                <Plus size={12} />
-                                <span>Crear "{purchaseConceptSearch || 'nuevo'}" como Concepto</span>
-                              </button>
+                            <div className="p-2.5 text-center text-xs text-slate-400 dark:text-slate-400">
+                              Sin resultados
                             </div>
                           )}
                         </div>
                       )}
-                    </div>
-
-                    {/* 3ra Dimensión: Entidad / Proveedor (opcional) */}
-                    <div className="relative" ref={entityDropdownRef}>
-                      <div className="flex items-center justify-between mb-1">
-                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
-                          <span>Entidad (opcional)</span>
-                          {selectedPurchaseEntity && (
-                            <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full", getExpenseEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
-                              {selectedPurchaseEntity.type}
-                            </span>
-                          )}
-                        </label>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setQuickEntityForm({
-                              name: purchaseEntitySearch.trim(),
-                              type: 'Empresa',
-                              phone: '',
-                              cuit: ''
-                            });
-                            setQuickEntityError(null);
-                            setIsQuickEntityModalOpen(true);
-                          }}
-                          className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:text-emerald-800 flex items-center gap-1 px-2 py-0.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 border border-emerald-200 dark:border-emerald-800 transition-colors cursor-pointer"
-                          title="Crear nueva entidad al vuelo"
-                        >
-                          <Plus size={12} className="stroke-[3]" />
-                          <span>+ Agregar entidad</span>
-                        </button>
-                      </div>
-
-                      {/* Si hay entidad seleccionada, mostrar Chip/Pill con X para deseleccionar */}
-                      {selectedPurchaseEntity ? (
-                        <div className="flex items-center justify-between p-2 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50/70 dark:bg-emerald-950/40">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <Building2 size={15} className="text-emerald-700 dark:text-emerald-400 shrink-0" />
-                            <span className="text-xs font-bold text-gray-900 dark:text-white truncate">
-                              {selectedPurchaseEntity.name}
-                            </span>
-                            <span className={cn("text-[9px] font-bold px-1.5 py-0.2 rounded-full shrink-0", getExpenseEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
-                              {selectedPurchaseEntity.type}
-                            </span>
-                            {selectedPurchaseEntity.cuit && (
-                              <span className="text-[10px] text-gray-500 font-mono hidden sm:inline">
-                                {selectedPurchaseEntity.cuit}
-                              </span>
-                            )}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedPurchaseEntity(null);
-                              setPurchaseEntitySearch('');
-                            }}
-                            className="p-1 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors cursor-pointer"
-                            title="Quitar entidad"
-                          >
-                            <X size={14} />
-                          </button>
-                        </div>
-                      ) : (
-                        <div className="relative">
-                          <input
-                            type="text"
-                            placeholder="Elegir o buscar «Entidad» (empresa, proveedor, persona)..."
-                            value={purchaseEntitySearch}
-                            onFocus={() => setIsPurchaseEntityDropdownOpen(true)}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              setPurchaseEntitySearch(val);
-                              setIsPurchaseEntityDropdownOpen(true);
-                              if (!val) {
-                                setSelectedPurchaseEntity(null);
-                              }
-                            }}
-                            className="w-full h-9.5 pl-3 pr-8 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
-                          />
-                          {purchaseEntitySearch ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedPurchaseEntity(null);
-                                setPurchaseEntitySearch('');
-                              }}
-                              className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 cursor-pointer"
-                            >
-                              <X size={13} />
-                            </button>
-                          ) : (
-                            <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                          )}
-                        </div>
-                      )}
-
-                      {/* Dropdown Entidades */}
-                      {isPurchaseEntityDropdownOpen && !selectedPurchaseEntity && (
-                        <div className="absolute left-0 right-0 top-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl z-50 max-h-52 overflow-y-auto divide-y divide-gray-100 dark:divide-slate-700/50">
-                          {filteredPurchaseEntities.length > 0 ? (
-                            filteredPurchaseEntities.map((ent) => {
-                              const isSelected = selectedPurchaseEntity?.id === ent.id;
-                              return (
-                                <button
-                                  key={`purch-ent-${ent.id}`}
-                                  type="button"
-                                  onClick={() => handleSelectPurchaseEntity(ent)}
-                                  className={`w-full text-left px-3 py-2 text-xs flex items-center justify-between hover:bg-emerald-50 dark:hover:bg-slate-700/80 transition-colors cursor-pointer ${
-                                    isSelected ? 'bg-emerald-50/70 dark:bg-slate-700 font-bold text-emerald-700 dark:text-emerald-300' : 'text-gray-700 dark:text-slate-200'
-                                  }`}
-                                >
-                                  <div className="min-w-0 pr-2">
-                                    <div className="truncate font-semibold">{ent.name}</div>
-                                    <div className="text-[10px] text-gray-400 dark:text-slate-400 flex items-center gap-1.5 mt-0.5">
-                                      <span className={cn("px-1.5 py-0.2 rounded-full font-bold text-[9px]", getExpenseEntityTypeBadgeClass(ent.type))}>{ent.type}</span>
-                                      {ent.cuit && <span className="font-mono">{ent.cuit}</span>}
-                                      {ent.phone && <span>Tel: {ent.phone}</span>}
-                                    </div>
-                                  </div>
-                                  {isSelected && <Check size={14} className="text-emerald-600 dark:text-emerald-400 shrink-0" />}
-                                </button>
-                              );
-                            })
-                          ) : (
-                            <div className="p-3 text-center text-xs text-gray-400 dark:text-slate-400">
-                              <p className="mb-1.5">No se encontraron entidades con "{purchaseEntitySearch}".</p>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setQuickEntityForm({
-                                    name: purchaseEntitySearch.trim(),
-                                    type: 'Empresa',
-                                    phone: '',
-                                    cuit: ''
-                                  });
-                                  setQuickEntityError(null);
-                                  setIsQuickEntityModalOpen(true);
-                                }}
-                                className="text-emerald-600 dark:text-emerald-400 font-bold hover:underline inline-flex items-center gap-1 cursor-pointer"
-                              >
-                                <Plus size={12} />
-                                <span>Crear "{purchaseEntitySearch || 'nueva'}" como Entidad</span>
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Nota / Factura */}
-                    <div>
-                      <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                        Nota / Factura (opcional)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ej: Factura A-0001-000492, Remito #4492"
-                        value={purchaseNotes}
-                        onChange={(e) => setPurchaseNotes(e.target.value)}
-                        className="w-full h-9.5 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-emerald-500"
-                      />
                     </div>
                   </div>
 
@@ -1712,279 +1609,397 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                   <button
                     type="button"
                     onClick={handleProceedPurchaseToPayment}
-                    className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-black text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
+                    className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-black text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <span>Continuar al Pago</span>
                     <ChevronRight size={17} />
                   </button>
                 </div>
               ) : (
-                /* PASO 2: REGISTRAR EL PAGO DE LA COMPRA (IDÉNTICO A VENTAS DE MOSTRADOR) */
-                <div className="space-y-3.5">
-                  {/* Tarjeta Resumen de la Compra */}
-                  <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 rounded-xl border border-emerald-100 dark:border-emerald-800/40 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:text-emerald-300 block">
-                          Total a Pagar
-                        </span>
-                        <span className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white font-mono">
+                /* PASO 2: REGISTRAR EL PAGO DE LA COMPRA (UNIFICADO CON GASTOS/MOSTRADOR/RESERVAS) */
+                <div className="flex flex-col">
+                  {/* Cabecera Paso 2 unificada */}
+                  <div className="shrink-0 px-4 py-3 sm:px-5 sm:py-3.5 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 z-20">
+                    <button
+                      type="button"
+                      onClick={() => setPurchaseStep(1)}
+                      className="p-1 -ml-1 text-slate-500 hover:text-slate-800 dark:hover:text-white rounded-full transition-colors cursor-pointer"
+                    >
+                      <ChevronLeft size={24} />
+                    </button>
+                    <h3 className="text-base sm:text-lg font-black text-gray-900 dark:text-white flex-1 text-center pr-6">
+                      Pago de compras
+                    </h3>
+                  </div>
+
+                  <div className="p-4 sm:p-5 space-y-4">
+                    {/* Resumen central */}
+                    <div className="text-center pt-1 pb-2">
+                      <span className="text-xs text-gray-400 font-medium lowercase block">total a pagar</span>
+                      <span className="text-4xl font-black text-gray-900 dark:text-white font-mono tracking-tight block my-1">
+                        ${totalPurchaseComputed.toLocaleString()}
+                      </span>
+                      <div className="max-w-[240px] sm:max-w-[260px] mx-auto pt-1.5 flex items-start justify-between gap-4 border-t border-gray-100 dark:border-slate-800">
+                        <div className="text-left min-w-0">
+                          <span className="text-xs font-medium text-gray-500 dark:text-slate-400 truncate leading-tight block">
+                            {selectedProductForPurchase.name}
+                          </span>
+                          <span className="text-[10px] text-gray-400 dark:text-slate-500 leading-tight block mt-0.5">
+                            {purchaseQty}u x ${Number(purchaseUnitCost).toLocaleString()} c/u
+                          </span>
+                        </div>
+                        <span className="text-xs font-medium text-gray-500 dark:text-slate-400 shrink-0 leading-tight">
                           ${totalPurchaseComputed.toLocaleString()}
                         </span>
                       </div>
-                      <div className="text-right">
-                        <span className="text-xs font-bold text-gray-800 dark:text-slate-200 block truncate max-w-[180px]">
-                          {selectedProductForPurchase.name}
-                        </span>
-                        <span className="text-[11px] font-mono text-gray-500 dark:text-slate-400">
-                          {purchaseQty} u. x ${Number(purchaseUnitCost).toLocaleString()}
-                        </span>
-                      </div>
                     </div>
 
-                    <div className="pt-2 border-t border-emerald-200/50 dark:border-emerald-800/40 flex items-center justify-between text-[11px] text-gray-600 dark:text-slate-300">
-                      <span>
-                        Concepto: <strong className="text-gray-900 dark:text-white">{selectedPurchaseConcept?.name || purchaseConceptSearch.trim() || purchasePlace.trim() || 'Proveedor'}</strong>
-                        {(selectedPurchaseRubro?.name || purchaseRubroSearch.trim()) && (
-                          <span className="ml-1 text-[10px] text-emerald-700 dark:text-emerald-400 bg-emerald-100 dark:bg-emerald-950/70 px-1.5 py-0.5 rounded-md font-semibold">
-                            {selectedPurchaseRubro?.name || purchaseRubroSearch.trim()}
-                          </span>
-                        )}
-                        {selectedPurchaseEntity && (
-                          <span className={cn("ml-1.5 inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.2 rounded-full", getExpenseEntityTypeBadgeClass(selectedPurchaseEntity.type))}>
-                            <span>{selectedPurchaseEntity.name}</span>
-                            <span className="opacity-80">· {selectedPurchaseEntity.type}</span>
-                          </span>
-                        )}
-                      </span>
-                      <span className="font-mono text-gray-500">
-                        Asignado: ${totalAssignedPurchasePayments.toLocaleString()} / ${totalPurchaseComputed.toLocaleString()}
-                      </span>
-                    </div>
-                  </div>
+                    {/* Fila Entidad idéntica a POSModal.tsx */}
+                    <div ref={entityDropdownRef} className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                      {!selectedPurchaseEntity ? (
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => setIsPurchaseEntityDropdownOpen(!isPurchaseEntityDropdownOpen)}
+                            className={`text-left font-bold text-sm cursor-pointer block ${
+                              isPurchaseEntityBlocked
+                                ? 'text-red-600'
+                                : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-white'
+                            }`}
+                          >
+                            {isPurchaseEntityBlocked ? '+ Añadir entidad (Obligatorio) *' : '+ Añadir entidad (opcional)'}
+                          </button>
 
-                  {/* Atajos Rápidos */}
-                  <div className="grid grid-cols-3 gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPurchasePayments([{ id: `purch_p_${Date.now()}`, method: 'Efectivo', amount: totalPurchaseComputed }]);
-                      }}
-                      className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-gray-700 dark:text-slate-300 transition-colors text-center cursor-pointer"
-                    >
-                      100% Efectivo
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPurchasePayments([{ id: `purch_p_${Date.now()}`, method: 'Transferencia', amount: totalPurchaseComputed }]);
-                      }}
-                      className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-gray-700 dark:text-slate-300 transition-colors text-center cursor-pointer"
-                    >
-                      100% Transf.
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPurchasePayments([{ id: `purch_p_${Date.now()}`, method: 'Pendiente', amount: totalPurchaseComputed }]);
-                      }}
-                      className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-xs font-bold text-amber-600 dark:text-amber-400 transition-colors text-center cursor-pointer"
-                    >
-                      100% Pendiente
-                    </button>
-                  </div>
+                          {isPurchaseEntityDropdownOpen && (
+                            <div className="mt-2 p-3 bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-slate-700 shadow-lg space-y-2">
+                              <div className="relative">
+                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                                <input
+                                  type="text"
+                                  placeholder="Buscar por nombre, CUIT o teléfono..."
+                                  value={purchaseEntitySearch}
+                                  onChange={(e) => setPurchaseEntitySearch(e.target.value)}
+                                  className="w-full h-8 pl-8 pr-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[#7c12e8]"
+                                  autoFocus
+                                />
+                              </div>
 
-              {/* Distribución de Pagos Mixtos */}
-              {totalPurchaseComputed > 0 && (
-                <div className="space-y-2.5 pt-2 border-t border-gray-100 dark:border-slate-800">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-black uppercase tracking-wider text-gray-700 dark:text-slate-300">
-                      Distribución de Medios de Pago
-                    </span>
-                    <span className="text-[11px] font-mono text-gray-400">
-                      Asignado: ${totalAssignedPurchasePayments.toLocaleString()} / ${totalPurchaseComputed.toLocaleString()}
-                    </span>
-                  </div>
-
-                  <div className="space-y-2">
-                    {purchasePayments.map((p, idx) => (
-                      <div
-                        key={`cat-purch-row-${p.id}`}
-                        className="p-3 bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 shadow-2xs space-y-2"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-1 flex-wrap">
-                            {(['Efectivo', 'Transferencia', 'Crédito', 'Pendiente'] as const).map((m) => {
-                              const isSelected = p.method === m;
-                              const isPend = m === 'Pendiente';
-                              return (
-                                <button
-                                  key={`cat-purch-m-${p.id}-${m}`}
-                                  type="button"
-                                  onClick={() => handleChangePurchaseBlockMethod(idx, m)}
-                                  className={`px-2 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                                    isSelected
-                                      ? isPend
-                                        ? 'bg-amber-600 text-white shadow-2xs'
-                                        : 'bg-emerald-600 text-white shadow-2xs'
-                                      : 'bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 hover:bg-gray-200 dark:hover:bg-slate-600'
-                                  }`}
-                                >
-                                  {m}
-                                </button>
-                              );
-                            })}
-                          </div>
-
-                          {purchasePayments.length > 1 && (
-                            <button
-                              type="button"
-                              onClick={() => handleRemovePurchasePaymentBlock(p.id)}
-                              className="p-1 text-gray-400 hover:text-red-500 rounded cursor-pointer shrink-0"
-                              title="Eliminar método"
-                            >
-                              <Trash2 size={15} />
-                            </button>
+                              <div className="max-h-28 overflow-y-auto divide-y divide-gray-100 dark:divide-slate-700 text-xs">
+                                {filteredPurchaseEntities.length === 0 ? (
+                                  <p className="p-2 text-gray-400 text-center">No hay entidades disponibles</p>
+                                ) : (
+                                  filteredPurchaseEntities.map((ent) => (
+                                    <div
+                                      key={`purch-ent-opt-${ent.id}`}
+                                      onClick={() => {
+                                        setSelectedPurchaseEntity(ent);
+                                        setIsPurchaseEntityDropdownOpen(false);
+                                        setPurchaseEntitySearch('');
+                                      }}
+                                      className="p-2 hover:bg-purple-50 dark:hover:bg-slate-700/60 rounded-lg flex items-center justify-between cursor-pointer transition-colors"
+                                    >
+                                      <div>
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="font-bold text-gray-900 dark:text-white">
+                                            {ent.name}
+                                          </span>
+                                          <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300">
+                                            {ent.type}
+                                          </span>
+                                        </div>
+                                        <span className="text-[11px] text-[#0BA70B]">
+                                          {ent.phone || ent.cuit || '-'}
+                                        </span>
+                                      </div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            </div>
                           )}
                         </div>
-
-                        <div className="flex items-center justify-between gap-3 pt-1">
-                          <div className="flex items-center gap-2 text-xs font-bold text-gray-500">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPurchasePayments(prev => {
-                                  const copy = [...prev];
-                                  copy[idx] = { ...copy[idx], amount: totalPurchaseComputed };
-                                  return copy;
-                                });
-                              }}
-                              className="text-[11px] font-bold text-gray-400 hover:text-gray-900 dark:hover:text-white underline cursor-pointer"
-                            >
-                              Total
-                            </button>
-
-                            {purchaseFaltante > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setPurchasePayments(prev => {
-                                    const copy = [...prev];
-                                    const cur = Number(copy[idx].amount) || 0;
-                                    copy[idx] = { ...copy[idx], amount: cur + purchaseFaltante };
-                                    return copy;
-                                  });
-                                }}
-                                className="text-[11px] font-black text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                              >
-                                Restante: ${purchaseFaltante.toLocaleString()}
-                              </button>
-                            )}
+                      ) : (
+                        <div className="flex items-center justify-between py-1">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-bold text-gray-900 dark:text-white truncate">
+                                {selectedPurchaseEntity.name}
+                              </p>
+                              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-gray-100 text-gray-600 dark:bg-slate-700 dark:text-slate-300">
+                                {selectedPurchaseEntity.type}
+                              </span>
+                            </div>
+                            <p className="text-xs font-mono text-[#0BA70B]">
+                              {selectedPurchaseEntity.phone || selectedPurchaseEntity.cuit || '-'}
+                            </p>
                           </div>
-
-                          <div className="relative w-36 sm:w-40">
-                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">$</span>
-                            <input
-                              type="number"
-                              min={0}
-                              placeholder={String(totalPurchaseComputed)}
-                              value={p.amount}
-                              onChange={(e) => {
-                                const val = e.target.value;
-                                setPurchasePayments(prev => {
-                                  const copy = [...prev];
-                                  copy[idx] = { ...copy[idx], amount: val === '' ? '' : Number(val) };
-                                  return copy;
-                                });
-                              }}
-                              className="w-full h-9 pl-6 pr-2.5 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-black text-gray-900 dark:text-white font-mono outline-none focus:ring-2 focus:ring-emerald-500 text-right"
-                            />
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedPurchaseEntity(null)}
+                            className="p-1.5 text-gray-400 hover:text-rose-500 rounded-lg cursor-pointer transition-colors"
+                            title="Quitar entidad"
+                          >
+                            <Trash2 size={16} />
+                          </button>
                         </div>
+                      )}
+                    </div>
+
+                    {/* Filas de Métodos de Pago: transparentes, alineadas en la misma línea horizontal, monto sin borde */}
+                    <div className="space-y-2 pt-1">
+                      <div className="text-sm font-bold text-gray-600 dark:text-slate-300 text-left">
+                        Método de pago
                       </div>
-                    ))}
+
+                      <div className="space-y-1.5">
+                        {purchasePayments.map((p, idx) => {
+                          const isDeleteOpen = deletePurchaseMenuRowId === p.id;
+
+                          return (
+                            <div
+                              key={`purch-pay-block-${p.id}`}
+                              className={cn("bg-transparent border-none shadow-none py-1.5 relative", isDeleteOpen ? "z-40" : "z-10")}
+                            >
+                              {/* Fila principal en una sola línea horizontal */}
+                              <div className="flex items-center justify-between w-full">
+                                {/* Zona 1: Icono + Nombre del método */}
+                                <div 
+                                  onClick={() => {
+                                    setEditingPurchasePaymentIndex(idx);
+                                    setIsPurchasePaymentSheetOpen(true);
+                                  }}
+                                  className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer py-1"
+                                >
+                                  {renderPurchaseMethodIcon(p.method)}
+                                  <span className="font-black text-sm text-gray-900 dark:text-white truncate">
+                                    {p.method}
+                                  </span>
+                                </div>
+
+                                {/* Zona 2: Badge de Monto SIN BORDE */}
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    placeholder="0"
+                                    value={p.amount}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      setPurchasePayments((prev) => {
+                                        const copy = [...prev];
+                                        copy[idx] = { ...copy[idx], amount: val === '' ? '' : Number(val) };
+                                        return copy;
+                                      });
+                                    }}
+                                    className={`border-0 border-none ring-0 focus:ring-0 outline-none rounded-lg px-3 py-1.5 w-24 text-center font-bold text-xs sm:text-sm text-gray-900 dark:text-white transition-colors ${
+                                      isPurchaseFalta 
+                                        ? 'bg-[#fce8e8] dark:bg-red-950/50' 
+                                        : 'bg-[#f1e8fc] dark:bg-purple-950/50'
+                                    }`}
+                                  />
+
+                                  {/* Zona 3: Flecha > con Popover de Borrado en letra gris */}
+                                  <div className="relative shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setDeletePurchaseMenuRowId(isDeleteOpen ? null : p.id);
+                                      }}
+                                      className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer transition-colors"
+                                    >
+                                      <ChevronRight size={18} />
+                                    </button>
+
+                                    {isDeleteOpen && (
+                                      <div className="absolute right-0 top-full mt-1 z-50 animate-in fade-in zoom-in-95 duration-150">
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleRemovePurchasePaymentBlock(p.id);
+                                            setDeletePurchaseMenuRowId(null);
+                                          }}
+                                          disabled={purchasePayments.length <= 1}
+                                          className="px-3 py-1.5 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-gray-200 dark:border-slate-700 text-gray-500 dark:text-slate-300 hover:text-gray-700 text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-40"
+                                        >
+                                          <Trash2 size={13} />
+                                          <span>Borrar método de pago</span>
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Renglón inferior alineado bajo el badge para no desalinear la fila */}
+                              {purchaseFaltante > 0 && (
+                                <div className="text-right pr-7 mt-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setPurchasePayments((prev) => {
+                                        const copy = [...prev];
+                                        const cur = Number(copy[idx].amount) || 0;
+                                        copy[idx] = { ...copy[idx], amount: cur + purchaseFaltante };
+                                        return copy;
+                                      });
+                                    }}
+                                    className="text-[11px] font-bold text-rose-600 underline cursor-pointer"
+                                  >
+                                    Faltan ${purchaseFaltante.toLocaleString()}
+                                  </button>
+                                </div>
+                              )}
+
+                              {purchaseSobrante > 0 && (
+                                <div className="text-right pr-7 mt-0.5">
+                                  <button
+                                    type="button"
+                                    onClick={handleAutocorrectPurchaseSobrante}
+                                    className="text-[11px] font-bold text-[#7c12e8] underline cursor-pointer"
+                                  >
+                                    Sobran ${purchaseSobrante.toLocaleString()}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Botón "+ agregar método de pago" con fondo transparente */}
+                      {purchaseFaltante > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingPurchasePaymentIndex(null);
+                            setIsPurchasePaymentSheetOpen(true);
+                          }}
+                          className="w-full py-2.5 rounded-xl bg-transparent border border-gray-200 dark:border-slate-700 text-center font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-100 hover:bg-gray-50/50 transition-colors cursor-pointer"
+                        >
+                          + agregar método de pago
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Botón Principal Inferior en Paso 2 de Compras */}
+                    <div className="pt-2">
+                      <button
+                        type="button"
+                        onClick={() => handleConfirmPurchase()}
+                        disabled={!canFinalizePurchase}
+                        className={`w-full py-4 px-4 rounded-2xl font-black text-sm sm:text-base flex items-center justify-center gap-2 shadow-lg transition-all ${
+                          canFinalizePurchase
+                            ? 'bg-[#7c12e8] hover:bg-[#680fc5] text-white shadow-[#7c12e8]/25 active:scale-98 cursor-pointer'
+                            : 'bg-gray-200 dark:bg-slate-800 text-gray-400 dark:text-slate-600 cursor-not-allowed shadow-none'
+                        }`}
+                      >
+                        {isRegisteringPurchase ? (
+                          <>
+                            <RefreshCw size={18} className="animate-spin" />
+                            <span>Registrando compra...</span>
+                          </>
+                        ) : (
+                          <span>
+                            {isPurchaseFalta
+                              ? `Faltan $${purchaseFaltante.toLocaleString()}`
+                              : isPurchaseEntityBlocked
+                              ? 'Asigná una entidad para saldo pendiente'
+                              : 'Finalizar compra'}
+                          </span>
+                        )}
+                      </button>
+                    </div>
                   </div>
-
-                  {isPurchaseSobra && (
-                    <div className="pt-0.5">
-                      <button
-                        type="button"
-                        onClick={handleAutocorrectPurchaseSobrante}
-                        className="text-xs font-black text-emerald-600 hover:underline cursor-pointer flex items-center gap-1"
-                      >
-                        <span>Sobran ${purchaseSobrante.toLocaleString()}</span>
-                        <span className="text-[10px] text-gray-400 font-normal">(Tocar para autocorregir)</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {isPurchaseFalta && (
-                    <div className="flex items-center justify-between pt-0.5">
-                      <button
-                        type="button"
-                        onClick={() => handleAddNewPurchasePaymentMethod()}
-                        className="text-xs font-black text-amber-600 hover:text-amber-700 cursor-pointer"
-                      >
-                        <span>Faltan ${purchaseFaltante.toLocaleString()}</span>
-                        <span className="text-[10px] text-gray-400 font-normal underline ml-1">(Tocar para autocompletar)</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleAddNewPurchasePaymentMethod()}
-                        className="text-xs font-bold text-emerald-600 hover:text-emerald-700 flex items-center gap-1 cursor-pointer"
-                      >
-                        <Plus size={13} />
-                        <span>Dividir pago</span>
-                      </button>
-                    </div>
-                  )}
-
-                  {isPurchaseMathExact && purchasePayments.length < 4 && (
-                    <div className="pt-0.5">
-                      <button
-                        type="button"
-                        onClick={() => handleAddNewPurchasePaymentMethod()}
-                        className="text-xs font-bold text-gray-500 hover:text-gray-800 dark:hover:text-white flex items-center gap-1 cursor-pointer"
-                      >
-                        <Plus size={13} />
-                        <span>Dividir con otro medio</span>
-                      </button>
-                    </div>
-                  )}
                 </div>
               )}
+            </motion.div>
 
-              {/* Botón de Confirmar Compra y Volver en Paso 2 */}
-              <div className="flex items-center gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setPurchaseStep(1)}
-                  className="py-3 px-3.5 rounded-xl border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-slate-300 font-bold text-xs hover:bg-gray-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+            {/* Sub-bottom sheet para seleccionar método de pago en Compra */}
+            <AnimatePresence>
+              {isPurchasePaymentSheetOpen && (
+                <div
+                  className="fixed inset-0 z-[80] flex flex-col justify-end bg-black/60 backdrop-blur-xs select-none"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsPurchasePaymentSheetOpen(false);
+                    setEditingPurchasePaymentIndex(null);
+                  }}
                 >
-                  Volver
-                </button>
-                <button
-                  type="button"
-                  disabled={isSubmittingPurchase || !isPurchaseMathExact}
-                  onClick={() => handleConfirmPurchase()}
-                  className="flex-1 py-3 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-black text-sm rounded-xl shadow-md transition-all flex items-center justify-center gap-2 disabled:opacity-50 cursor-pointer"
-                >
-                  <ShoppingBag size={17} />
-                  <span>
-                    {isSubmittingPurchase 
-                      ? 'Procesando Compra...' 
-                      : isPurchaseFalta
-                      ? `Faltan $${purchaseFaltante.toLocaleString()} por asignar`
-                      : isPurchaseSobra
-                      ? `Sobran $${purchaseSobrante.toLocaleString()}`
-                      : `Confirmar Compra · $${totalPurchaseComputed.toLocaleString()}`}
-                  </span>
-                </button>
-              </div>
-            </div>
-          )}
-        </motion.div>
+                  <motion.div
+                    drag="y"
+                    dragListener={false}
+                    dragControls={purchaseSheetDragControls}
+                    dragConstraints={{ top: 0, bottom: 0 }}
+                    dragElastic={{ top: 0, bottom: 0.9 }}
+                    onDragEnd={(_, info) => {
+                      if (info.offset.y > 100) {
+                        setIsPurchasePaymentSheetOpen(false);
+                        setEditingPurchasePaymentIndex(null);
+                      }
+                    }}
+                    initial={{ y: '100%' }}
+                    animate={{ y: 0 }}
+                    exit={{ y: '100%' }}
+                    transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+                    onClick={(e) => e.stopPropagation()}
+                    className="bg-white dark:bg-slate-900 rounded-t-[32px] sm:rounded-3xl p-5 shadow-2xl border border-gray-100 dark:border-slate-800 w-full max-w-md mx-auto space-y-4"
+                  >
+                    <div 
+                      onPointerDown={(e) => purchaseSheetDragControls.start(e)}
+                      className="touch-none cursor-grab active:cursor-grabbing text-center space-y-1 -mt-1 mb-2"
+                    >
+                      <div className="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mb-2 shrink-0" />
+                      <h4 className="font-black text-base text-gray-900 dark:text-white">
+                        {editingPurchasePaymentIndex !== null ? 'Cambiar método de pago' : 'Agregar método de pago'}
+                      </h4>
+                      <p className="text-xs text-gray-400">
+                        mantené presionado para ordenar los métodos de pago según tu preferencia
+                      </p>
+                    </div>
+
+                    <Reorder.Group
+                      axis="y"
+                      values={orderedPurchaseMethods}
+                      onReorder={handleSavePurchaseMethodsOrder}
+                      className="space-y-2 py-2"
+                    >
+                      {orderedPurchaseMethods.map((m) => (
+                        <Reorder.Item
+                          key={`reorder-purch-sheet-${m}`}
+                          value={m}
+                          className="p-3.5 bg-gray-50 dark:bg-slate-800 rounded-2xl border border-gray-200/80 dark:border-slate-700 flex items-center justify-between cursor-pointer hover:border-gray-400 transition-colors shadow-2xs"
+                          onClick={() => {
+                            const targetMethod = (m === 'Tarjeta' ? 'Crédito' : m) as 'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente';
+                            if (editingPurchasePaymentIndex !== null) {
+                              handleChangePurchaseBlockMethod(editingPurchasePaymentIndex, targetMethod);
+                            } else {
+                              handleAddNewPurchasePaymentMethod(targetMethod);
+                            }
+                            setIsPurchasePaymentSheetOpen(false);
+                            setEditingPurchasePaymentIndex(null);
+                          }}
+                        >
+                          <div className="flex items-center gap-3">
+                            {renderPurchaseMethodIcon(m)}
+                            <span className="font-black text-sm text-gray-900 dark:text-white">
+                              {m}
+                            </span>
+                          </div>
+                          <div
+                            onPointerDown={(e) => e.stopPropagation()}
+                            className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 cursor-grab active:cursor-grabbing touch-none"
+                          >
+                            <GripVertical size={18} />
+                          </div>
+                        </Reorder.Item>
+                      ))}
+                    </Reorder.Group>
+                  </motion.div>
+                </div>
+              )}
+            </AnimatePresence>
       </div>
     )}
   </AnimatePresence>
@@ -1995,161 +2010,138 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
       <AnimatePresence>
         {isProductModalOpen && editingProduct && (
           <div 
-            className="fixed inset-0 z-[70] flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4"
+            className="fixed inset-0 z-[70] flex flex-col justify-end sm:justify-center bg-black/60 backdrop-blur-xs p-0 sm:p-4 select-none"
             onClick={() => setIsProductModalOpen(false)}
           >
             <motion.div 
-              initial={{ opacity: 0, y: 30 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: 30 }}
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
               onClick={(e) => e.stopPropagation()}
-              className="bg-white dark:bg-slate-900 rounded-t-2xl sm:rounded-2xl shadow-2xl border border-gray-100 dark:border-slate-800 w-full max-w-md p-3.5 sm:p-4.5 space-y-2.5 max-h-[85vh] overflow-y-auto"
+              className="bg-[#f8fafc] dark:bg-slate-900 w-full max-w-2xl max-h-[96vh] sm:max-h-[90vh] rounded-t-[32px] sm:rounded-3xl shadow-2xl border border-gray-100 dark:border-slate-800 flex flex-col overflow-hidden mx-auto relative"
             >
-              <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
-                <h4 className="font-black text-sm sm:text-base text-gray-900 dark:text-white">
-                  {editingProduct.id ? 'Editar Producto' : 'Nuevo Producto'}
-                </h4>
-                <button
-                  type="button"
-                  onClick={() => setIsProductModalOpen(false)}
-                  className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer"
-                >
-                  <X size={16} />
-                </button>
-              </div>
+              {/* Pastilla gris superior de arrastre */}
+              <div className="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mt-3 mb-1 shrink-0" />
 
-              <form onSubmit={handleSaveProduct} className="space-y-2.5 text-xs">
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-0.5">
-                    Nombre del Producto *
-                  </label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="Ej: Agua Mineral 500ml"
-                    value={editingProduct.name || ''}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, name: e.target.value })}
-                    className="w-full h-8 px-2.5 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 text-gray-900 dark:text-white font-medium text-xs"
-                    autoFocus
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-0.5">
-                    Categoría *
-                  </label>
-                  <select
-                    value={editingProduct.categoryId || (categories[0] || 'Kiosco')}
-                    onChange={(e) => setEditingProduct({ ...editingProduct, categoryId: e.target.value })}
-                    className="w-full h-8 px-2.5 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 text-gray-900 dark:text-white font-medium text-xs"
-                  >
-                    {categories.map((c) => (
-                      <option key={`opt-cat-${c}`} value={c}>
-                        {c}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-0.5">
-                      Precio Costo ($)
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 font-bold text-xs">$</span>
-                      <input
-                        type="number"
-                        min={0}
-                        placeholder="0"
-                        value={editingProduct.purchasePrice ?? ''}
-                        onChange={(e) => setEditingProduct({ ...editingProduct, purchasePrice: Number(e.target.value) })}
-                        className="w-full h-8 pl-6 pr-2 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 text-gray-900 dark:text-white font-bold text-xs font-mono"
-                      />
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-0.5">
-                      Precio Venta ($) *
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-emerald-600 font-bold text-xs">$</span>
-                      <input
-                        type="number"
-                        min={0}
-                        required
-                        placeholder="0"
-                        value={editingProduct.salePrice ?? ''}
-                        onChange={(e) => setEditingProduct({ ...editingProduct, salePrice: Number(e.target.value) })}
-                        className="w-full h-8 pl-6 pr-2 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 text-gray-900 dark:text-white font-bold text-xs font-mono"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-0.5">
-                      Stock Actual
-                    </label>
-                    <input
-                      type="number"
-                      min={0}
-                      value={editingProduct.stock ?? ''}
-                      onChange={(e) => setEditingProduct({ ...editingProduct, stock: Number(e.target.value) })}
-                      className="w-full h-8 px-2.5 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-lg outline-none focus:ring-1 focus:ring-emerald-500 text-gray-900 dark:text-white font-bold text-xs font-mono"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-0.5">
-                      Estado
-                    </label>
-                    <div className="flex bg-gray-100 dark:bg-slate-800 p-0.5 rounded-lg h-8">
-                      <button
-                        type="button"
-                        onClick={() => setEditingProduct({ ...editingProduct, status: 'activo' })}
-                        className={`flex-1 rounded-md text-[11px] font-bold transition-all ${
-                          editingProduct.status === 'activo'
-                            ? 'bg-emerald-600 text-white shadow-2xs'
-                            : 'text-gray-500 dark:text-slate-400'
-                        }`}
-                      >
-                        Activo
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setEditingProduct({ ...editingProduct, status: 'inactivo' })}
-                        className={`flex-1 rounded-md text-[11px] font-bold transition-all ${
-                          editingProduct.status === 'inactivo'
-                            ? 'bg-gray-600 text-white shadow-2xs'
-                            : 'text-gray-500 dark:text-slate-400'
-                        }`}
-                      >
-                        Inactivo
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="flex gap-2 pt-2 border-t border-gray-100 dark:border-slate-800 sticky bottom-0 bg-white dark:bg-slate-900">
+              <div className="p-4 sm:p-6 overflow-y-auto space-y-4">
+                <div className="flex items-center justify-between pb-3 border-b border-gray-100 dark:border-slate-800">
+                  <h4 className="font-black text-base text-gray-900 dark:text-white">
+                    {editingProduct.id ? 'Editar Producto' : 'Nuevo Producto'}
+                  </h4>
                   <button
                     type="button"
                     onClick={() => setIsProductModalOpen(false)}
-                    className="flex-1 py-2 rounded-xl font-bold text-gray-600 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 transition-colors text-xs cursor-pointer"
+                    className="p-1.5 text-gray-400 hover:text-gray-600 dark:hover:text-white rounded-full cursor-pointer"
                   >
-                    Cancelar
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={isSubmitting || !editingProduct.name || !editingProduct.salePrice}
-                    className="flex-[1.5] py-2 rounded-xl font-black text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-xs disabled:opacity-50 text-xs cursor-pointer"
-                  >
-                    {isSubmitting ? 'Guardando...' : 'Guardar Producto'}
+                    <X size={18} />
                   </button>
                 </div>
-              </form>
+
+                <form onSubmit={handleSaveProduct} className="space-y-4">
+                  {/* Fila 1: Nombre (izq) y Categoría (der) */}
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="text-[11px] font-bold text-gray-700 dark:text-slate-300 block mb-1">
+                        Nombre del producto *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Ej. Coca-Cola 500 ml"
+                        value={editingProduct.name || ''}
+                        onChange={(e) => setEditingProduct({ ...editingProduct, name: e.target.value })}
+                        className="w-full h-9.5 px-3 rounded-xl border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                        autoFocus
+                      />
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] font-bold text-gray-700 dark:text-slate-300 block mb-1">
+                        Categoría *
+                      </label>
+                      <select
+                        value={editingProduct.categoryId || (categories[0] || 'Kiosco')}
+                        onChange={(e) => setEditingProduct({ ...editingProduct, categoryId: e.target.value })}
+                        className="w-full h-9.5 px-3 rounded-xl border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer"
+                      >
+                        {categories.map((c) => (
+                          <option key={`opt-cat-${c}`} value={c}>
+                            {c}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Fila 2: Precio de venta (izq) y Estado Activo/Inactivo (der) */}
+                  <div className="flex items-end justify-between gap-2.5">
+                    <div className="flex-1 max-w-[200px]">
+                      <label className="text-[11px] font-bold text-gray-700 dark:text-slate-300 block mb-1">
+                        Precio de venta ($) *
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        required
+                        placeholder="Ej. 1500"
+                        value={editingProduct.salePrice || ''}
+                        onChange={(e) => setEditingProduct({ ...editingProduct, salePrice: Number(e.target.value) || 0 })}
+                        className="w-full h-9.5 px-3 rounded-xl border border-gray-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm font-mono text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                      />
+                    </div>
+
+                    <div className="pb-0.5">
+                      <label className="text-[11px] font-bold text-gray-700 dark:text-slate-300 block mb-1">
+                        Estado
+                      </label>
+                      <div className="inline-flex items-center p-1 bg-slate-200/70 dark:bg-slate-800 rounded-xl gap-1">
+                        <button
+                          type="button"
+                          onClick={() => setEditingProduct({ ...editingProduct, status: 'activo' })}
+                          className={cn(
+                            "px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer",
+                            editingProduct.status === 'activo'
+                              ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs"
+                              : "text-slate-500 hover:text-slate-700 dark:text-slate-400"
+                          )}
+                        >
+                          Activo
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingProduct({ ...editingProduct, status: 'inactivo' })}
+                          className={cn(
+                            "px-3 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer",
+                            editingProduct.status === 'inactivo'
+                              ? "bg-white dark:bg-slate-900 text-rose-600 dark:text-rose-400 shadow-xs"
+                              : "text-slate-500 hover:text-slate-700 dark:text-slate-400"
+                          )}
+                        >
+                          Inactivo
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-2 pt-3 border-t border-gray-100 dark:border-slate-800 sticky bottom-0 bg-[#f8fafc] dark:bg-slate-900">
+                    <button
+                      type="button"
+                      onClick={() => setIsProductModalOpen(false)}
+                      className="flex-1 py-2.5 rounded-xl font-bold text-gray-600 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 transition-colors text-xs cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isSubmitting || !editingProduct.name || !editingProduct.salePrice}
+                      className="flex-[1.5] py-2.5 rounded-xl font-black text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-xs disabled:opacity-50 text-xs cursor-pointer"
+                    >
+                      {isSubmitting ? 'Guardando...' : 'Guardar Producto'}
+                    </button>
+                  </div>
+                </form>
+              </div>
             </motion.div>
           </div>
         )}

@@ -38,7 +38,7 @@ import { auth } from '../lib/firebase';
 
 const DEFAULT_PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
 const EXPENSE_PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
-const STORAGE_PAYMENT_ORDER_KEY = 'jogo_pos_payment_methods_order';
+const STORAGE_PAYMENT_ORDER_KEY = 'jogo_payment_methods_order';
 
 interface PaymentBlock {
   id: string;
@@ -276,12 +276,42 @@ export const POSModal: React.FC<POSModalProps> = ({
     };
   }, [targetId, isOpen]);
 
-  // Save methods order to localStorage when modified
+  // Escuchar cambios de orden de métodos emitidos desde otros componentes (Reservas, Compras, etc.)
+  useEffect(() => {
+    const handleOrderChange = () => {
+      try {
+        const saved = localStorage.getItem(STORAGE_PAYMENT_ORDER_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const normalized = parsed.map((m: string) => 
+              m === 'Fiado' ? 'Pendiente' : (m === 'Crédito' || m === 'Credito') ? 'Tarjeta' : m
+            );
+            DEFAULT_PAYMENT_METHODS.forEach(def => {
+              if (!normalized.includes(def)) normalized.push(def);
+            });
+            const newOrder = Array.from(new Set(normalized));
+            setOrderedMethods(newOrder);
+            setPayments(prev => prev.length === 1 ? [{ ...prev[0], method: newOrder[0] || 'Efectivo' }] : prev);
+            setExpensePayments(prev => prev.length === 1 ? [{ ...prev[0], method: newOrder[0] || 'Efectivo' }] : prev);
+          }
+        }
+      } catch (e) {}
+    };
+    window.addEventListener('jogo_payment_methods_order_changed', handleOrderChange);
+    return () => window.removeEventListener('jogo_payment_methods_order_changed', handleOrderChange);
+  }, []);
+
+  // Save methods order to localStorage when modified & broadcast event
   const handleSaveMethodsOrder = (newOrder: string[]) => {
     setOrderedMethods(newOrder);
     try {
       localStorage.setItem(STORAGE_PAYMENT_ORDER_KEY, JSON.stringify(newOrder));
+      window.dispatchEvent(new Event('jogo_payment_methods_order_changed'));
     } catch (e) {}
+    // Sincronía inmediata en el modal actual si hay 1 solo pago
+    setPayments(prev => prev.length === 1 ? [{ ...prev[0], method: newOrder[0] || 'Efectivo' }] : prev);
+    setExpensePayments(prev => prev.length === 1 ? [{ ...prev[0], method: newOrder[0] || 'Efectivo' }] : prev);
   };
 
   // Sync payments state when entering Step 2 in Mostrador (always orderedMethods[0] default)
@@ -916,7 +946,7 @@ export const POSModal: React.FC<POSModalProps> = ({
               <ChevronLeft size={24} />
             </button>
             <h3 className="text-base sm:text-lg font-black text-gray-900 dark:text-white flex-1 text-center pr-6">
-              {activeSection === 'gastos' ? 'Pago de gastos' : 'Cobro'}
+              {activeSection === 'gastos' ? 'Pago de gastos' : 'Cobro de mostrador'}
             </h3>
           </div>
         )}
@@ -1151,15 +1181,20 @@ export const POSModal: React.FC<POSModalProps> = ({
               >
                 {/* Resumen centrado */}
                 <div className="text-center pt-2 pb-1 space-y-1">
-                  <span className="text-xs font-bold text-gray-400 uppercase tracking-wider block">
-                    Total a pagar
+                  <span className="text-xs text-gray-400 font-medium lowercase block">
+                    total a pagar
                   </span>
                   <span className="text-4xl font-black text-gray-900 dark:text-white font-mono tracking-tight block">
                     ${totalExpenseNum.toLocaleString()}
                   </span>
-                  <p className="text-xs text-gray-500 dark:text-slate-400 truncate max-w-sm mx-auto">
-                    {selectedExpenseConcept?.name} ({selectedExpenseConcept?.categoryName || selectedExpenseConcept?.categoryId || 'Gastos'})
-                  </p>
+                  <div className="max-w-[240px] sm:max-w-[260px] mx-auto pt-1.5 flex items-start justify-between gap-4 text-left">
+                    <span className="text-xs font-medium text-gray-500 dark:text-slate-400 truncate">
+                      {selectedExpenseConcept?.name}
+                    </span>
+                    <span className="text-xs font-medium text-gray-500 dark:text-slate-400 shrink-0">
+                      ${totalExpenseNum.toLocaleString()}
+                    </span>
+                  </div>
                 </div>
 
                 {/* Fila Entidad (3 Dimensiones) - Título cliqueable sin caja ni alta rápida de FAB */}
@@ -1670,15 +1705,29 @@ export const POSModal: React.FC<POSModalProps> = ({
           >
             {/* Resumen centrado */}
             <div className="text-center pt-2 pb-1 space-y-1">
-              <span className="text-xs font-bold text-gray-400 uppercase tracking-wider block">
-                Total a cobrar
+              <span className="text-xs text-gray-400 font-medium lowercase block">
+                total a cobrar
               </span>
               <span className="text-4xl font-black text-gray-900 dark:text-white font-mono tracking-tight block">
                 ${cartTotal.toLocaleString()}
               </span>
-              <p className="text-xs text-gray-500 dark:text-slate-400 truncate max-w-sm mx-auto">
-                {cartItems.map((it) => `${it.product.name} x${it.quantity}`).join(' · ')}
-              </p>
+              <div className="max-w-[240px] sm:max-w-[260px] mx-auto pt-1.5 space-y-1.5 max-h-24 overflow-y-auto no-scrollbar">
+                {cartItems.map((it) => (
+                  <div key={it.product.id} className="flex items-start justify-between gap-2 text-left">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium text-gray-500 dark:text-slate-400 truncate leading-tight">
+                        {it.product.name}
+                      </p>
+                      <p className="text-[10px] text-gray-400 dark:text-slate-500 leading-tight mt-0.5">
+                        {it.quantity}u x ${Number(it.product.salePrice || 0).toLocaleString()} c/u
+                      </p>
+                    </div>
+                    <span className="text-xs font-medium text-gray-500 dark:text-slate-400 shrink-0 leading-tight">
+                      ${(it.quantity * Number(it.product.salePrice || 0)).toLocaleString()}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Fila Cliente: Título cliqueable sin caja */}

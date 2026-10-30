@@ -1,12 +1,13 @@
 import React, { Component, useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { motion, AnimatePresence, useMotionValue, useTransform, useSpring } from 'motion/react';
+import { motion, AnimatePresence, useMotionValue, useTransform, useSpring, Reorder, useDragControls } from 'motion/react';
 import { 
   LayoutDashboard, Users, Calendar, CalendarPlus, TrendingUp, TrendingDown, DollarSign, CalendarCheck, Percent, Clock, 
   Search, Bell, Menu, X, Phone, MapPin, Star, ChevronLeft, ChevronRight, ChevronDown, ChevronUp, List, Plus, Sparkles,
   ArrowLeft, ArrowRight, Wallet, ArrowUpRight, ArrowDownRight, ArrowDownLeft, Store, Instagram, Check, ShieldCheck, 
   Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, ShoppingBasket, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, UserCheck, UserPlus, BarChart2, MoreVertical, MoreHorizontal, FileText, Download,
   MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle, AlertTriangle,
-  Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard, Info, Pencil, Footprints, Share2
+  Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard, Info, Pencil, Footprints, Share2,
+  Landmark, CircleDollarSign, History, GripVertical
 } from 'lucide-react';
 import { format, differenceInDays, isSameDay, isSameWeek, isSameMonth, parseISO, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns';
 import { es } from 'date-fns/locale';
@@ -2809,6 +2810,92 @@ const CreateMatchModal = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Estados para filas de pago, popover de borrado y Sub-Bottom Sheet
+  const [deleteBookingMenuRowId, setDeleteBookingMenuRowId] = useState<string | null>(null);
+  const [isBookingPaymentSheetOpen, setIsBookingPaymentSheetOpen] = useState(false);
+  const [editingBookingPaymentIndex, setEditingBookingPaymentIndex] = useState<number | null>(null);
+  const [orderedBookingMethods, setOrderedBookingMethods] = useState<string[]>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const saved = localStorage.getItem('jogo_payment_methods_order');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const normalized = parsed.map((m: string) =>
+              m === 'Fiado' ? 'Pendiente' : (m === 'Crédito' || m === 'Credito') ? 'Tarjeta' : m
+            );
+            const defs = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
+            defs.forEach(d => {
+              if (!normalized.includes(d)) normalized.push(d);
+            });
+            return Array.from(new Set(normalized));
+          }
+        }
+      } catch (e) {}
+    }
+    return ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
+  });
+
+  const toBookingMethod = (m?: string): 'Efectivo' | 'Transferencia' | 'Crédito' | 'Pendiente' => {
+    if (!m) return 'Efectivo';
+    if (m === 'Tarjeta' || m === 'Credito' || m === 'Crédito') return 'Crédito';
+    if (m === 'Transferencia') return 'Transferencia';
+    if (m === 'Pendiente' || m === 'Fiado') return 'Pendiente';
+    return 'Efectivo';
+  };
+
+  // Escuchar cambios de orden de métodos emitidos globalmente
+  useEffect(() => {
+    const handleOrderChange = () => {
+      try {
+        const saved = localStorage.getItem('jogo_payment_methods_order');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            const normalized = parsed.map((m: string) =>
+              m === 'Fiado' ? 'Pendiente' : (m === 'Crédito' || m === 'Credito') ? 'Tarjeta' : m
+            );
+            const defs = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
+            defs.forEach(d => {
+              if (!normalized.includes(d)) normalized.push(d);
+            });
+            const newOrder = Array.from(new Set(normalized));
+            setOrderedBookingMethods(newOrder);
+            setBookingPayments(prev => prev.length === 1 ? [{ ...prev[0], method: toBookingMethod(newOrder[0]) }] : prev);
+          }
+        }
+      } catch (e) {}
+    };
+    window.addEventListener('jogo_payment_methods_order_changed', handleOrderChange);
+    return () => window.removeEventListener('jogo_payment_methods_order_changed', handleOrderChange);
+  }, []);
+
+  const handleSaveBookingMethodsOrder = (newOrder: string[]) => {
+    setOrderedBookingMethods(newOrder);
+    try {
+      localStorage.setItem('jogo_payment_methods_order', JSON.stringify(newOrder));
+      window.dispatchEvent(new Event('jogo_payment_methods_order_changed'));
+    } catch (e) {}
+    setBookingPayments(prev => prev.length === 1 ? [{ ...prev[0], method: toBookingMethod(newOrder[0]) }] : prev);
+  };
+  const [isBookingClientSearchOpen, setIsBookingClientSearchOpen] = useState(false);
+  const bookingClientBoxRef = useRef<HTMLDivElement | null>(null);
+  const bookingSheetDragControls = useDragControls();
+
+  const renderBookingMethodIcon = (method: string) => {
+    const m = method.toLowerCase();
+    if (m.includes('transf') || m.includes('transfer')) {
+      return <Landmark size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+    }
+    if (m.includes('tarjeta') || m.includes('crédito') || m.includes('credito') || m.includes('credit')) {
+      return <CreditCard size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+    }
+    if (m.includes('pendiente') || m.includes('fiado')) {
+      return <History size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+    }
+    return <CircleDollarSign size={22} strokeWidth={1.8} className="text-gray-600 dark:text-slate-300 shrink-0" />;
+  };
+
   // Suscripciones en tiempo real a Firestore para horarios del complejo y turnos existentes
   useEffect(() => {
     if (!isOpen || !complexId) return;
@@ -2917,18 +3004,26 @@ const CreateMatchModal = ({
     }
     setUserSearch('');
     setStep(1);
-    if (initialAmountPaid > 0 && initialAmountPaid < courtPrice) {
-      setBookingPayments([
-        { id: `bpay_${Date.now()}_1`, method: 'Efectivo', amount: initialAmountPaid },
-        { id: `bpay_${Date.now()}_2`, method: 'Pendiente', amount: courtPrice - initialAmountPaid }
-      ]);
-    } else if (initialPaymentStatus === 'pending') {
-      setBookingPayments([
-        { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: courtPrice > 0 ? courtPrice : '' }
-      ]);
+    const defaultMethod = toBookingMethod(orderedBookingMethods[0]);
+    if (isEditingExisting) {
+      if (initialAmountPaid > 0 && initialAmountPaid < courtPrice) {
+        setBookingPayments([
+          { id: `bpay_${Date.now()}_1`, method: 'Efectivo', amount: initialAmountPaid },
+          { id: `bpay_${Date.now()}_2`, method: 'Pendiente', amount: courtPrice - initialAmountPaid }
+        ]);
+      } else if (initialPaymentStatus === 'paid' && initialAmountPaid >= courtPrice) {
+        setBookingPayments([
+          { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: initialAmountPaid }
+        ]);
+      } else {
+        setBookingPayments([
+          { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: courtPrice > 0 ? courtPrice : '' }
+        ]);
+      }
     } else {
+      // Nueva reserva: monto vacío (placeholder "0") y primer método predeterminado persistente
       setBookingPayments([
-        { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: courtPrice > 0 ? courtPrice : '' }
+        { id: `bpay_${Date.now()}`, method: defaultMethod, amount: '' }
       ]);
     }
   }, [isOpen, initialData, courts]);
@@ -3156,10 +3251,20 @@ const CreateMatchModal = ({
       return;
     }
 
-    if (bookingPayments.length <= 1 && (bookingPayments[0]?.amount === '' || bookingPayments[0]?.amount === 0)) {
-      setBookingPayments([
-        { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: priceTotal }
-      ]);
+    const defaultMethod = toBookingMethod(orderedBookingMethods[0]);
+    if (!data.id) {
+      // Para nueva reserva: forzar el bloque de pago inicial con el primer método predeterminado y monto vacío ''
+      if (bookingPayments.length <= 1 && (bookingPayments[0]?.amount === '' || Number(bookingPayments[0]?.amount) === 0)) {
+        setBookingPayments([
+          { id: bookingPayments[0]?.id || `bpay_${Date.now()}`, method: defaultMethod, amount: '' }
+        ]);
+      }
+    } else {
+      if (bookingPayments.length <= 1 && (bookingPayments[0]?.amount === '' || Number(bookingPayments[0]?.amount) === 0)) {
+        setBookingPayments([
+          { id: `bpay_${Date.now()}`, method: toBookingMethod(bookingPayments[0]?.method) || defaultMethod, amount: priceTotal }
+        ]);
+      }
     }
     setStep(2);
   };
@@ -3186,15 +3291,34 @@ const CreateMatchModal = ({
       return;
     }
 
-    if (priceTotal > 0 && !isBookingMathExact) {
-      setErrorMessage(isBookingFalta
-        ? `Faltan $${bookingFaltante.toLocaleString()} por asignar para completar el total de la reserva ($${priceTotal.toLocaleString()}).`
-        : `Los importes asignados ($${totalAssignedBookingPayments.toLocaleString()}) superan el total de la reserva ($${priceTotal.toLocaleString()}).`
-      );
-      return;
+    const finalPayments = [...bookingPayments];
+    if (priceTotal > 0) {
+      if (isBookingFalta) {
+        setErrorMessage(
+          `Faltan $${bookingFaltante.toLocaleString()} por asignar para completar el total de la reserva ($${priceTotal.toLocaleString()}).`
+        );
+        return;
+      }
+      if (isBookingSobra) {
+        // Autocorregir excedente de efectivo antes de guardar
+        const cashIdx = finalPayments.map(p => p.method).lastIndexOf('Efectivo');
+        const targetIdx = cashIdx >= 0 ? cashIdx : finalPayments.length - 1;
+        const curAmt = Number(finalPayments[targetIdx]?.amount) || 0;
+        finalPayments[targetIdx] = {
+          ...finalPayments[targetIdx],
+          amount: Math.max(0, curAmt - bookingSobrante)
+        };
+      }
     }
 
     const selectedHost = users.find(u => String(u.id) === String(data.host_id));
+    const hasClient = Boolean((selectedHost && selectedHost.id) || (data.clientName && String(data.clientName).trim()));
+    const hasPendingPayment = finalPayments.some(p => p.method === 'Pendiente' && (Number(p.amount) || 0) > 0);
+    if (hasPendingPayment && !hasClient) {
+      setErrorMessage('Es obligatorio seleccionar o ingresar un cliente cuando hay saldo pendiente.');
+      return;
+    }
+
     const clientName = selectedHost?.name || data.clientName || 'Cliente';
     const clientPhone = selectedHost?.phone || data.clientPhone || '';
     const clientEmail = selectedHost?.email || data.clientEmail || '';
@@ -3208,10 +3332,10 @@ const CreateMatchModal = ({
     const endTimeStr = `${String(endDateTime.getHours()).padStart(2, '0')}:${String(endDateTime.getMinutes()).padStart(2, '0')}`;
     const courtName = selectedCourt?.name || 'Cancha';
 
-    const paidAmount = bookingPayments
+    const paidAmount = finalPayments
       .filter(p => p.method !== 'Pendiente')
       .reduce((s, p) => s + (Number(p.amount) || 0), 0);
-    const pendingAmount = bookingPayments
+    const pendingAmount = finalPayments
       .filter(p => p.method === 'Pendiente')
       .reduce((s, p) => s + (Number(p.amount) || 0), 0);
 
@@ -3222,7 +3346,7 @@ const CreateMatchModal = ({
       return 'cash';
     };
 
-    const paidPayments = bookingPayments
+    const paidPayments = finalPayments
       .filter(p => p.method !== 'Pendiente' && (Number(p.amount) || 0) > 0)
       .map(p => ({
         amount: Number(p.amount),
@@ -3325,7 +3449,19 @@ const CreateMatchModal = ({
     setIsAddingNewUser(false);
   };
 
-  const selectedUserName = users.find(u => String(u.id) === String(data.host_id))?.name || data.clientName;
+  const selectedHost = users.find(u => String(u.id) === String(data.host_id));
+  const hasClient = Boolean((selectedHost && selectedHost.id) || (data.clientName && String(data.clientName).trim()));
+  const clientDisplayName = selectedHost?.name || data.clientName || '';
+  const clientDisplayPhone = selectedHost?.phone || data.clientPhone || '';
+  const hasPendingBookingPayment = bookingPayments.some(p => p.method === 'Pendiente' && (Number(p.amount) || 0) > 0);
+  const isBookingClientBlocked = hasPendingBookingPayment && !hasClient;
+  const canConfirmBooking = (isBookingMathExact || isBookingSobra) && !isBookingClientBlocked && !isSubmitting && priceTotal > 0;
+
+  const [hhCalc, mmCalc] = (data.time || '18:00').split(':').map(Number);
+  const endHourCalc = isNaN(hhCalc) ? 19 : ((hhCalc + 1) % 24);
+  const endTimeStr = `${String(endHourCalc).padStart(2, '0')}:${String(isNaN(mmCalc) ? 0 : mmCalc).padStart(2, '0')}`;
+
+  const selectedUserName = clientDisplayName;
   const filteredUsers = users.filter(u => {
     if (!userSearch) return true;
     const term = userSearch.toLowerCase();
@@ -3352,85 +3488,99 @@ const CreateMatchModal = ({
           exit={{ y: '100%' }}
           transition={{ type: 'spring', damping: 28, stiffness: 300 }}
           onClick={(e) => e.stopPropagation()}
-          className="w-full max-w-lg rounded-t-[32px] sm:rounded-3xl bg-white dark:bg-slate-900 border-t border-x border-gray-100 dark:border-slate-800 shadow-2xl overflow-hidden mx-auto p-4 sm:p-5 pt-0 flex flex-col max-h-[92vh]"
+          className="w-full max-w-lg rounded-t-[32px] sm:rounded-3xl bg-[#f8fafc] dark:bg-slate-900 border-t border-x border-gray-100 dark:border-slate-800 shadow-2xl overflow-hidden mx-auto flex flex-col max-h-[92vh]"
         >
           {/* Barra gris de arrastre */}
           <div className="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mt-3 mb-2 shrink-0" />
 
-          {/* Cabecera de Reserva */}
-          <div className="pb-3 border-b border-gray-100 dark:border-slate-800 shrink-0 space-y-2">
-            <div className="flex justify-between items-center">
-              <div>
-                <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                  <span>{data.id ? 'Editar reserva' : 'Nueva reserva'}</span>
-                </h2>
-              </div>
+          {/* En Paso 1: Cabecera con pestañas. En Paso 2: Cabecera estandarizada con botón volver */}
+          {step === 1 ? (
+            <div className="px-4 sm:px-5 pb-3 border-b border-gray-100 dark:border-slate-800 shrink-0 space-y-2 bg-white dark:bg-slate-900">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                    <span>{data.id ? 'Editar reserva' : 'Nueva reserva'}</span>
+                  </h2>
+                </div>
 
-              <div className="flex items-center gap-1">
-                {data.id && onDeleteBooking && (
+                <div className="flex items-center gap-1">
+                  {data.id && onDeleteBooking && (
+                    <button 
+                      type="button" 
+                      onClick={() => onDeleteBooking(initialData || data)}
+                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                      title="Eliminar reserva definitivamente"
+                    >
+                      <Trash2 size={18} />
+                    </button>
+                  )}
                   <button 
                     type="button" 
-                    onClick={() => onDeleteBooking(initialData || data)}
-                    className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
-                    title="Eliminar reserva definitivamente"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      onClose();
+                    }}
+                    className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 p-1 cursor-pointer"
                   >
-                    <Trash2 size={18} />
+                    <X size={18} />
                   </button>
-                )}
-                <button 
-                  type="button" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onClose();
-                  }}
-                  className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 p-1 cursor-pointer"
+                </div>
+              </div>
+
+              {/* Selector de pasos visual plano sin fondo de caja */}
+              <div className="grid grid-cols-2 gap-4 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setStep(1)}
+                  className="cursor-pointer text-left flex flex-col items-center"
                 >
-                  <X size={18} />
+                  <span className={cn(
+                    "text-xs sm:text-sm pb-1.5 block text-center transition-colors",
+                    step === 1 ? "font-extrabold text-gray-900 dark:text-white" : "font-bold text-gray-400"
+                  )}>
+                    1. Datos del Turno
+                  </span>
+                  <div className={cn(
+                    "h-1 rounded-full w-full transition-all",
+                    step === 1 ? "bg-[#0BA70B]" : "bg-gray-200 dark:bg-slate-700"
+                  )} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleProceedToPayment}
+                  className="cursor-pointer text-left flex flex-col items-center"
+                >
+                  <span className="text-xs sm:text-sm pb-1.5 block text-center transition-colors font-bold text-gray-400">
+                    2. Registrar Pago
+                  </span>
+                  <div className="h-1 rounded-full w-full transition-all bg-gray-200 dark:bg-slate-700" />
                 </button>
               </div>
             </div>
-
-            {/* Selector de pasos visual plano sin fondo de caja */}
-            <div className="grid grid-cols-2 gap-4 pt-1">
+          ) : (
+            <div className="shrink-0 px-4 py-3 sm:px-5 sm:py-3.5 border-b border-gray-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 z-20">
               <button
                 type="button"
-                onClick={() => setStep(1)}
-                className="cursor-pointer text-left flex flex-col items-center"
+                onClick={() => {
+                  setErrorMessage(null);
+                  setStep(1);
+                }}
+                className="p-1 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-800 text-gray-800 dark:text-white transition-colors cursor-pointer"
+                title="Volver al Paso 1"
               >
-                <span className={cn(
-                  "text-xs sm:text-sm pb-1.5 block text-center transition-colors",
-                  step === 1 ? "font-extrabold text-gray-900 dark:text-white" : "font-bold text-gray-400"
-                )}>
-                  1. Datos del Turno
-                </span>
-                <div className={cn(
-                  "h-1 rounded-full w-full transition-all",
-                  step === 1 ? "bg-[#0BA70B]" : "bg-gray-200 dark:bg-slate-700"
-                )} />
+                <ChevronLeft size={24} />
               </button>
-              <button
-                type="button"
-                onClick={handleProceedToPayment}
-                className="cursor-pointer text-left flex flex-col items-center"
-              >
-                <span className={cn(
-                  "text-xs sm:text-sm pb-1.5 block text-center transition-colors",
-                  step === 2 ? "font-extrabold text-gray-900 dark:text-white" : "font-bold text-gray-400"
-                )}>
-                  2. Registrar Pago
-                </span>
-                <div className={cn(
-                  "h-1 rounded-full w-full transition-all",
-                  step === 2 ? "bg-[#0BA70B]" : "bg-gray-200 dark:bg-slate-700"
-                )} />
-              </button>
+              <h3 className="text-base sm:text-lg font-black text-gray-900 dark:text-white flex-1 text-center pr-6">
+                Cobro de reservas
+              </h3>
             </div>
-          </div>
+          )}
 
           {/* CUERPO DEL PASO 1: DATOS DEL TURNO */}
           {step === 1 ? (
-            <div className="space-y-3 pt-3 overflow-y-auto pr-1 flex-1 text-xs sm:text-sm">
+            <>
+              <div className="space-y-3 p-4 sm:p-5 pt-3 overflow-y-auto pr-2 flex-1 text-xs sm:text-sm">
               {/* 1. Cliente: Buscador con botón '+ Nuevo Cliente' */}
               <div className="flex items-center gap-2">
                 <div className="relative flex-1">
@@ -3559,7 +3709,7 @@ const CreateMatchModal = ({
                       ...prev,
                       court_id: newCourtId
                     }));
-                    if (bookingPayments.length <= 1) {
+                    if (data.id && bookingPayments.length <= 1) {
                       setBookingPayments([
                         { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: newPrice }
                       ]);
@@ -3612,271 +3762,427 @@ const CreateMatchModal = ({
                 </div>
               )}
             </div>
-          ) : (
-            /* CUERPO DEL PASO 2: REGISTRAR EL PAGO (IDÉNTICO A VENTAS DE MOSTRADOR) */
-            <div className="space-y-3 pt-3 overflow-y-auto pr-1 flex-1 text-xs sm:text-sm">
-              {/* Tarjeta Resumen del Turno */}
-              <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 rounded-2xl border border-emerald-100 dark:border-emerald-800/50 space-y-2">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-[10px] font-bold text-emerald-800 dark:text-emerald-300 uppercase tracking-wider block">
-                      Total a Pagar / Seña
-                    </span>
-                    <span className="text-xl sm:text-2xl font-black text-gray-900 dark:text-white font-mono">
-                      ${priceTotal.toLocaleString()}
-                    </span>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs font-bold text-gray-800 dark:text-slate-200 block">
-                      {selectedCourt?.name || 'Cancha'}
-                    </span>
-                    <span className="text-[11px] text-gray-500 dark:text-slate-400 font-mono">
-                      {data.date} · {data.time} hs
-                    </span>
-                  </div>
-                </div>
 
-                <div className="pt-2 border-t border-emerald-200/50 dark:border-emerald-800/40 flex items-center justify-between text-[11px] text-gray-600 dark:text-slate-300">
-                  <span>Cliente: <strong className="text-gray-900 dark:text-white">{selectedUserName || 'Cliente'}</strong></span>
-                  <span className="font-mono text-gray-500">
-                    Asignado: ${totalAssignedBookingPayments.toLocaleString()} / ${priceTotal.toLocaleString()}
-                  </span>
-                </div>
-              </div>
+            {/* Botones de Acción al Pie para Paso 1 */}
+            <div className="flex items-center justify-between gap-2.5 px-4 sm:px-5 py-3 border-t border-gray-100 dark:border-slate-800 shrink-0 bg-white dark:bg-slate-900">
+              {data.id && onCancelBooking ? (
+                <button 
+                  type="button" 
+                  onClick={() => onCancelBooking(initialData || data)}
+                  disabled={isSubmitting}
+                  className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-white bg-red-600 hover:bg-red-700 transition-colors shadow-sm shadow-red-600/20 cursor-pointer disabled:opacity-50"
+                >
+                  Cancelar reserva
+                </button>
+              ) : null}
 
-              {/* Botones de Atajos Rápidos */}
-              <div className="grid grid-cols-4 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBookingPayments([{ id: `bpay_${Date.now()}`, method: 'Efectivo', amount: priceTotal }]);
+              <div className="flex items-center gap-2 flex-1 justify-end">
+                <button 
+                  type="button" 
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onClose();
                   }}
-                  className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-[11px] font-bold text-gray-700 dark:text-slate-300 transition-colors text-center cursor-pointer"
+                  disabled={isSubmitting}
+                  className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
                 >
-                  100% Efectivo
+                  {data.id ? 'Cerrar' : 'Cancelar'}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBookingPayments([{ id: `bpay_${Date.now()}`, method: 'Transferencia', amount: priceTotal }]);
-                  }}
-                  className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-[11px] font-bold text-gray-700 dark:text-slate-300 transition-colors text-center cursor-pointer"
+                <button 
+                  type="button" 
+                  onClick={handleProceedToPayment} 
+                  disabled={isSubmitting || (!data.host_id && !data.clientName) || !data.date || !data.time || !data.court_id}
+                  className="py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
                 >
-                  100% Transf.
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const señaSugerida = Math.round(priceTotal * 0.1);
-                    setBookingPayments([
-                      { id: `bpay_${Date.now()}_1`, method: 'Transferencia', amount: señaSugerida },
-                      { id: `bpay_${Date.now()}_2`, method: 'Pendiente', amount: priceTotal - señaSugerida }
-                    ]);
-                  }}
-                  className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-[11px] font-bold text-emerald-600 dark:text-emerald-400 transition-colors text-center cursor-pointer"
-                >
-                  Seña 10%
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setBookingPayments([{ id: `bpay_${Date.now()}`, method: 'Pendiente', amount: priceTotal }]);
-                  }}
-                  className="py-1.5 px-1 bg-gray-50 dark:bg-slate-800 hover:bg-gray-100 dark:hover:bg-slate-700 border border-gray-200 dark:border-slate-700 rounded-xl text-[11px] font-bold text-amber-600 dark:text-amber-400 transition-colors text-center cursor-pointer"
-                >
-                  100% Pendiente
+                  <span>Continuar al Pago</span>
+                  <ArrowRight size={15} />
                 </button>
               </div>
+            </div>
+          </>
+        ) : (
+          /* CUERPO DEL PASO 2: REGISTRAR EL PAGO (IDÉNTICO A MOSTRADOR Y GASTOS) */
+          <div 
+            className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4"
+            onClick={() => {
+              setIsBookingClientSearchOpen(false);
+              setDeleteBookingMenuRowId(null);
+            }}
+          >
+            {/* Resumen centrado */}
+            <div className="text-center pt-2 pb-1 space-y-1">
+              <span className="text-xs text-gray-400 font-medium lowercase block">
+                total a cobrar
+              </span>
+              <span className="text-4xl font-black text-gray-900 dark:text-white font-mono tracking-tight block">
+                ${priceTotal.toLocaleString()}
+              </span>
+              <div className="max-w-[240px] sm:max-w-[260px] mx-auto pt-1.5 flex items-center justify-between gap-4 text-left">
+                <span className="text-xs font-medium text-gray-500 dark:text-slate-400 truncate">
+                  {selectedCourt?.name || 'Cancha'}
+                </span>
+                <span className="text-xs font-medium text-gray-500 dark:text-slate-400 shrink-0">
+                  {data.time} a {endTimeStr} hs
+                </span>
+              </div>
+            </div>
 
-              {/* Filas de Medios de Pago */}
-              <div className="space-y-2">
-                {bookingPayments.map((p, idx) => (
-                  <div
-                    key={`booking-pay-row-${p.id}`}
-                    className="p-3 bg-white dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 shadow-2xs space-y-2"
+            {/* Fila Cliente: Título cliqueable sin caja (o info del cliente seleccionado) */}
+            <div ref={bookingClientBoxRef} className="space-y-1.5" onClick={(e) => e.stopPropagation()}>
+              {!hasClient ? (
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setIsBookingClientSearchOpen(!isBookingClientSearchOpen)}
+                    className={`text-left font-bold text-sm cursor-pointer block ${
+                      isBookingClientBlocked 
+                        ? 'text-red-600' 
+                        : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-white'
+                    }`}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1 flex-wrap">
-                        {(['Efectivo', 'Transferencia', 'Crédito', 'Pendiente'] as const).map((m) => {
-                          const isSelected = p.method === m;
-                          return (
-                            <button
-                              type="button"
-                              key={`b-pay-opt-${p.id}-${m}`}
-                              onClick={() => handleChangeBookingBlockMethod(idx, m)}
-                              className={cn(
-                                "px-2 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer",
-                                isSelected
-                                  ? m === 'Pendiente'
-                                    ? "bg-amber-600 text-white"
-                                    : "bg-emerald-600 text-white"
-                                  : "bg-gray-100 dark:bg-slate-700 text-gray-600 dark:text-slate-300 hover:bg-gray-200"
-                              )}
-                            >
-                              {m}
-                            </button>
-                          );
-                        })}
+                    {isBookingClientBlocked 
+                      ? '+ Añadir cliente (Obligatorio) *' 
+                      : '+ Añadir cliente (opcional)'}
+                  </button>
+
+                  {isBookingClientSearchOpen && (
+                    <div className="mt-2 p-3 bg-white dark:bg-slate-800 rounded-2xl border border-gray-100 dark:border-slate-700 shadow-lg space-y-2">
+                      <div className="relative">
+                        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                        <input
+                          type="text"
+                          placeholder="Buscar por nombre o teléfono..."
+                          value={userSearch}
+                          onChange={(e) => setUserSearch(e.target.value)}
+                          className="w-full h-8 pl-8 pr-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[#0BA70B]"
+                          autoFocus
+                        />
                       </div>
 
-                      {bookingPayments.length > 1 && (
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveBookingPaymentBlock(p.id)}
-                          className="p-1 text-gray-400 hover:text-red-500 rounded-md cursor-pointer"
-                          title="Eliminar este medio de pago"
-                        >
-                          <Trash2 size={13} />
-                        </button>
-                      )}
+                      <div className="max-h-28 overflow-y-auto divide-y divide-gray-100 dark:divide-slate-700 text-xs">
+                        {filteredUsers.length === 0 ? (
+                          <p className="p-2 text-gray-400 text-center">No hay clientes disponibles</p>
+                        ) : (
+                          filteredUsers.map((u, uIdx) => (
+                            <div
+                              key={`booking-client-opt-${u.id || uIdx}`}
+                              onClick={() => {
+                                setData((prev: any) => ({
+                                  ...prev,
+                                  host_id: u.id,
+                                  userId: u.id,
+                                  clientName: u.name,
+                                  clientPhone: u.phone || '',
+                                  clientEmail: u.email || '',
+                                  canonicalId: u.canonicalId,
+                                  canonicalName: u.canonicalName,
+                                  historicalId: u.historicalId,
+                                  historicalIds: u.historicalIds
+                                }));
+                                setIsBookingClientSearchOpen(false);
+                                setUserSearch('');
+                              }}
+                              className="p-2 hover:bg-emerald-50 dark:hover:bg-slate-700/60 rounded-lg flex items-center justify-between cursor-pointer transition-colors"
+                            >
+                              <div>
+                                <p className="font-bold text-gray-900 dark:text-white">{u.name}</p>
+                                <p className="text-[11px] text-[#0BA70B] font-mono">{u.phone || '-'}</p>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
                     </div>
-
-                    <div className="relative">
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-bold">$</span>
-                      <input
-                        type="number"
-                        min={0}
-                        placeholder="0"
-                        value={p.amount}
-                        onChange={(e) => {
-                          const val = e.target.value === '' ? '' : Math.max(0, Number(e.target.value));
-                          setBookingPayments(prev => {
-                            const copy = [...prev];
-                            copy[idx] = { ...copy[idx], amount: val };
-                            return copy;
-                          });
-                        }}
-                        className="w-full h-9 pl-7 pr-3 rounded-lg bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 font-mono text-sm font-bold text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-emerald-500"
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              {/* Botón para añadir otro medio si aún no se asignaron todos */}
-              {bookingPayments.length < 4 && (
-                <button
-                  type="button"
-                  onClick={() => handleAddNewBookingPaymentMethod()}
-                  className="w-full py-2 border border-dashed border-gray-300 dark:border-slate-700 hover:border-emerald-500 text-gray-500 dark:text-slate-400 hover:text-emerald-600 rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                >
-                  <Plus size={14} />
-                  <span>Añadir otro medio de pago</span>
-                </button>
-              )}
-
-              {/* Alerta de Descuadre (Falta / Sobra) */}
-              {!isBookingMathExact && priceTotal > 0 && (
-                <div className={cn(
-                  "p-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between gap-2",
-                  isBookingFalta 
-                    ? "bg-amber-50 dark:bg-amber-950/40 border-amber-200 text-amber-800 dark:text-amber-300"
-                    : "bg-red-50 dark:bg-red-950/40 border-red-200 text-red-800 dark:text-red-300"
-                )}>
-                  <span>
-                    {isBookingFalta 
-                      ? `Faltan $${bookingFaltante.toLocaleString()} por asignar.` 
-                      : `Sobra $${bookingSobrante.toLocaleString()}.`}
-                  </span>
-                  {isBookingSobra && (
-                    <button
-                      type="button"
-                      onClick={handleAutocorrectBookingSobrante}
-                      className="px-2 py-0.5 rounded bg-red-600 text-white text-[11px] font-bold cursor-pointer hover:bg-red-700"
-                    >
-                      Ajustar
-                    </button>
-                  )}
-                  {isBookingFalta && (
-                    <button
-                      type="button"
-                      onClick={() => handleAddNewBookingPaymentMethod('Pendiente')}
-                      className="px-2 py-0.5 rounded bg-amber-600 text-white text-[11px] font-bold cursor-pointer hover:bg-amber-700"
-                    >
-                      + Dejar restante como pendiente
-                    </button>
                   )}
                 </div>
-              )}
-
-              {/* Mensaje de error si la validación falla */}
-              {errorMessage && (
-                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-xl text-red-700 dark:text-red-300 text-xs font-semibold flex items-center gap-2">
-                  <AlertTriangle size={16} className="shrink-0 text-red-600 dark:text-red-400" />
-                  <span>{errorMessage}</span>
+              ) : (
+                <div className="flex items-center justify-between py-1">
+                  <div className="min-w-0">
+                    <p className="text-sm font-bold text-gray-900 dark:text-white truncate">
+                      {clientDisplayName}
+                    </p>
+                    {clientDisplayPhone ? (
+                      <p
+                        onClick={() => {
+                          const cleanPhone = clientDisplayPhone.replace(/\D/g, '');
+                          if (cleanPhone) window.open(`https://wa.me/${cleanPhone}`, '_blank');
+                        }}
+                        className="text-xs font-mono text-[#0BA70B] hover:underline cursor-pointer"
+                        title="Enviar WhatsApp"
+                      >
+                        {clientDisplayPhone}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-gray-400 font-mono">Sin teléfono</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setData((prev: any) => ({
+                        ...prev,
+                        host_id: '',
+                        clientName: '',
+                        clientPhone: '',
+                        clientEmail: '',
+                        canonicalId: undefined,
+                        canonicalName: undefined,
+                        historicalId: undefined,
+                        historicalIds: undefined
+                      }));
+                    }}
+                    className="p-1.5 text-gray-400 hover:text-rose-500 rounded-lg cursor-pointer transition-colors"
+                    title="Quitar cliente"
+                  >
+                    <Trash2 size={16} />
+                  </button>
                 </div>
               )}
             </div>
-          )}
 
-          {/* Botones de Acción al Pie para Paso 1 y Paso 2 */}
-          <div className="flex items-center justify-between gap-2.5 pt-3 mt-2 border-t border-gray-100 dark:border-slate-800 shrink-0">
-            {step === 1 ? (
-              <>
-                {data.id && onCancelBooking ? (
-                  <button 
-                    type="button" 
-                    onClick={() => onCancelBooking(initialData || data)}
-                    disabled={isSubmitting}
-                    className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-white bg-red-600 hover:bg-red-700 transition-colors shadow-sm shadow-red-600/20 cursor-pointer disabled:opacity-50"
-                  >
-                    Cancelar reserva
-                  </button>
-                ) : null}
+            {/* Filas de Métodos de Pago */}
+            <div className="space-y-2 pt-1">
+              <div className="text-sm font-bold text-gray-600 dark:text-slate-300 text-left">
+                Método de pago
+              </div>
 
-                <div className="flex items-center gap-2 flex-1 justify-end">
-                  <button 
-                    type="button" 
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      onClose();
-                    }}
-                    disabled={isSubmitting}
-                    className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
-                  >
-                    {data.id ? 'Cerrar' : 'Cancelar'}
-                  </button>
-                  <button 
-                    type="button" 
-                    onClick={handleProceedToPayment} 
-                    disabled={isSubmitting || (!data.host_id && !data.clientName) || !data.date || !data.time || !data.court_id}
-                    className="py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-                  >
-                    <span>Continuar al Pago</span>
-                    <ArrowRight size={15} />
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <button 
-                  type="button" 
+              <div className="space-y-1.5">
+                {bookingPayments.map((p, idx) => {
+                  const isDeleteOpen = deleteBookingMenuRowId === p.id;
+
+                  return (
+                    <div
+                      key={`bpay-row-${p.id}`}
+                      className="bg-transparent border-none shadow-none py-1.5 relative"
+                    >
+                      {/* Fila principal en una sola línea horizontal */}
+                      <div className="flex items-center justify-between w-full">
+                        {/* Zona 1: Icono + Nombre del método */}
+                        <div 
+                          onClick={() => {
+                            setEditingBookingPaymentIndex(idx);
+                            setIsBookingPaymentSheetOpen(true);
+                          }}
+                          className="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer py-1"
+                        >
+                          {renderBookingMethodIcon(p.method)}
+                          <span className="font-black text-sm text-gray-900 dark:text-white truncate">
+                            {p.method}
+                          </span>
+                        </div>
+
+                        {/* Zona 2: Badge de Monto SIN BORDE */}
+                        <div className="flex items-center gap-2 shrink-0">
+                          <input
+                            type="number"
+                            min={0}
+                            placeholder="0"
+                            value={p.amount}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setBookingPayments((prev) => {
+                                const copy = [...prev];
+                                copy[idx] = { ...copy[idx], amount: val === '' ? '' : Number(val) };
+                                return copy;
+                              });
+                            }}
+                            className={`border-0 border-none ring-0 focus:ring-0 outline-none rounded-lg px-3 py-1.5 w-24 text-center font-bold text-xs sm:text-sm transition-colors ${
+                              isBookingFalta 
+                                ? 'bg-[#fce8e8] text-gray-900 dark:bg-red-950/50 dark:text-white' 
+                                : 'bg-emerald-100 text-[#0BA70B] dark:bg-emerald-950/60 dark:text-emerald-400 font-black'
+                            }`}
+                          />
+
+                          {/* Zona 3: Flecha > con Popover de Borrado */}
+                          <div className="relative shrink-0">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteBookingMenuRowId(isDeleteOpen ? null : p.id);
+                              }}
+                              className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer transition-colors"
+                            >
+                              <ChevronRight size={18} />
+                            </button>
+
+                            {isDeleteOpen && (
+                              <div className="absolute right-0 top-full mt-1 z-30 animate-in fade-in zoom-in-95 duration-150">
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRemoveBookingPaymentBlock(p.id);
+                                    setDeleteBookingMenuRowId(null);
+                                  }}
+                                  className="px-3 py-1.5 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-gray-200 dark:border-slate-700 text-gray-500 dark:text-slate-300 hover:text-gray-700 text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+                                >
+                                  <Trash2 size={13} />
+                                  <span>Borrar método de pago</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Renglón inferior alineado bajo el badge */}
+                      {bookingFaltante > 0 && (
+                        <div className="text-right pr-7 mt-0.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setBookingPayments((prev) => {
+                                const copy = [...prev];
+                                const cur = Number(copy[idx].amount) || 0;
+                                copy[idx] = { ...copy[idx], amount: cur + bookingFaltante };
+                                return copy;
+                              });
+                            }}
+                            className="text-[11px] font-bold text-rose-600 underline cursor-pointer"
+                          >
+                            Faltan ${bookingFaltante.toLocaleString()}
+                          </button>
+                        </div>
+                      )}
+
+                      {bookingSobrante > 0 && (
+                        <div className="text-right pr-7 mt-0.5">
+                          <button
+                            type="button"
+                            onClick={handleAutocorrectBookingSobrante}
+                            className="text-[11px] font-bold text-[#0BA70B] underline cursor-pointer"
+                          >
+                            Sobran ${bookingSobrante.toLocaleString()}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Botón "+ agregar método de pago" con fondo transparente */}
+              {bookingFaltante > 0 && (
+                <button
+                  type="button"
                   onClick={() => {
-                    setErrorMessage(null);
-                    setStep(1);
+                    setEditingBookingPaymentIndex(null);
+                    setIsBookingPaymentSheetOpen(true);
                   }}
-                  disabled={isSubmitting}
-                  className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+                  className="w-full py-2.5 rounded-xl bg-transparent border border-gray-200 dark:border-slate-700 text-center font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-100 hover:bg-gray-50/50 transition-colors cursor-pointer"
                 >
-                  <ArrowLeft size={15} />
-                  <span>Volver a Datos</span>
+                  + agregar método de pago
                 </button>
+              )}
+            </div>
 
-                <button 
-                  type="button" 
-                  onClick={handleSubmit} 
-                  disabled={isSubmitting || (priceTotal > 0 && !isBookingMathExact)}
-                  className="py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-                >
-                  <Check size={16} />
-                  <span>{isSubmitting ? 'Guardando...' : (data.id ? 'Guardar Cambios' : 'Confirmar Reserva')}</span>
-                </button>
-              </>
+            {errorMessage && (
+              <div className="p-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded-xl text-rose-700 dark:text-rose-300 text-xs font-bold flex items-center gap-2">
+                <AlertCircle size={16} className="shrink-0" />
+                <span>{errorMessage}</span>
+              </div>
             )}
+
+            {/* Botón Principal Inferior en Paso 2 de Reservas */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={handleSubmit}
+                disabled={!canConfirmBooking}
+                className="w-full py-3.5 bg-[#0BA70B] hover:bg-[#099609] text-white font-black text-sm rounded-2xl shadow-lg shadow-[#0BA70B]/25 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isSubmitting ? 'Guardando...' : (data.id ? 'Guardar Cambios' : 'Confirmar Reserva')}
+              </button>
+            </div>
           </div>
-        </motion.div>
-      </div>
+        )}
+      </motion.div>
+    </div>
+
+    {/* Sub-Bottom Sheet para selección de método de pago de reservas */}
+    <AnimatePresence>
+      {isBookingPaymentSheetOpen && (
+        <div 
+          className="fixed inset-0 z-[80] flex flex-col justify-end bg-black/60 backdrop-blur-xs select-none"
+          onClick={() => {
+            setIsBookingPaymentSheetOpen(false);
+            setEditingBookingPaymentIndex(null);
+          }}
+        >
+          <motion.div
+            drag="y"
+            dragConstraints={{ top: 0, bottom: 0 }}
+            dragElastic={{ top: 0, bottom: 0.8 }}
+            onDragEnd={(_, info) => {
+              if (info.offset.y > 100 || info.velocity.y > 500) {
+                setIsBookingPaymentSheetOpen(false);
+                setEditingBookingPaymentIndex(null);
+              }
+            }}
+            dragControls={bookingSheetDragControls}
+            dragListener={false}
+            initial={{ y: '100%' }}
+            animate={{ y: 0 }}
+            exit={{ y: '100%' }}
+            transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg mx-auto bg-white dark:bg-slate-900 rounded-t-[32px] p-5 shadow-2xl border-t border-x border-gray-100 dark:border-slate-800"
+          >
+            <div 
+              onPointerDown={(e) => bookingSheetDragControls.start(e)}
+              className="touch-none cursor-grab active:cursor-grabbing text-center space-y-1 -mt-1 mb-2"
+            >
+              <div className="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mb-2 shrink-0" />
+              <h4 className="font-black text-base text-gray-900 dark:text-white">
+                {editingBookingPaymentIndex !== null ? 'Cambiar método de pago' : 'Agregar método de pago'}
+              </h4>
+              <p className="text-xs text-gray-400">
+                mantené presionado para ordenar los métodos de pago según tu preferencia
+              </p>
+            </div>
+
+            <Reorder.Group
+              axis="y"
+              values={orderedBookingMethods}
+              onReorder={handleSaveBookingMethodsOrder}
+              className="space-y-2 py-2"
+            >
+              {orderedBookingMethods.map((m) => (
+                <Reorder.Item
+                  key={`reorder-booking-sheet-${m}`}
+                  value={m}
+                  className="p-3.5 bg-gray-50 dark:bg-slate-800 rounded-2xl border border-gray-200/80 dark:border-slate-700 flex items-center justify-between cursor-pointer hover:border-gray-400 transition-colors shadow-2xs"
+                  onClick={() => {
+                    if (editingBookingPaymentIndex !== null) {
+                      handleChangeBookingBlockMethod(editingBookingPaymentIndex, toBookingMethod(m));
+                    } else {
+                      handleAddNewBookingPaymentMethod(toBookingMethod(m));
+                    }
+                    setIsBookingPaymentSheetOpen(false);
+                    setEditingBookingPaymentIndex(null);
+                  }}
+                >
+                  <div className="flex items-center gap-3">
+                    {renderBookingMethodIcon(m)}
+                    <span className="font-black text-sm text-gray-900 dark:text-white">
+                      {m}
+                    </span>
+                  </div>
+                  <div
+                    className="p-2 text-gray-400 cursor-grab active:cursor-grabbing hover:text-gray-600"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <GripVertical size={18} />
+                  </div>
+                </Reorder.Item>
+              ))}
+            </Reorder.Group>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
 
       {/* 2.2. Modal Anidado '+ Nuevo Cliente' usando NewUserModal sobre la pantalla actual */}
       {isAddingNewUser && (
