@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Link2,
   ArrowLeft,
-  Loader2,
-  AlertCircle
+  Loader2
 } from 'lucide-react';
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
@@ -47,6 +46,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
   const [loading, setLoading] = useState(true);
   const [validation, setValidation] = useState<InvitationValidationResult | null>(null);
+  const [resolvedComplexName, setResolvedComplexName] = useState<string>('');
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
@@ -60,6 +60,10 @@ export const InviteView: React.FC<InviteViewProps> = ({
         const res = await validateSaasInvitation(token);
         if (isMounted) {
           setValidation(res);
+          const name = res.complexName || (res as any).complejoName || (res.invitation as any)?.complexName || (res.invitation as any)?.complejoName || '';
+          if (name) {
+            setResolvedComplexName(name);
+          }
           setLoading(false);
         }
       } catch (err: any) {
@@ -106,7 +110,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
       const claimResult = await claimSaasInvitation(token, targetUser, validation?.documentId);
       await reloadCollaboratorData();
       setTimeout(() => {
-        onSuccess(claimResult.complexId, claimResult.complexName || validation?.complexName || 'Mi Complejo');
+        onSuccess(claimResult.complexId, claimResult.complexName || resolvedComplexName || 'Complejo');
       }, 900);
     } catch (err: any) {
       console.warn('[InviteView] Error al reclamar invitación:', err);
@@ -118,7 +122,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
   const isProcessing = isSigningIn || isClaiming;
 
   // ---------------------------------------------------------------------------
-  // ESTADO: PANTALLA SOBRIA SI EL ENLACE ES INVÁLIDO O EXPIRÓ (SIN NOMBRES FALSOS)
+  // PANTALLA SOBRIA SI EL ENLACE ES INVÁLIDO O EXPIRÓ (SIN NOMBRES INVENTADOS)
   // ---------------------------------------------------------------------------
   if (!loading && validation && !validation.valid) {
     return (
@@ -139,12 +143,12 @@ export const InviteView: React.FC<InviteViewProps> = ({
     );
   }
 
-  const displayComplexName = validation?.complexName || 'Mi Complejo';
+  const displayComplexName = (resolvedComplexName || validation?.complexName || '').trim();
 
   return (
-    <div className="min-h-[100dvh] w-full relative flex flex-col justify-between overflow-x-hidden bg-[#0BA70B] select-none font-sans">
+    <div className="min-h-[100dvh] w-full relative flex flex-col justify-between overflow-x-hidden bg-[#019F3A] select-none font-sans">
       
-      {/* 1. SECCIÓN SUPERIOR: FOTO AL NATURAL + OVERLAY VERDE #019F3A AL 14% */}
+      {/* 1. SECCIÓN SUPERIOR: FOTO AL NATURAL + OVERLAY VERDE #019F3A AL 14% + DIFUMINADO */}
       <div className="absolute top-0 left-0 right-0 h-[72%] w-full overflow-hidden pointer-events-none z-0">
         <img
           src="/assets/invite-turf-bg.jpg"
@@ -158,47 +162,45 @@ export const InviteView: React.FC<InviteViewProps> = ({
           }}
         />
 
-        {/* Overlay verde #019F3A al 14% de opacidad real sin quemar sombras */}
+        {/* Rectángulo verde #019F3A con transparencia del 14% para no oscurecer las sombras */}
         <div 
           className="absolute inset-0"
           style={{ backgroundColor: 'rgba(1, 159, 58, 0.14)' }}
         />
 
-        {/* Difuminado suave en la base hacia el panel blanco */}
-        <div className="absolute bottom-0 left-0 right-0 h-36 bg-gradient-to-b from-transparent to-[#019F3A]/20" />
+        {/* Difuminado suave en la base hacia el verde #019F3A */}
+        <div className="absolute bottom-0 left-0 right-0 h-36 bg-gradient-to-b from-transparent to-[#019F3A]" />
       </div>
 
-      {/* 2. FLECHA BLANCA DE REGRESO Y LOGO JOGO AL DOBLE DE TAMAÑO */}
-      <header className="relative z-20 w-full max-w-md mx-auto pt-7 sm:pt-9 px-6 sm:px-8 flex items-center justify-between">
-        <button
-          type="button"
-          onClick={onNavigateHome}
-          aria-label="Volver"
-          className="text-white hover:opacity-85 transition-opacity p-1 -ml-1 cursor-pointer bg-transparent border-0"
-        >
-          <ArrowLeft size={28} strokeWidth={2.4} className="text-white" />
-        </button>
+      {/* 2. FLECHA BLANCA DE REGRESO INDEPENDIENTE ARRIBA A LA IZQUIERDA */}
+      <button
+        type="button"
+        onClick={onNavigateHome}
+        aria-label="Volver"
+        className="absolute top-6 left-6 z-30 text-white hover:opacity-85 transition-opacity p-1 cursor-pointer bg-transparent border-0"
+      >
+        <ArrowLeft size={26} strokeWidth={2.4} className="text-white" />
+      </button>
 
-        {/* Logo Jogo blanco ampliado al doble (~200px de ancho) */}
-        <div className="flex-1 flex justify-center pr-7">
-          <img
-            src="/assets/jogo-logo-white.png"
-            onError={(e) => {
-              const target = e.currentTarget;
-              if (!target.src.includes('Photoroom')) {
-                target.src = '/assets/aistudio/Photoroom-20261027_123311_8fbc6431.png';
-              }
-            }}
-            alt="Jogo"
-            className="w-[195px] sm:w-[215px] h-auto object-contain block drop-shadow-xs"
-          />
-        </div>
+      {/* 3. LOGO JOGO BLANCO CENTRADO EN 120px EN SU PROPIA FILA */}
+      <header className="relative z-20 w-full max-w-md mx-auto pt-10 sm:pt-12 pb-2 flex justify-center items-center">
+        <img
+          src="/assets/jogo-logo-white.png"
+          onError={(e) => {
+            const target = e.currentTarget;
+            if (!target.src.includes('Photoroom')) {
+              target.src = '/assets/aistudio/Photoroom-20261027_123311_8fbc6431.png';
+            }
+          }}
+          alt="Jogo"
+          className="w-[125px] h-auto object-contain block drop-shadow-xs"
+        />
       </header>
 
-      {/* 3. CONTENIDO: CÁPSULA 22px AL RAS, TÍTULO DISPLAY Y TEXTOS EN BLANCO PURO */}
-      <div className="relative z-10 w-full max-w-md mx-auto px-7 sm:px-8 pt-6 pb-5 flex-1 flex flex-col justify-end">
-        {/* Cápsula de 22px de alto con círculo verde al ras del borde izquierdo */}
-        <div className="h-[22px] rounded-full bg-white pl-0 pr-2.5 flex items-center gap-1.5 shadow-xs w-fit mb-5">
+      {/* 4. CONTENIDO: CÁPSULA 22px VERDE CLARO, TÍTULO EN 2 LÍNEAS Y TEXTOS BLANCOS */}
+      <div className="relative z-10 w-full max-w-md mx-auto px-7 sm:px-8 pt-4 pb-5 flex-1 flex flex-col justify-end">
+        {/* Cápsula de 22px de alto en fondo verde claro #EAFBEA */}
+        <div className="h-[22px] rounded-full bg-[#EAFBEA] pl-0 pr-2.5 flex items-center gap-1.5 shadow-xs w-fit mb-4">
           <div className="w-[22px] h-[22px] rounded-full bg-[#019F3A] flex items-center justify-center shrink-0">
             <Link2 size={11} strokeWidth={2.5} className="text-white -rotate-45" />
           </div>
@@ -207,24 +209,26 @@ export const InviteView: React.FC<InviteViewProps> = ({
           </span>
         </div>
 
-        {/* Título Display grande e impactante */}
-        <h1 className="text-[44px] sm:text-[48px] font-bold text-white leading-[1.0] tracking-tight">
-          ¡Felicidades<br />por este gran paso!
+        {/* Título Display calibrado en 2 renglones exactos */}
+        <h1 className="text-[32px] sm:text-[35px] font-bold text-white leading-[1.05] tracking-tight">
+          Felicidades<br />por este gran paso!
         </h1>
 
-        {/* Bienvenida personalizada con nombre del complejo en negrita */}
-        <p className="text-lg sm:text-[19px] text-white mt-4 font-normal leading-snug">
-          Bienvenido a Jogo, <strong className="font-bold">{displayComplexName}.</strong>
+        {/* Bienvenida personalizada con el nombre real del complejo (sin espacio antes del punto) */}
+        <p className="text-base sm:text-lg text-white mt-3 font-normal leading-snug">
+          Bienvenido a Jogo,{displayComplexName ? <>, <strong className="font-bold">{displayComplexName}.</strong></> : '.'}
         </p>
 
         {/* Descripción en 3 renglones en blanco puro */}
-        <p className="text-[13px] sm:text-sm text-white font-normal leading-relaxed mt-2.5 max-w-[340px]">
-          Desde hoy, tenés una nueva herramienta que te facilitará el trabajo diario y te ayudará a tomar mejores decisiones!
+        <p className="text-[12.5px] sm:text-xs text-white font-normal leading-relaxed mt-2 max-w-[340px]">
+          Desde hoy, tenés una nueva herramienta que<br />
+          te facilitará el trabajo diario y te ayudará a<br />
+          tomar mejores decisiones!
         </p>
       </div>
 
-      {/* 4. PANEL BLANCO INFERIOR (ESQUINAS DE 50px) */}
-      <div className="relative z-20 w-full bg-white rounded-t-[50px] sm:rounded-t-[55px] pt-7 sm:pt-8 px-7 sm:px-8 pb-6 shadow-[0_-10px_35px_rgba(0,0,0,0.06)]">
+      {/* 5. PANEL BLANCO INFERIOR (ESQUINAS DE 50px Y AIRE EN LA BASE PB-10) */}
+      <div className="relative z-20 w-full bg-white rounded-t-[50px] sm:rounded-t-[55px] pt-7 sm:pt-8 px-7 sm:px-8 pb-10 sm:pb-12 shadow-[0_-10px_35px_rgba(0,0,0,0.06)]">
         <div className="w-full max-w-md mx-auto space-y-4">
           
           {/* Título en gris oscuro y subtítulo en una sola línea */}
@@ -239,12 +243,11 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
           {claimError && (
             <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs flex items-center gap-2">
-              <AlertCircle size={15} className="shrink-0 text-red-500" />
-              <span>{claimError}</span>
+              <span className="flex-1 font-medium">{claimError}</span>
             </div>
           )}
 
-          {/* Botón de Google redondeado tipo píldora con tipografía mixta */}
+          {/* Botón de Google redondeado tipo píldora */}
           <button
             type="button"
             disabled={isProcessing}
@@ -266,11 +269,11 @@ export const InviteView: React.FC<InviteViewProps> = ({
             )}
           </button>
 
-          {/* Aviso legal en gris claro y enlaces en verde agua suave #249F87 (sin cursiva) */}
+          {/* Aviso legal en gris claro y enlaces en verde agua suave #249F87 */}
           <div className="pt-1 text-center">
             <p className="text-[10.5px] sm:text-[11px] text-[#A0A0A0] leading-tight">
               Al continuar, tu cuenta de Google quedará<br />
-              vinculada con <strong className="font-bold text-[#6B7280]">{displayComplexName}</strong> y aceptas nuestros<br />
+              vinculada con {displayComplexName ? <strong className="font-bold text-[#6B7280]">{displayComplexName}</strong> : 'tu complejo'} y aceptas nuestros<br />
               <a 
                 href="#" 
                 onClick={(e) => e.preventDefault()} 
