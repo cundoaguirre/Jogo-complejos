@@ -319,14 +319,20 @@ export function findMatchingLocalUser(
 ): User | null {
   if (!users || users.length === 0 || !criteria) return null;
 
-  // Filtrar candidatos si complexId está especificado: nunca asociar usuarios con originComplejoId de otro complejo
-  const candidateUsers = complexId
-    ? users.filter(u => {
-        const uOrigin = u.originComplejoId || (u as any).originComplexId || (u as any).complejoId || (u as any).complexId;
-        if (!uOrigin) return true;
-        return isSameComplex(uOrigin, complexId);
-      })
-    : users;
+  // Filtrar candidatos si complexId está especificado y excluir usuarios inactivos o eliminados
+  const candidateUsers = (users || []).filter(u => {
+    if (!u) return false;
+    if ((u as any).status === 'inactivo') return false;
+    const deletedIn = (u as any).deletedByComplexIds;
+    if (complexId && Array.isArray(deletedIn) && (deletedIn.includes(complexId) || (complexId === 'B' && deletedIn.includes('complejo_central')))) {
+      return false;
+    }
+    if (complexId) {
+      const uOrigin = u.originComplejoId || (u as any).originComplexId || (u as any).complejoId || (u as any).complexId;
+      if (uOrigin && !isSameComplex(uOrigin, complexId)) return false;
+    }
+    return true;
+  });
 
   if (candidateUsers.length === 0) return null;
 
@@ -630,7 +636,15 @@ export function buildCrmActivityIndex(
   const crmUsers: User[] = [
     ...registeredUsers,
     ...Array.from(uniqueDerivedMap.values())
-  ];
+  ].filter(u => {
+    if (!u) return false;
+    if ((u as any).status === 'inactivo') return false;
+    const deletedIn = (u as any).deletedByComplexIds;
+    if (Array.isArray(deletedIn) && (deletedIn.includes(normComplexId) || (normComplexId === 'B' && deletedIn.includes('complejo_central')))) {
+      return false;
+    }
+    return true;
+  });
 
   // 6. Precalcular métricas del ciclo de vida y enriquecer cada ficha para búsquedas y modales
   const userMetricsMap = new Map<string, UserLifecycleMetrics>();

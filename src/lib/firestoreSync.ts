@@ -15,7 +15,9 @@ import {
   increment, 
   writeBatch,
   runTransaction,
-  limit 
+  limit,
+  arrayUnion,
+  arrayRemove 
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import type { 
@@ -1377,6 +1379,38 @@ export async function updateBookingInFirestore(
   if ((finalUserId && finalUserId !== '0') || finalPhone) {
     syncUserMetricsWithBookings(finalUserId || '', finalPhone);
   }
+
+  // Also sync status and paymentStatus into /operations/${strBookingId}-booking if present
+  try {
+    const opRef = doc(db, OPERATIONS_COLLECTION, `${strBookingId}-booking`);
+    const opSnap = await getDoc(opRef);
+    if (opSnap.exists()) {
+      const isCancelled = patch.status === 'cancelado' || patch.status === 'cancelled';
+      const opPatch: Record<string, any> = {
+        updatedAt: serverTimestamp()
+      };
+      if (isCancelled) {
+        opPatch.paymentStatus = 'cancelled';
+        opPatch.status = 'cancelado';
+      } else if (patch.status) {
+        opPatch.status = patch.status;
+        if (patch.payment_status || patch.paymentStatus) {
+          opPatch.paymentStatus = patch.payment_status || patch.paymentStatus;
+        }
+      }
+      if (patch.userName || patch.clientName) {
+        opPatch.userName = patch.userName || patch.clientName;
+        opPatch.clientName = patch.userName || patch.clientName;
+      }
+      if (patch.userPhone || patch.clientPhone) {
+        opPatch.userPhone = patch.userPhone || patch.clientPhone;
+        opPatch.clientPhone = patch.userPhone || patch.clientPhone;
+      }
+      await updateDoc(opRef, cleanFirestoreDocument(opPatch));
+    }
+  } catch (err) {
+    console.warn('[Firestore] Error syncing linked operation on booking update:', err);
+  }
 }
 
 /**
@@ -1703,6 +1737,12 @@ export function subscribeToClients(
       const merged = new Map<string, User>();
       
       const checkAndAdd = (user: User) => {
+        if ((user as any).status === 'inactivo') return;
+        const deletedIn = (user as any).deletedByComplexIds;
+        if (Array.isArray(deletedIn) && (deletedIn.includes(targetId) || (targetId === 'B' && deletedIn.includes('complejo_central')))) {
+          return;
+        }
+
         const uOrigin = user.originComplejoId || (user as any).originComplexId || (user as any).complejoId || (user as any).complexId;
         // Solo incorporar si pertenece legítimamente a la sede objetivo
         if (uOrigin) {
@@ -1862,7 +1902,9 @@ export async function saveClientInFirestore(
   if (Array.isArray(client.historicalIds)) client.historicalIds.forEach((h: any) => histSet.add(String(h)));
   if (client.historicalId) histSet.add(String(client.historicalId));
   if (existingData?.historicalId) histSet.add(String(existingData.historicalId));
-  if (client.id && !String(client.id).startsWith('derived_') && String(client.id) !== finalClientId) {
+  if ((client as any).oldId) histSet.add(String((client as any).oldId));
+  if ((client as any).oldPhone) histSet.add(String((client as any).oldPhone));
+  if (client.id && String(client.id) !== finalClientId) {
     histSet.add(String(client.id));
   }
   const resolvedHistoricalIds = Array.from(histSet);
@@ -1918,30 +1960,192 @@ export async function saveClientInFirestore(
   };
 
   await setDoc(doc(db, USERS_COLLECTION, finalClientId), payload, { merge: true });
+
+  // 5. Propagación en cascada de cambios de nombre y teléfono a turnos y operaciones
+  const newName = payload.name;
+  const newPhone = payload.phone;
+  const oldPhoneVal = (client as any).oldPhone || existingData?.phone;
+  const oldIdVal = (client as any).oldId || client.id;
+  const normNewPhone = normalizePhoneNumber(newPhone);
+  const normOldPhone = normalizePhoneNumber(oldPhoneVal);
+
+  try {
+    const batch = writeBatch(db);
+    let batchCount = 0;
+
+    // A. Actualizar bookings del complejo donde figure como host o en array players
+    const bookingsCol = collection(db, BOOKINGS_COLLECTION);
+    const qBookings = query(bookingsCol, where('complejoId', '==', targetId));
+    const bSnap = await getDocs(qBookings);
+
+    bSnap.forEach(bDoc => {
+      const bData = bDoc.data();
+      let shouldUpdate = false;
+      const bPatch: Record<string, any> = {};
+
+      const isHost = (
+        (bData.userId && (String(bData.userId) === finalClientId || String(bData.userId) === String(oldIdVal))) ||
+        (bData.host_id && (String(bData.host_id) === finalClientId || String(bData.host_id) === String(oldIdVal))) ||
+        (normOldPhone && normalizePhoneNumber(bData.userPhone || bData.host_phone || bData.clientPhone) === normOldPhone)
+      );
+
+      if (isHost) {
+        shouldUpdate = true;
+        bPatch.userName = newName;
+        bPatch.clientName = newName;
+        bPatch.host_name = newName;
+        bPatch.userPhone = newPhone;
+        bPatch.clientPhone = newPhone;
+        bPatch.host_phone = newPhone;
+      }
+
+      if (Array.isArray(bData.players) && bData.players.length > 0) {
+        let playersChanged = false;
+        const updatedPlayers = bData.players.map((p: any) => {
+          if (!p) return p;
+          const pId = String(p.id || p.userId || '');
+          const pNorm = normalizePhoneNumber(p.phone || '');
+          const isMatch = (
+            (pId && (pId === finalClientId || pId === String(oldIdVal))) ||
+            (normOldPhone && pNorm && pNorm === normOldPhone) ||
+            (normNewPhone && pNorm && pNorm === normNewPhone)
+          );
+          if (isMatch) {
+            playersChanged = true;
+            return {
+              ...p,
+              name: newName,
+              phone: newPhone
+            };
+          }
+          return p;
+        });
+
+        if (playersChanged) {
+          shouldUpdate = true;
+          bPatch.players = updatedPlayers;
+        }
+      }
+
+      if (shouldUpdate && batchCount < 400) {
+        batch.update(bDoc.ref, bPatch);
+        batchCount++;
+      }
+    });
+
+    // B. Actualizar operations del complejo
+    const opsCol = collection(db, OPERATIONS_COLLECTION);
+    const qOps = query(opsCol, where('complejoId', '==', targetId));
+    const opsSnap = await getDocs(qOps);
+
+    opsSnap.forEach(opDoc => {
+      const opData = opDoc.data();
+      const isOpMatch = (
+        (opData.userId && (String(opData.userId) === finalClientId || String(opData.userId) === String(oldIdVal))) ||
+        (opData.clientId && (String(opData.clientId) === finalClientId || String(opData.clientId) === String(oldIdVal))) ||
+        (normOldPhone && normalizePhoneNumber(opData.userPhone || opData.clientPhone) === normOldPhone)
+      );
+
+      if (isOpMatch && batchCount < 400) {
+        batch.update(opDoc.ref, {
+          userName: newName,
+          clientName: newName,
+          userPhone: newPhone,
+          clientPhone: newPhone
+        });
+        batchCount++;
+      }
+    });
+
+    if (batchCount > 0) {
+      await batch.commit();
+    }
+  } catch (propagateErr) {
+    console.warn('[Firestore] Error propagando actualización de cliente:', propagateErr);
+  }
+
   return finalClientId;
 }
 
 /**
- * Elimina un cliente de la colección canónica 'users', asegurando que pertenezca a la sede
+ * Formatea un número telefónico para enlace de WhatsApp garantizando:
+ * - Prefijo internacional 549 para Argentina.
+ * - NUNCA recortar el primer '1' para números de AMBA (ej: 11 3803 2662 -> 5491138032662).
+ */
+export function formatPhoneForWhatsApp(rawPhone?: string | null): string {
+  if (!rawPhone || typeof rawPhone !== 'string') return '';
+  let digits = rawPhone.replace(/\D/g, '');
+  if (!digits) return '';
+
+  if (digits.startsWith('549') && digits.length >= 12) {
+    return digits;
+  }
+  if (digits.startsWith('54') && !digits.startsWith('549') && digits.length >= 11) {
+    const after = digits.slice(2);
+    const clean = after.startsWith('0') ? after.slice(1) : after;
+    return `549${clean}`;
+  }
+
+  while (digits.startsWith('0')) {
+    digits = digits.slice(1);
+  }
+
+  if (digits.startsWith('1115') && digits.length === 12) {
+    digits = '11' + digits.slice(4);
+  } else if (digits.startsWith('15') && digits.length === 10) {
+    digits = '11' + digits.slice(2);
+  } else if (digits.length === 12 && digits.slice(3, 5) === '15') {
+    digits = digits.slice(0, 3) + digits.slice(5);
+  } else if (digits.length === 13 && digits.slice(4, 6) === '15') {
+    digits = digits.slice(0, 4) + digits.slice(6);
+  }
+
+  if (digits.length === 10) {
+    return `549${digits}`;
+  }
+  if (digits.length === 11 && digits.startsWith('9')) {
+    return `54${digits}`;
+  }
+  if (digits.length > 10) {
+    return digits.startsWith('54') ? digits : `549${digits}`;
+  }
+  return `549${digits}`;
+}
+
+/**
+ * Elimina/desvincula un cliente de la sede activa de forma NO DESTRUCTIVA.
+ * NUNCA llama a deleteDoc, para preservar la trazabilidad contable, reservas pasadas
+ * y fichas de clientes en otros complejos o ERP central.
  */
 export async function deleteClientInFirestore(clientId: string | number, complexId?: string): Promise<void> {
   const strId = String(clientId);
-  if (complexId) {
-    try {
-      const uRef = doc(db, USERS_COLLECTION, strId);
-      const uSnap = await getDoc(uRef);
-      if (uSnap.exists()) {
-        const uOrigin = uSnap.data().originComplejoId || uSnap.data().originComplexId || uSnap.data().complejoId || uSnap.data().complexId;
-        if (uOrigin && !isSameComplex(uOrigin, complexId)) {
-          console.warn(`[Firestore] Intento de eliminar ficha de otro complejo (${uOrigin}) bloqueado.`);
-          return;
-        }
-      }
-    } catch (e) {
-      console.warn('[Firestore] Error validando origen de ficha antes de eliminar:', e);
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  try {
+    const uRef = doc(db, USERS_COLLECTION, strId);
+    const uSnap = await getDoc(uRef);
+    if (!uSnap.exists()) return;
+
+    const uData = uSnap.data();
+    const uOrigin = uData.originComplejoId || uData.originComplexId || uData.complejoId || uData.complexId;
+    const isOriginComplex = !uOrigin || isSameComplex(uOrigin, targetId);
+
+    const updatePayload: any = {
+      updatedAt: new Date().toISOString(),
+      deletedByComplexIds: arrayUnion(targetId, targetId === 'B' ? 'complejo_central' : targetId)
+    };
+
+    if (isOriginComplex) {
+      updatePayload.status = 'inactivo';
+    } else {
+      updatePayload.associatedComplexIds = arrayRemove(targetId, targetId === 'B' ? 'complejo_central' : targetId);
     }
+
+    await updateDoc(uRef, updatePayload);
+    console.log(`[Firestore] Cliente ${strId} desvinculado de sede ${targetId} de forma no destructiva`);
+  } catch (e) {
+    console.error('[Firestore] Error desvinculando cliente de sede:', e);
+    throw e;
   }
-  await deleteDoc(doc(db, USERS_COLLECTION, strId));
 }
 
 // -------------------------------------------------------------
@@ -5796,6 +6000,13 @@ export async function cancelBookingWithPolicy(
       opSnap = directOpSnap;
     }
 
+    const rawUserId = bData.userId || bData.host_id || (opSnap?.exists() ? opSnap.data().userId : null);
+    let userRef = null;
+    if (rawUserId && rawUserId !== '0') {
+      userRef = doc(db, USERS_COLLECTION, String(rawUserId));
+      await t.get(userRef);
+    }
+
     const contractualAmount = Number(bData.price ?? bData.price_total ?? 0);
     const totalCollected = Number(bData.deposit ?? bData.amount_paid ?? 0);
     const previousRefunds = Number(bData.totalRefunded ?? 0);
@@ -5814,6 +6025,7 @@ export async function cancelBookingWithPolicy(
       status: 'cancelado',
       paymentStatus: plan.finalPaymentStatus,
       payment_status: plan.finalPaymentStatus,
+      amountPending: 0,
       totalRefunded: previousRefunds + plan.refundAmount,
       retainedAmount: plan.retainedAmount,
       cancellationReason: params.reason || '',
@@ -5880,15 +6092,29 @@ export async function cancelBookingWithPolicy(
     // 2.3 Actualizar operación si existía
     if (opRef && opSnap) {
       const opData = opSnap.data();
+      const debtToExtinguish = Number(opData.currentAccountDebtAmount || 0);
+
       t.update(opRef, {
+        originalContractualAmount: opData.contractualAmount ?? contractualAmount,
+        contractualAmount: totalCollected, // El ingreso de la operación cancelada se reduce a lo efectivamente cobrado
         totalRefunded: (opData.totalRefunded || 0) + plan.refundAmount,
-        netCollected: opData.totalCollected - (opData.totalRefunded || 0) - plan.refundAmount,
+        netCollected: totalCollected - (opData.totalRefunded || 0) - plan.refundAmount,
         retainedAmount: plan.retainedAmount,
         amountPending: 0,
         paymentStatus: plan.finalPaymentStatus,
+        status: 'cancelado',
+        currentAccountDebtAmount: 0,
         notes: `${opData.notes ? opData.notes + ' | ' : ''}Cancelado: ${params.reason || ''}`,
         updatedAt: serverTimestamp()
       });
+
+      // Extinguir deuda en /users si correspondía
+      if (debtToExtinguish > 0 && userRef) {
+        t.set(userRef, {
+          debt: increment(-debtToExtinguish),
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      }
     }
 
     return {

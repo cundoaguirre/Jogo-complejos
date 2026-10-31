@@ -51,7 +51,7 @@ export const CancelBookingModal: React.FC<CancelBookingModalProps> = ({
 
   // Único campo editable: importe a devolver
   const [refundInput, setRefundInput] = useState<string>(hasSeña ? String(señaEfectivamenteCobrada) : '0');
-  const [refundPaymentMethod, setRefundPaymentMethod] = useState<'cash' | 'transfer' | 'other'>('cash');
+  const [refundPaymentMethod, setRefundPaymentMethod] = useState<'cash' | 'transfer' | 'credit'>('cash');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -247,7 +247,7 @@ export const CancelBookingModal: React.FC<CancelBookingModalProps> = ({
                       {[
                         { id: 'cash', label: 'Efectivo' },
                         { id: 'transfer', label: 'Transferencia' },
-                        { id: 'other', label: 'Otro' }
+                        { id: 'credit', label: 'Tarjeta' }
                       ].map((m) => (
                         <button
                           key={m.id}

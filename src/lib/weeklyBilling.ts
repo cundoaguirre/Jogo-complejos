@@ -958,6 +958,10 @@ export async function syncPlayedBookings(complexId: string, bookings: Match[]): 
     if (!bId || syncedBookingIds.has(bId)) continue;
 
     const rawStatus = String(b.status || '').toLowerCase().trim();
+    const rawPaymentStatus = String(b.payment_status || (b as any).paymentStatus || '').toLowerCase().trim();
+    const isCancelled = rawStatus === 'cancelado' || rawStatus === 'cancelled' || rawPaymentStatus.includes('cancel');
+    if (isCancelled) continue;
+
     if (rawStatus !== 'confirmado' && rawStatus !== 'confirmed' && rawStatus !== 'activa') continue;
 
     const bDate = String(b.date || '').trim();

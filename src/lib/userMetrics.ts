@@ -147,7 +147,9 @@ export function formatDDMMYY(val: any): string {
 export function isBookingPlayed(b: RawBooking, now: Date = new Date()): boolean {
   if (!b) return false;
   const st = String(b.status || '').toLowerCase().trim();
-  if (st === 'cancelled' || st === 'cancelado') return false;
+  const paySt = String((b as any).paymentStatus || (b as any).payment_status || '').toLowerCase().trim();
+  const isCancelled = st === 'cancelled' || st === 'cancelado' || paySt.includes('cancel');
+  if (isCancelled) return false;
   if (st === 'jugado' || st === 'completed') return true;
 
   const dateStr = b.date || (b.startTime ? String(b.startTime).split('T')[0] : (b.start_time ? String(b.start_time).split('T')[0] : null));
@@ -212,13 +214,19 @@ export function calculateUserLifecycleMetrics(
     ? organizedBookings
     : associatedBookings.filter(b => (b as any).isOrganizer !== false);
 
-  const allValidBookings = targetOrganized.filter(b => Boolean(b && (b.date || b.startTime || b.start_time)));
+  const allValidBookings = targetOrganized.filter(b => {
+    if (!b || (!b.date && !b.startTime && !b.start_time)) return false;
+    const st = String(b.status || '').toLowerCase().trim();
+    const paySt = String((b as any).paymentStatus || (b as any).payment_status || '').toLowerCase().trim();
+    return st !== 'cancelled' && st !== 'cancelado' && !paySt.includes('cancel');
+  });
   const reservas = allValidBookings.length;
 
   // Filtrar reservas no canceladas
   const activeBookings = associatedBookings.filter(b => {
-    const st = String(b.status || '').toLowerCase();
-    return st !== 'cancelled' && st !== 'cancelado';
+    const st = String(b.status || '').toLowerCase().trim();
+    const paySt = String((b as any).paymentStatus || (b as any).payment_status || '').toLowerCase().trim();
+    return st !== 'cancelled' && st !== 'cancelado' && !paySt.includes('cancel');
   });
 
   // Filtrar exclusivamente partidos que ya han sido jugados/finalizados

@@ -74,6 +74,7 @@ import { MostradorBottomSheet } from './components/MostradorBottomSheet';
 import { POSCartProvider } from './components/POSCartContext';
 import { TicketModal } from './components/TicketModal';
 import { PendingSettleModal } from './components/PendingSettleModal';
+import { OperationTicketCardModal } from './components/OperationTicketCardModal';
 import { CancelBookingModal } from './components/CancelBookingModal';
 import { DeleteBookingModal } from './components/DeleteBookingModal';
 
@@ -447,6 +448,7 @@ interface NewUserModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (user: any) => Promise<void> | void;
+  onDelete?: (userId: string | number) => Promise<void> | void;
   initialData?: User | null;
   isEdit?: boolean;
   existingUsers?: User[];
@@ -456,6 +458,7 @@ const NewUserModal = ({
   isOpen, 
   onClose, 
   onSave, 
+  onDelete,
   initialData = null, 
   isEdit = false, 
   existingUsers = [] 
@@ -473,6 +476,7 @@ const NewUserModal = ({
   });
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -563,6 +567,23 @@ const NewUserModal = ({
     }
   };
 
+  const handleDeleteUserClick = async () => {
+    if (!initialData?.id || !onDelete) return;
+    const confirmDelete = window.confirm(`¿Estás seguro de que deseas eliminar a "${initialData.name || 'este usuario'}" de la sede?`);
+    if (!confirmDelete) return;
+
+    try {
+      setIsDeleting(true);
+      await onDelete(initialData.id);
+      onClose();
+    } catch (err: any) {
+      console.error('Error al eliminar usuario:', err);
+      setError(err?.message || 'Error al eliminar el usuario.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
   const isHombre = (formData.gender || 'hombre').toLowerCase() === 'hombre' || (formData.gender || '').toLowerCase() === 'masculino';
   const isMujer = (formData.gender || '').toLowerCase() === 'mujer' || (formData.gender || '').toLowerCase() === 'femenino';
   const isCapitan = (formData.category || '').toLowerCase() === 'capitán' || (formData.category || '').toLowerCase() === 'capitan';
@@ -570,7 +591,7 @@ const NewUserModal = ({
 
   return (
     <div 
-      className="fixed inset-0 bg-black/60 z-[80] flex items-center justify-center p-3 sm:p-4 pointer-events-auto"
+      className="fixed inset-0 bg-black/60 z-[90] flex items-center justify-center p-3 sm:p-4 pointer-events-auto"
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
@@ -770,23 +791,38 @@ const NewUserModal = ({
           </div>
         </form>
 
-        <div className="p-3.5 sm:p-4 border-t border-gray-100 dark:border-slate-800 flex justify-end gap-2.5 shrink-0">
-          <button 
-            type="button" 
-            onClick={onClose} 
-            disabled={isSubmitting}
-            className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-800 rounded-xl font-medium cursor-pointer disabled:opacity-50 text-xs sm:text-sm"
-          >
-            Cancelar
-          </button>
-          <button 
-            type="submit" 
-            form="new-user-form" 
-            disabled={!formData.name || !formData.phone || isSubmitting} 
-            className="px-5 py-2 bg-[#0BA70B] text-white rounded-xl font-bold hover:bg-[#0BA70B]/90 disabled:opacity-50 cursor-pointer shadow-md shadow-emerald-900/10 flex items-center gap-2 text-xs sm:text-sm"
-          >
-            {isSubmitting ? 'Guardando...' : (isEdit ? 'Guardar cambios' : 'Guardar Usuario')}
-          </button>
+        <div className="p-3.5 sm:p-4 border-t border-gray-100 dark:border-slate-800 flex items-center justify-between gap-2.5 shrink-0">
+          <div>
+            {isEdit && initialData?.id && onDelete && (
+              <button
+                type="button"
+                onClick={handleDeleteUserClick}
+                disabled={isSubmitting || isDeleting}
+                className="px-3 py-2 text-rose-600 hover:text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-xl font-bold text-xs sm:text-sm flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 size={15} />
+                <span>{isDeleting ? 'Eliminando...' : 'Eliminar usuario'}</span>
+              </button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button 
+              type="button" 
+              onClick={onClose} 
+              disabled={isSubmitting || isDeleting}
+              className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-800 rounded-xl font-medium cursor-pointer disabled:opacity-50 text-xs sm:text-sm"
+            >
+              Cancelar
+            </button>
+            <button 
+              type="submit" 
+              form="new-user-form" 
+              disabled={!formData.name || !formData.phone || isSubmitting || isDeleting} 
+              className="px-5 py-2 bg-[#0BA70B] text-white rounded-xl font-bold hover:bg-[#0BA70B]/90 disabled:opacity-50 cursor-pointer shadow-md shadow-emerald-900/10 flex items-center gap-2 text-xs sm:text-sm"
+            >
+              {isSubmitting ? 'Guardando...' : (isEdit ? 'Guardar cambios' : 'Guardar Usuario')}
+            </button>
+          </div>
         </div>
       </motion.div>
     </div>
@@ -931,6 +967,7 @@ const UserDetailModal = ({
 
   // States to open the exact same Operation Ticket / Settle modal as Finanzas
   const [ticketModalOperation, setTicketModalOperation] = useState<OperationDocument | null>(null);
+  const [cardModalOperation, setCardModalOperation] = useState<OperationDocument | null>(null);
   const [ticketModalMovements, setTicketModalMovements] = useState<FinancialMovementDocument[]>([]);
   const [settleModalTarget, setSettleModalTarget] = useState<any | null>(null);
 
@@ -978,6 +1015,17 @@ const UserDetailModal = ({
     setTicketModalOperation(op);
   };
 
+  // Open the perforated operation card modal
+  const handleOpenOperationCard = (op: OperationDocument) => {
+    const associatedMovements = financialMovements.filter(m => 
+      m.operationId === op.id || 
+      (op.bookingId && (m.bookingId === op.bookingId || m.operationId === `${op.bookingId}-booking`)) ||
+      (op.id.endsWith('-booking') && (m.bookingId === op.id.replace('-booking', '') || m.operationId === op.id))
+    );
+    setTicketModalMovements(associatedMovements);
+    setCardModalOperation(op);
+  };
+
   if (!currentUser) return null;
 
   const normUserPhone = normalizePhoneNumber(currentUser?.phone || '');
@@ -1009,6 +1057,42 @@ const UserDetailModal = ({
       // 5. Name match fallback
       if (b.userName && currentUser.name && b.userName.trim().toLowerCase() === currentUser.name.trim().toLowerCase()) {
         return true;
+      }
+
+      return false;
+    });
+  }, [bookings, currentUser, normUserPhone]);
+
+  // Filter bookings where user participated as host or guest in match.players (for Games/Lifecycle)
+  const userParticipatedBookings = useMemo(() => {
+    if (!currentUser) return [];
+    const userIdStr = String(currentUser.id || '');
+    const userCanonicalId = currentUser.canonicalId || (currentUser as any).personId || (currentUser as any).erpUserId;
+    const userHistoricalIds = Array.isArray(currentUser.historicalIds) ? currentUser.historicalIds.map(String) : [];
+    if (currentUser.historicalId) userHistoricalIds.push(String(currentUser.historicalId));
+
+    return (bookings || []).filter((b: any) => {
+      // 1. Host match
+      if (b.userId && String(b.userId) === userIdStr) return true;
+      if (b.host_id && String(b.host_id) === userIdStr) return true;
+      if (userCanonicalId && b.canonicalId && String(b.canonicalId) === String(userCanonicalId)) return true;
+      if (b.historicalId && userHistoricalIds.includes(String(b.historicalId))) return true;
+      if (Array.isArray(b.historicalIds) && b.historicalIds.some((hId: any) => userHistoricalIds.includes(String(hId)))) return true;
+      const bPhone = normalizePhoneNumber(b.userPhone || b.clientPhone || b.host_phone || '');
+      if (normUserPhone && bPhone && bPhone === normUserPhone) return true;
+      if (b.userName && currentUser.name && b.userName.trim().toLowerCase() === currentUser.name.trim().toLowerCase()) return true;
+
+      // 2. Guest match in match.players
+      if (Array.isArray(b.players)) {
+        return b.players.some((p: any) => {
+          if (!p) return false;
+          const pId = String(p.id || p.userId || '');
+          if (pId && (pId === userIdStr || (userCanonicalId && pId === String(userCanonicalId)) || userHistoricalIds.includes(pId))) return true;
+          const pPhone = normalizePhoneNumber(p.phone || '');
+          if (normUserPhone && pPhone && pPhone === normUserPhone) return true;
+          if (p.name && currentUser.name && p.name.trim().toLowerCase() === currentUser.name.trim().toLowerCase()) return true;
+          return false;
+        });
       }
 
       return false;
@@ -1293,12 +1377,18 @@ const UserDetailModal = ({
     const rawAdq = currentUser?.acquisitionDate || currentUser?.created_at || currentUser?.createdAt;
     const adqYMD = parseYMD(rawAdq) || todayYMD;
 
+    // Reservas y Cancelaciones cuentan ÚNICAMENTE cuando el usuario es host/organizador
+    const hostActiveBookings = userBookings.filter(b => {
+      const st = String(b.status || '').toLowerCase();
+      return st !== 'cancelled' && st !== 'cancelado';
+    });
     const cancelledCount = userBookings.filter(b => {
       const st = String(b.status || '').toLowerCase();
       return st === 'cancelled' || st === 'cancelado';
     }).length;
 
-    const played = userBookings.filter(b => isBookingPlayed(b, now));
+    // Partidos jugados, último partido, días sin jugar y time-to-value cuentan host + invitados en match.players
+    const played = userParticipatedBookings.filter(b => isBookingPlayed(b, now));
     const sortedPlayed = [...played].sort((a, b) => {
       const aDate = a.date || a.startTime || a.start_time;
       const bDate = b.date || b.startTime || b.start_time;
@@ -1342,7 +1432,7 @@ const UserDetailModal = ({
 
     return {
       canalAdquisicion: currentUser?.acquisitionChannel || 'WhatsApp',
-      reservasCount: userBookings.length,
+      reservasCount: hostActiveBookings.length,
       juegosCount: played.length,
       cancelacionesCount: cancelledCount,
       ultimoJuegoFormatted: lastMatchYMD ? formatSpanishDate(lastMatchYMD) : '—',
@@ -1354,7 +1444,7 @@ const UserDetailModal = ({
       antiguedadFormatted,
       actividadFormatted,
     };
-  }, [currentUser, userBookings]);
+  }, [currentUser, userBookings, userParticipatedBookings]);
 
   // Calculated age & category for "Información"
   const calculatedAge = useMemo(() => {
@@ -1377,7 +1467,7 @@ const UserDetailModal = ({
   return (
     <>
       <div 
-        className="fixed inset-0 z-[60] flex items-end justify-center bg-black/50 backdrop-blur-xs pointer-events-auto"
+        className="fixed inset-0 z-[80] flex items-end justify-center bg-black/50 backdrop-blur-xs pointer-events-auto"
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -1768,7 +1858,7 @@ const UserDetailModal = ({
                         pendingOperations.map((item) => (
                           <div 
                             key={`pending-${item.id}`}
-                            onClick={() => handleOpenTicket(item.originalDoc)}
+                            onClick={() => handleOpenOperationCard(item.originalDoc)}
                             className="flex items-center justify-between p-2 rounded-2xl hover:bg-gray-50/80 transition-colors cursor-pointer group"
                           >
                             <div className="flex items-center gap-3 min-w-0">
@@ -1790,7 +1880,7 @@ const UserDetailModal = ({
                                 type="button" 
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleOpenTicket(item.originalDoc);
+                                  handleOpenOperationCard(item.originalDoc);
                                 }}
                                 className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer"
                                 title="Ver detalle"
@@ -1829,7 +1919,7 @@ const UserDetailModal = ({
                         playerCommercialOperations.map((item) => (
                           <div 
                             key={`recent-${item.id}`}
-                            onClick={() => handleOpenTicket(item.originalDoc)}
+                            onClick={() => handleOpenOperationCard(item.originalDoc)}
                             className="relative z-10 flex items-center justify-between gap-3 group cursor-pointer hover:bg-gray-50/80 p-1.5 -ml-1.5 rounded-xl transition-colors"
                           >
                             <div className="flex items-center gap-3 min-w-0">
@@ -1859,7 +1949,7 @@ const UserDetailModal = ({
                                 type="button" 
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleOpenTicket(item.originalDoc);
+                                  handleOpenOperationCard(item.originalDoc);
                                 }}
                                 className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer"
                                 title="Ver detalle"
@@ -1970,11 +2060,21 @@ const UserDetailModal = ({
             initialData={currentUser}
             existingUsers={existingUsers}
             onClose={() => setIsEditModalOpen(false)}
+            onDelete={async (uid) => {
+              await deleteClientInFirestore(uid, complexId);
+              setIsEditModalOpen(false);
+              onClose();
+              if (onDelete) {
+                onDelete(uid);
+              }
+            }}
             onSave={async (updatedFields) => {
-              const clientToSave: Partial<User> = {
+              const clientToSave: any = {
                 ...currentUser,
                 ...updatedFields,
-                id: currentUser.id
+                id: currentUser.id,
+                oldId: currentUser.id,
+                oldPhone: currentUser.phone
               };
               const savedId = await saveClientInFirestore(complexId, clientToSave);
               const merged = { ...currentUser, ...updatedFields, id: savedId || currentUser.id } as User;
@@ -1986,6 +2086,45 @@ const UserDetailModal = ({
           />
         )}
       </AnimatePresence>
+
+      {/* Tarjeta de Operación (Boleto Troquelado) */}
+      <OperationTicketCardModal
+        isOpen={Boolean(cardModalOperation)}
+        onClose={() => setCardModalOperation(null)}
+        zIndexClass="z-[85]"
+        operation={cardModalOperation}
+        movements={ticketModalMovements}
+        users={existingUsers}
+        bookings={bookings}
+        complexId={complexId}
+        onOpenFullTicket={(op) => {
+          setTicketModalOperation(op);
+        }}
+        onOpenSettleModal={(op, player) => {
+          setSettleModalTarget({
+            id: op.id,
+            ticketCode: op.ticketCode,
+            clientName: player?.name || op.userName,
+            userName: player?.name || op.userName,
+            userPhone: player?.phone || op.userPhone,
+            clientPhone: player?.phone || op.clientPhone,
+            concept: op.notes || (op.operationType === 'court_booking' ? 'Alquiler Cancha' : 'Operación comercial'),
+            contractualAmount: op.contractualAmount,
+            amountPending: op.amountPending,
+            totalCollected: op.totalCollected,
+            isLegacy: (op as any).isLegacy,
+            userId: player?.id || op.userId,
+            bookingId: op.bookingId,
+            originalDoc: op,
+            targetPlayer: player
+          });
+        }}
+        onEditBooking={(b) => {
+          setCardModalOperation(null);
+          onClose();
+          onSelectBooking?.(b);
+        }}
+      />
 
       {/* Modal de Ticket de Venta / Detalle de Operación (Idéntico a Finanzas) */}
       <TicketModal
@@ -2022,6 +2161,7 @@ const UserDetailModal = ({
       <PendingSettleModal
         isOpen={Boolean(settleModalTarget)}
         onClose={() => setSettleModalTarget(null)}
+        preselectedPlayer={settleModalTarget?.targetPlayer}
         operation={settleModalTarget ? {
           id: settleModalTarget.id,
           ticketCode: settleModalTarget.ticketCode,
@@ -2921,14 +3061,12 @@ const CreateMatchModal = ({
       initialData._reactName || 
       typeof initialData.preventDefault === 'function'
     );
-    const isRealMatch = !isEvent && initialData && (
-      initialData.id || 
-      initialData.court_id || 
-      initialData.courtId || 
-      initialData.start_time || 
-      initialData.startTime || 
-      initialData.date
+    const isPrefilledSlot = Boolean(
+      initialData?.isPrefilledFromSlot || 
+      initialData?.fromSlot || 
+      (!initialData?.id && (initialData?.courtId || initialData?.court_id || initialData?.startTime))
     );
+    const isRealMatch = !isEvent && Boolean(initialData && initialData.id && !isPrefilledSlot);
 
     let initialCourtId = courts.length > 0 ? courts[0].id : '';
     let initialDate = new Date().toISOString().split('T')[0];
@@ -2965,18 +3103,25 @@ const CreateMatchModal = ({
       initialPaymentStatus = initialData.payment_status || initialData.paymentStatus || 'pending';
       initialAmountPaid = Number(initialData.amount_paid ?? initialData.deposit ?? 0);
       initialNotes = initialData.notes || '';
-    } else if (initialData && typeof initialData === 'object') {
+    } else if (initialData && typeof initialData === 'object' && !isEvent) {
       if (initialData.date) initialDate = initialData.date;
       if (initialData.courtId || initialData.court_id) initialCourtId = initialData.courtId || initialData.court_id;
       if (initialData.startTime || initialData.time) initialTime = (initialData.startTime || initialData.time).substring(0, 5);
+      initialAmountPaid = 0;
+      initialPaymentStatus = 'pending';
     }
 
     const currentCourt = courts.find(c => String(c.id) === String(initialCourtId)) || (courts.length > 0 ? courts[0] : null);
     const courtPrice = Number(currentCourt?.price_per_hour ?? currentCourt?.price ?? 0);
-    if (initialPaymentStatus === 'partial' && initialAmountPaid === 0 && courtPrice > 0) {
-      initialAmountPaid = Math.round(courtPrice * 0.1);
-    } else if (initialPaymentStatus === 'paid' && initialAmountPaid === 0 && courtPrice > 0) {
-      initialAmountPaid = courtPrice;
+    if (isRealMatch) {
+      if (initialPaymentStatus === 'partial' && initialAmountPaid === 0 && courtPrice > 0) {
+        initialAmountPaid = Math.round(courtPrice * 0.1);
+      } else if (initialPaymentStatus === 'paid' && initialAmountPaid === 0 && courtPrice > 0) {
+        initialAmountPaid = courtPrice;
+      }
+    } else {
+      initialAmountPaid = 0;
+      initialPaymentStatus = 'pending';
     }
 
     setData({
@@ -3280,19 +3425,22 @@ const CreateMatchModal = ({
       setErrorMessage('Por favor seleccioná una cancha.');
       return;
     }
-    if (isCourtOccupiedForTime(data.court_id)) {
+
+    const isCancelled = data.status === 'cancelado' || data.status === 'cancelled';
+
+    if (!isCancelled && isCourtOccupiedForTime(data.court_id)) {
       setErrorMessage('La cancha seleccionada ya está ocupada en ese horario. Por favor elegí otra cancha.');
       return;
     }
 
     const avail = getAvailableHours();
-    if (!avail.includes(data.time) && !(data.id && initialData?.time === data.time)) {
+    if (!isCancelled && !avail.includes(data.time) && !(data.id && initialData?.time === data.time)) {
       setErrorMessage('Este horario ya no está disponible. Elegí otro.');
       return;
     }
 
     const finalPayments = [...bookingPayments];
-    if (priceTotal > 0) {
+    if (!isCancelled && priceTotal > 0) {
       if (isBookingFalta) {
         setErrorMessage(
           `Faltan $${bookingFaltante.toLocaleString()} por asignar para completar el total de la reserva ($${priceTotal.toLocaleString()}).`
@@ -3314,7 +3462,7 @@ const CreateMatchModal = ({
     const selectedHost = users.find(u => String(u.id) === String(data.host_id));
     const hasClient = Boolean((selectedHost && selectedHost.id) || (data.clientName && String(data.clientName).trim()));
     const hasPendingPayment = finalPayments.some(p => p.method === 'Pendiente' && (Number(p.amount) || 0) > 0);
-    if (hasPendingPayment && !hasClient) {
+    if (!isCancelled && hasPendingPayment && !hasClient) {
       setErrorMessage('Es obligatorio seleccionar o ingresar un cliente cuando hay saldo pendiente.');
       return;
     }
@@ -3354,7 +3502,7 @@ const CreateMatchModal = ({
         notes: `Cobro reserva (${p.method}) · ${clientName}`
       }));
 
-    const paymentStatus = paidAmount >= priceTotal && priceTotal > 0 ? 'pagado' : (paidAmount > 0 ? 'seña' : 'pendiente');
+    const paymentStatus = isCancelled ? 'cancelled' : (paidAmount >= priceTotal && priceTotal > 0 ? 'pagado' : (paidAmount > 0 ? 'seña' : 'pendiente'));
 
     setIsSubmitting(true);
     try {
@@ -3384,14 +3532,16 @@ const CreateMatchModal = ({
         price_total: priceTotal,
         deposit: paidAmount,
         amount_paid: paidAmount,
+        hostAmountPaid: paidAmount,
+        host_amount_paid: paidAmount,
         amountPending: pendingAmount,
         payments: paidPayments,
-        status: (() => {
-          if (data.status === 'cancelado') return 'cancelado';
+        status: isCancelled ? 'cancelado' : (() => {
           const now = new Date();
           return endDateTime < now ? 'jugado' : 'confirmado';
         })(),
         paymentStatus,
+        payment_status: paymentStatus,
         notes: data.notes || '',
         ...(resolvedCanonId ? { canonicalId: resolvedCanonId } : {}),
         ...(resolvedCanonName ? { canonicalName: resolvedCanonName } : {}),
@@ -3735,7 +3885,7 @@ const CreateMatchModal = ({
                   })}
                 </select>
               </div>
-              {data.court_id && isCourtOccupiedForTime(data.court_id) && (
+              {data.court_id && !(data.status === 'cancelado' || data.status === 'cancelled') && isCourtOccupiedForTime(data.court_id) && (
                 <p className="text-[11px] text-red-600 dark:text-red-400 font-bold mt-1.5 flex items-center gap-1">
                   <AlertCircle size={13} className="shrink-0" />
                   <span>Esta cancha ya está ocupada en el horario seleccionado. Elegí otra cancha o cambiá el horario.</span>
@@ -3765,7 +3915,7 @@ const CreateMatchModal = ({
 
             {/* Botones de Acción al Pie para Paso 1 */}
             <div className="flex items-center justify-between gap-2.5 px-4 sm:px-5 py-3 border-t border-gray-100 dark:border-slate-800 shrink-0 bg-white dark:bg-slate-900">
-              {data.id && onCancelBooking ? (
+              {data.id && (data.status !== 'cancelado' && data.status !== 'cancelled') && onCancelBooking ? (
                 <button 
                   type="button" 
                   onClick={() => onCancelBooking(initialData || data)}
@@ -3791,12 +3941,12 @@ const CreateMatchModal = ({
                 </button>
                 <button 
                   type="button" 
-                  onClick={handleProceedToPayment} 
+                  onClick={(data.id && isBookingMathExact) ? handleSubmit : handleProceedToPayment} 
                   disabled={isSubmitting || (!data.host_id && !data.clientName) || !data.date || !data.time || !data.court_id}
                   className="py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
                 >
-                  <span>Continuar al Pago</span>
-                  <ArrowRight size={15} />
+                  <span>{data.id ? (isBookingMathExact ? 'Guardar cambios' : 'Siguiente: Registrar Pago') : 'Continuar al Pago'}</span>
+                  {!(data.id && isBookingMathExact) && <ArrowRight size={15} />}
                 </button>
               </div>
             </div>
@@ -7493,6 +7643,7 @@ interface FinanceRowDisplay {
   kind: 'booking' | 'pos' | 'expense' | 'purchase';
   title: string;
   subtitle: string;
+  isCancelled?: boolean;
 }
 
 function resolveFinanceRowDisplay(
@@ -7502,6 +7653,16 @@ function resolveFinanceRowDisplay(
   courts: Court[] = [],
   users: any[] = []
 ): FinanceRowDisplay {
+  const isCancelled = Boolean(
+    linkedBooking?.status === 'cancelado' ||
+    linkedBooking?.status === 'cancelled' ||
+    linkedOp?.status === 'cancelado' ||
+    linkedOp?.status === 'cancelled' ||
+    (rawItem as any)?.status === 'cancelado' ||
+    (rawItem as any)?.status === 'cancelled' ||
+    ['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded', 'cancelled', 'cancelado'].includes(String(linkedOp?.paymentStatus || rawItem?.paymentStatus || (rawItem as any)?.originalDoc?.paymentStatus || ''))
+  );
+
   const opType = rawItem?.originalDoc?.operationType || linkedOp?.operationType || rawItem?.operationType;
   const rawId = String(rawItem?.id || '');
   const opId = String(rawItem?.operationId || linkedOp?.id || '');
@@ -7551,7 +7712,8 @@ function resolveFinanceRowDisplay(
     return {
       kind: 'booking',
       title,
-      subtitle
+      subtitle,
+      isCancelled
     };
   }
 
@@ -7630,7 +7792,8 @@ function resolveFinanceRowDisplay(
     return {
       kind: 'purchase',
       title,
-      subtitle
+      subtitle,
+      isCancelled
     };
   }
 
@@ -7722,7 +7885,8 @@ function resolveFinanceRowDisplay(
     return {
       kind: 'expense',
       title,
-      subtitle
+      subtitle,
+      isCancelled
     };
   }
 
@@ -7747,7 +7911,8 @@ function resolveFinanceRowDisplay(
   return {
     kind: 'pos',
     title,
-    subtitle
+    subtitle,
+    isCancelled
   };
 }
 
@@ -7788,7 +7953,8 @@ const FinanceView = ({
   onNavigateToUserProfile,
   financePeriod = 'today',
   onPeriodChange,
-  users: parentUsers
+  users: parentUsers,
+  onEditBooking
 }: { 
   complexId?: string;
   bookings?: any[];
@@ -7797,6 +7963,7 @@ const FinanceView = ({
   financePeriod?: FinancePeriod;
   onPeriodChange?: (period: FinancePeriod) => void;
   users?: any[];
+  onEditBooking?: (booking: any) => void;
 }) => {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const targetIds = useMemo(() => {
@@ -7823,6 +7990,7 @@ const FinanceView = ({
   const [isPOSModalOpen, setIsPOSModalOpen] = useState(false);
   const [isManualTxModalOpen, setIsManualTxModalOpen] = useState(false);
   const [ticketModalOperation, setTicketModalOperation] = useState<OperationDocument | null>(null);
+  const [cardModalOperation, setCardModalOperation] = useState<OperationDocument | null>(null);
   const [ticketModalMovements, setTicketModalMovements] = useState<FinancialMovementDocument[]>([]);
   const [settleModalTarget, setSettleModalTarget] = useState<any | null>(null);
 
@@ -8022,6 +8190,17 @@ const FinanceView = ({
     setTicketModalOperation(op);
   };
 
+  // Handle opening perforated operation card modal
+  const handleOpenOperationCard = (op: OperationDocument) => {
+    const associatedMovements = financialMovements.filter(m => 
+      m.operationId === op.id || 
+      (op.bookingId && (m.bookingId === op.bookingId || m.operationId === `${op.bookingId}-booking`)) ||
+      (op.id.endsWith('-booking') && (m.bookingId === op.id.replace('-booking', '') || m.operationId === op.id))
+    );
+    setTicketModalMovements(associatedMovements);
+    setCardModalOperation(op);
+  };
+
   // 1. SECCIÓN MOVIMIENTOS: Libro diario de dinero real
   const combinedMovements = useMemo(() => {
     const list: Array<{
@@ -8070,13 +8249,8 @@ const FinanceView = ({
 
       let matchedGroup = movGroups.find(g => {
         if (g.flow !== m.flow) return false;
-        if (mOpId && g.operationId && mOpId === g.operationId) {
-          const timeDiff = Math.abs(g.date.getTime() - mTime);
-          if (timeDiff < 30000) return true;
-          if (mBaseIdem && g.items.some(item => item.idempotencyKey && String(item.idempotencyKey).replace(/_pay_\d+$/, '') === mBaseIdem)) {
-            return true;
-          }
-        } else if (mBaseIdem && g.items.some(item => item.idempotencyKey && String(item.idempotencyKey).replace(/_pay_\d+$/, '') === mBaseIdem)) {
+        // Solo agrupar actos de cobro divididos que compartan exactamente el mismo idempotencyKey base no nulo
+        if (mBaseIdem && g.items.some(item => item.idempotencyKey && String(item.idempotencyKey).replace(/_pay_\d+$/, '') === mBaseIdem)) {
           return true;
         }
         return false;
@@ -8318,9 +8492,21 @@ const FinanceView = ({
       const resolvedName = resolveClientName(op, users, linkedDoc);
       const isExp = Boolean((op as any).isExpense || op.operationType === 'expense' || op.operationType === 'purchase' || op.metadata?.isExpense);
 
-      const contractual = Number(op.contractualAmount ?? (op as any).total ?? (op as any).amount ?? (op as any).price ?? 0);
+      const CANCELLED_STATUSES = new Set(['cancelled_unpaid', 'cancelled_retained', 'partial_refunded', 'fully_refunded', 'cancelled', 'cancelado']);
+      const isCancelledOp = CANCELLED_STATUSES.has(String(op.paymentStatus)) || 
+                            (op as any).status === 'cancelado' || 
+                            (op as any).status === 'cancelled' ||
+                            linkedDoc?.status === 'cancelado' ||
+                            linkedDoc?.status === 'cancelled';
+
+      let contractual = Number(op.contractualAmount ?? (op as any).total ?? (op as any).amount ?? (op as any).price ?? 0);
       const collected = Number(op.totalCollected ?? (op as any).amount_paid ?? (op as any).collected ?? (op as any).paid ?? 0);
-      const pending = Number(op.amountPending ?? (op as any).pending ?? (op as any).debt ?? Math.max(0, contractual - collected));
+      let pending = Number(op.amountPending ?? (op as any).pending ?? (op as any).debt ?? Math.max(0, contractual - collected));
+
+      if (isCancelledOp) {
+        contractual = collected;
+        pending = 0;
+      }
 
       list.push({
         id: op.id,
@@ -8432,15 +8618,20 @@ const FinanceView = ({
 
       if (existingBookingIds.has(String(b.id))) return;
       const bStatus = String(b.status || '').toLowerCase();
-      if (bStatus === 'cancelado' || bStatus === 'cancelled') return;
+      const bPayStatus = String(b.payment_status || (b as any).paymentStatus || '').toLowerCase();
+      const isCancelledBooking = bStatus === 'cancelado' || bStatus === 'cancelled' || bPayStatus.includes('cancel');
 
       const d = b.date ? safeParseDate(b.date) || new Date() : (b.start_time ? safeParseDate(b.start_time) || new Date() : new Date());
-      const tot = Number(b.price || b.price_total || 0);
+      const rawTot = Number(b.price || b.price_total || 0);
       const isPaid = b.payment_status === 'paid' || b.paymentStatus === 'paid' || b.payment_status === 'pagado';
       const rawPaid = Number(b.amount_paid ?? b.deposit ?? 0);
-      const paid = isPaid ? (rawPaid > 0 ? Math.max(rawPaid, tot) : tot) : rawPaid;
-      const pending = Math.max(0, tot - paid);
-      const status = paid >= tot && tot > 0 ? 'paid' : (paid > 0 ? 'partial' : 'unpaid');
+      const paid = isPaid ? (rawPaid > 0 ? Math.max(rawPaid, rawTot) : rawTot) : rawPaid;
+      
+      const tot = isCancelledBooking ? paid : rawTot;
+      const pending = isCancelledBooking ? 0 : Math.max(0, tot - paid);
+      const status = isCancelledBooking 
+        ? 'cancelled' 
+        : (paid >= tot && tot > 0 ? 'paid' : (paid > 0 ? 'partial' : 'unpaid'));
 
       const resolvedName = resolveClientName(b, users);
       const resolvedPhone = resolveClientPhone(b, users);
@@ -8842,6 +9033,7 @@ const FinanceView = ({
           amountPending: 0,
           flow: m.flow,
           isExpense: m.flow === 'expense',
+          isCancelled: Boolean(display.isCancelled),
           time: format(d, 'HH:mm'),
           onClick: () => {
             if (m.operationId) handleOpenTicketFromMovement(m.operationId);
@@ -8884,9 +9076,10 @@ const FinanceView = ({
           totalCollected: op.totalCollected,
           flow: op.isExpense ? 'expense' : 'income',
           isExpense: Boolean(op.isExpense),
+          isCancelled: Boolean(display.isCancelled),
           time: format(d, 'HH:mm'),
           onClick: () => {
-            if (op.originalDoc) handleOpenTicket(op.originalDoc);
+            if (op.originalDoc) handleOpenOperationCard(op.originalDoc);
           }
         });
       });
@@ -9197,7 +9390,14 @@ const FinanceView = ({
                           {/* Textos del ítem: Arriba nombre, abajo usuario o concepto */}
                           <div className="min-w-0 flex-1">
                             <div className="font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-100 truncate leading-snug">
-                              {item.title}
+                              {item.isCancelled ? (
+                                <>
+                                  <span>{item.title}</span>
+                                  <span className="font-normal text-gray-400 ml-1">(cancelado)</span>
+                                </>
+                              ) : (
+                                item.title
+                              )}
                             </div>
                             <div className="text-xs text-gray-400 dark:text-slate-400 truncate mt-0.5">
                               {item.subtitle}
@@ -9267,6 +9467,56 @@ const FinanceView = ({
         users={parentUsers || users}
       />
 
+      {/* Modal de Tarjeta de Operación (Boleto Troquelado) */}
+      <OperationTicketCardModal
+        isOpen={Boolean(cardModalOperation)}
+        onClose={() => setCardModalOperation(null)}
+        operation={cardModalOperation}
+        movements={ticketModalMovements}
+        users={(parentUsers && parentUsers.length > 0) ? parentUsers : users}
+        bookings={rawBookings}
+        complexId={targetId}
+        onNavigateToUserProfile={onNavigateToUserProfile}
+        onOpenFullTicket={(op) => {
+          setTicketModalOperation(op);
+        }}
+        onOpenSettleModal={(op, player) => {
+          setSettleModalTarget({
+            id: op.id,
+            ticketCode: op.ticketCode,
+            clientName: player?.name || op.userName,
+            userName: player?.name || op.userName,
+            userPhone: player?.phone || op.userPhone,
+            clientPhone: player?.phone || op.clientPhone,
+            concept: op.notes || (op.operationType === 'court_booking' ? 'Alquiler Cancha' : 'Operación comercial'),
+            contractualAmount: op.contractualAmount,
+            amountPending: op.amountPending,
+            totalCollected: op.totalCollected,
+            isLegacy: (op as any).isLegacy,
+            userId: player?.id || op.userId,
+            bookingId: op.bookingId,
+            originalDoc: op,
+            targetPlayer: player
+          });
+        }}
+        onEditBooking={(b) => {
+          setCardModalOperation(null);
+          onEditBooking?.(b);
+        }}
+        onDeleted={(concept) => {
+          if (cardModalOperation) {
+            const opId = cardModalOperation.id;
+            const bId = cardModalOperation.bookingId || (opId.endsWith('-booking') ? opId.replace('-booking', '') : null);
+            setOperations(prev => prev.filter(o => o.id !== opId && (!bId || o.bookingId !== bId)));
+            setFinancialMovements(prev => prev.filter(m => m.operationId !== opId && (!bId || (m.operationId !== `${bId}-booking` && m.bookingId !== bId))));
+            if (bId) setRawBookings(prev => prev.filter(b => String(b.id) !== String(bId)));
+            setLegacyTransactions(prev => prev.filter(t => t.operationId !== opId && (!bId || t.bookingId !== bId)));
+          }
+          setCardModalOperation(null);
+          setDeleteToast(`Se ha eliminado ${concept || 'el registro'} completamente del sistema.`);
+        }}
+      />
+
       {/* Modal de Ticket de Venta */}
       <TicketModal
         isOpen={Boolean(ticketModalOperation)}
@@ -9314,6 +9564,7 @@ const FinanceView = ({
       <PendingSettleModal
         isOpen={Boolean(settleModalTarget)}
         onClose={() => setSettleModalTarget(null)}
+        preselectedPlayer={settleModalTarget?.targetPlayer}
         operation={settleModalTarget ? {
           id: settleModalTarget.id,
           ticketCode: settleModalTarget.ticketCode,
@@ -11017,6 +11268,8 @@ export default function App() {
   const [isSidebarOpen, setSidebarOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [selectedMatch, setSelectedMatch] = useState<Match | null>(null);
+  const [agendaTicketModalOp, setAgendaTicketModalOp] = useState<OperationDocument | null>(null);
+  const [agendaSettleModalTarget, setAgendaSettleTarget] = useState<any | null>(null);
   const [isCreateMatchOpen, setCreateMatchOpen] = useState(false);
   const [isCreateUserOpen, setCreateUserOpen] = useState(false);
   const [isNotificationsOpen, setNotificationsOpen] = useState(false);
@@ -11148,6 +11401,46 @@ export default function App() {
     const raw = format(new Date(), "EEEE, d 'de' MMMM", { locale: es });
     return raw.charAt(0).toUpperCase() + raw.slice(1);
   }, []);
+
+  // Memoized OperationDocument for selectedMatch in Agenda with live reactive lookup from activeBookings
+  const selectedMatchOperation = useMemo<OperationDocument | null>(() => {
+    if (!selectedMatch || !selectedMatch.id) return null;
+    const liveBooking = activeBookings.find(b => String(b.id) === String(selectedMatch.id)) || selectedMatch;
+    const bId = String(liveBooking.id);
+    const tot = Number(liveBooking.price_total ?? liveBooking.price ?? 0);
+    const paid = Number(liveBooking.amount_paid ?? liveBooking.deposit ?? 0);
+    const pending = Math.max(0, tot - paid);
+
+    return {
+      id: `${bId}-booking`,
+      complexId: (liveBooking as any).complexId || (liveBooking as any).complejoId || activeComplexId || 'B',
+      ticketCode: (liveBooking as any).ticketCode || `RES-${bId.slice(0, 6).toUpperCase()}`,
+      operationType: 'court_booking',
+      bookingId: bId,
+      responsibleType: 'user',
+      userId: (liveBooking as any).userId || liveBooking.host_id || null,
+      clientId: (liveBooking as any).userId || liveBooking.host_id || null,
+      userName: liveBooking.userName || liveBooking.host_name || 'Organizador',
+      clientName: liveBooking.userName || liveBooking.host_name || 'Organizador',
+      userPhone: liveBooking.userPhone || liveBooking.clientPhone || liveBooking.host_phone || '',
+      clientPhone: liveBooking.userPhone || liveBooking.clientPhone || liveBooking.host_phone || '',
+      contractualAmount: tot,
+      totalCollected: paid,
+      totalRefunded: 0,
+      netCollected: paid,
+      retainedAmount: 0,
+      amountPending: pending,
+      paymentStatus: (pending > 0 ? (paid > 0 ? 'partial' : 'unpaid') : 'paid') as any,
+      currentAccountAssigned: pending > 0,
+      currentAccountDebtAmount: pending,
+      notes: `Reserva · ${liveBooking.court_name || liveBooking.courtName || 'Cancha'}`,
+      createdAt: (liveBooking as any).createdAt || liveBooking.date || new Date(),
+      updatedAt: (liveBooking as any).updatedAt || new Date(),
+      createdBy: 'agenda',
+      metadata: { originalDoc: liveBooking },
+      originalDoc: liveBooking
+    };
+  }, [selectedMatch, activeBookings, activeComplexId]);
 
   // Sincronización en tiempo real estrictamente ligada al complejo asignado del operador autenticado
   useEffect(() => {
@@ -11319,6 +11612,15 @@ export default function App() {
 
   const handleUserUpdated = (updatedUser: User) => {
     setSelectedUser(prev => prev ? { ...prev, ...updatedUser } : updatedUser);
+    setUsers(prev => {
+      const idx = prev.findIndex(u => String(u.id) === String(updatedUser.id) || (updatedUser.phone && u.phone === updatedUser.phone));
+      if (idx >= 0) {
+        const copy = [...prev];
+        copy[idx] = { ...copy[idx], ...updatedUser };
+        return copy;
+      }
+      return [...prev, updatedUser];
+    });
     setRefreshKey(prev => prev + 1);
   };
 
@@ -11342,6 +11644,9 @@ export default function App() {
         durationMinutes: Number(bookingData.durationMinutes) || 60,
         price: Number(bookingData.price ?? bookingData.price_total ?? selectedCourt?.price ?? selectedCourt?.price_per_hour ?? 0),
         deposit: Number(bookingData.deposit ?? bookingData.amount_paid ?? 0),
+        amount_paid: Number(bookingData.amount_paid ?? bookingData.deposit ?? 0),
+        hostAmountPaid: Number(bookingData.hostAmountPaid ?? bookingData.amount_paid ?? bookingData.deposit ?? 0),
+        host_amount_paid: Number(bookingData.host_amount_paid ?? bookingData.amount_paid ?? bookingData.deposit ?? 0),
         status: bookingData.status || 'confirmado',
         paymentStatus: bookingData.paymentStatus || (Number(bookingData.deposit || 0) >= Number(bookingData.price || 0) && Number(bookingData.price || 0) > 0 ? 'pagado' : Number(bookingData.deposit || 0) > 0 ? 'seña' : 'pendiente'),
         userId: bookingData.userId ? String(bookingData.userId) : '0',
@@ -11762,6 +12067,10 @@ export default function App() {
                   onNavigateToUserProfile={handleUserClick} 
                   financePeriod={financePeriod}
                   onPeriodChange={setFinancePeriod}
+                  onEditBooking={(b) => {
+                    setSelectedMatch(b);
+                    setCreateMatchOpen(true);
+                  }}
                 />
               )}
               {activeTab === 'profile' && (
@@ -11793,23 +12102,105 @@ export default function App() {
             onSelectBooking={(b) => setSelectedMatch(b)}
           />
         )}
-        {selectedMatch && (
-          <MatchDetailModal 
-            key="modal-match-detail"
-            match={isCreateMatchOpen ? null : selectedMatch} 
-            users={unifiedCrmUsers}
+        {selectedMatch && !isCreateMatchOpen && (
+          <OperationTicketCardModal 
+            key="modal-agenda-ticket-card"
+            isOpen={Boolean(selectedMatch && !isCreateMatchOpen)} 
             onClose={() => setSelectedMatch(null)} 
-            onUpdateStatus={handleUpdateStatus}
-            onUserClick={handleUserClick}
-            onEdit={() => {
+            operation={selectedMatchOperation}
+            users={unifiedCrmUsers}
+            bookings={activeBookings}
+            complexId={activeComplexId}
+            onOpenFullTicket={(op) => {
+              setAgendaTicketModalOp(op);
+            }}
+            onOpenSettleModal={(op, player) => {
+              setAgendaSettleTarget({
+                id: op.id,
+                ticketCode: op.ticketCode,
+                clientName: player?.name || op.userName,
+                userName: player?.name || op.userName,
+                userPhone: player?.phone || op.userPhone,
+                clientPhone: player?.phone || op.clientPhone,
+                concept: op.notes || 'Alquiler Cancha',
+                contractualAmount: op.contractualAmount,
+                amountPending: op.amountPending,
+                totalCollected: op.totalCollected,
+                isLegacy: (op as any).isLegacy,
+                userId: player?.id || op.userId,
+                bookingId: op.bookingId,
+                originalDoc: (op as any).originalDoc || selectedMatch,
+                targetPlayer: player
+              });
+            }}
+            onEditBooking={(resolvedBooking) => {
+              if (resolvedBooking) {
+                setSelectedMatch(resolvedBooking);
+              }
               setCreateMatchOpen(true);
             }}
-            onPaymentUpdate={() => {
-              setRefreshKey(prev => prev + 1);
-              setSelectedMatch(null); // Close modal to reflect changes
+            onCancelBooking={(m) => {
+              setCancelModalBooking(m || selectedMatch);
             }}
-            onCancelBooking={(m) => setCancelModalBooking(m)}
-            onDeleteBooking={(m) => setDeleteModalBooking(m)}
+            onDeleteBooking={(m) => {
+              setDeleteModalBooking(m || selectedMatch);
+              setSelectedMatch(null);
+            }}
+            onDeleted={() => {
+              setRefreshKey(prev => prev + 1);
+              setSelectedMatch(null);
+            }}
+            onNavigateToUserProfile={handleUserClick}
+          />
+        )}
+
+        {/* Modal de Ticket de Venta para reservas de la Agenda */}
+        {agendaTicketModalOp && (
+          <TicketModal
+            isOpen={Boolean(agendaTicketModalOp)}
+            onClose={() => setAgendaTicketModalOp(null)}
+            operation={agendaTicketModalOp}
+            originSection="operations"
+            users={unifiedCrmUsers}
+            bookings={activeBookings}
+            complexId={activeComplexId}
+            onRegisterPayment={(op) => {
+              setAgendaTicketModalOp(null);
+              setAgendaSettleTarget({
+                id: op.id,
+                ticketCode: op.ticketCode,
+                clientName: op.userName,
+                userName: op.userName,
+                userPhone: op.userPhone,
+                clientPhone: op.clientPhone,
+                concept: op.notes || 'Alquiler Cancha',
+                contractualAmount: op.contractualAmount,
+                amountPending: op.amountPending,
+                totalCollected: op.totalCollected,
+                isLegacy: (op as any).isLegacy,
+                userId: op.userId,
+                bookingId: op.bookingId,
+                originalDoc: op
+              });
+            }}
+          />
+        )}
+
+        {/* Modal de Cobro de Pendientes para reservas de la Agenda */}
+        {agendaSettleModalTarget && (
+          <PendingSettleModal
+            isOpen={Boolean(agendaSettleModalTarget)}
+            onClose={() => setAgendaSettleTarget(null)}
+            preselectedPlayer={agendaSettleModalTarget.targetPlayer}
+            operation={agendaSettleModalTarget}
+            complexId={activeComplexId}
+            operatorId={auth.currentUser?.uid || 'pos_operator'}
+            users={unifiedCrmUsers}
+            bookings={activeBookings}
+            onSuccess={() => {
+              setRefreshKey(prev => prev + 1);
+              setAgendaSettleTarget(null);
+            }}
           />
         )}
         {isNotificationsOpen && (
@@ -11819,7 +12210,7 @@ export default function App() {
           <CreateMatchModal 
             key="modal-create-match"
             isOpen={isCreateMatchOpen} 
-            onClose={() => { setCreateMatchOpen(false); setSelectedMatch(null); }} 
+            onClose={() => { setCreateMatchOpen(false); }} 
             courts={courts}
             users={unifiedCrmUsers}
             complexId={activeComplexId}
@@ -11828,12 +12219,18 @@ export default function App() {
             onCancelBooking={(b) => setCancelModalBooking(b)}
             onDeleteBooking={(b) => setDeleteModalBooking(b)}
             onCreate={selectedMatch && selectedMatch.id ? async (data) => {
+              const isCancelled = data.status === 'cancelado' || data.status === 'cancelled';
+              const resolvedPaymentStatus = isCancelled ? 'cancelled' : (data.payment_status || data.paymentStatus || 'pending');
               await updateBookingInFirestore(selectedMatch.id, {
                 ...data,
+                status: isCancelled ? 'cancelado' : (data.status || 'confirmado'),
+                payment_status: resolvedPaymentStatus,
+                paymentStatus: resolvedPaymentStatus,
                 complexId: activeComplexId
               });
               setRefreshKey(prev => prev + 1);
-              setSelectedMatch(null);
+              setCreateMatchOpen(false);
+              setSelectedMatch(prev => prev ? ({ ...prev, ...data, status: isCancelled ? 'cancelado' : (data.status || 'confirmado') }) : null);
             } : handleCreateMatch}
             onQuickAddUser={(userData) => handleCreateUser({ ...userData, email: '', skill_level: 'Amateur' })}
           />
@@ -11848,9 +12245,9 @@ export default function App() {
             operatorId={auth.currentUser?.uid || 'pos_operator'}
             onSuccess={() => {
               setRefreshKey(prev => prev + 1);
-              setSelectedMatch(null);
               setCreateMatchOpen(false);
               setCancelModalBooking(null);
+              setSelectedMatch(prev => prev ? ({ ...prev, status: 'cancelado', paymentStatus: 'cancelled', payment_status: 'cancelled', amountPending: 0 }) : null);
             }}
           />
         )}

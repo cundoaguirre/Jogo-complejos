@@ -405,7 +405,7 @@ export function computeComplexFinancialSummary(params: {
 
   for (const op of complexOps) {
     const isExp = Boolean(op.isExpense || op.operationType === 'expense' || op.operationType === 'purchase');
-    const isCancelled = CANCELLED_STATUSES.has(op.paymentStatus);
+    const isCancelled = CANCELLED_STATUSES.has(op.paymentStatus) || (op as any).status === 'cancelado' || (op as any).status === 'cancelled';
 
     if (isExp) {
       if (!isCancelled) {
@@ -417,7 +417,7 @@ export function computeComplexFinancialSummary(params: {
     } else {
       let opRevenue = 0;
       if (isCancelled) {
-        opRevenue = Math.max(0, Number(op.retainedAmount ?? op.netCollected ?? 0));
+        opRevenue = Math.max(0, Number(op.totalCollected ?? 0));
       } else {
         opRevenue = op.contractualAmount;
         if (op.amountPending > 0) {
@@ -442,7 +442,6 @@ export function computeComplexFinancialSummary(params: {
 
   const reservasIncomePct = economicIncome > 0 ? Math.round((reservasIncome / economicIncome) * 100) : 0;
   const mostradorIncomePct = economicIncome > 0 ? Math.max(0, 100 - reservasIncomePct) : 0;
-  const netResult = economicIncome - economicExpense;
 
   // Dimensión de Caja
   let cashInflows = 0;
@@ -465,6 +464,10 @@ export function computeComplexFinancialSummary(params: {
       }
     }
   }
+
+  // Los reintegros/devoluciones son egresos económicos devengados por cancelación
+  economicExpense += totalRefunds;
+  const netResult = economicIncome - economicExpense;
 
   const totalCollectedFromClients = Math.max(0, totalCollectedIncome - totalRefunds);
   const cashAvailable = cashInflows - cashOutflows;
