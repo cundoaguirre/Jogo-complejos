@@ -138,7 +138,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Listens to collaborators/{user.uid} with onSnapshot (never stale getDoc cache)
   useEffect(() => {
     if (!user) {
-      setLoading(false);
+      // Do not prematurely set loading(false) here while waiting for initial auth state
       return;
     }
 
@@ -207,7 +207,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setHasAccess(false);
       setActiveComplexIdState(null);
       setActiveComplex(null);
-      setLoading(false);
+      // Keep loading: true while waiting for collaborator snapshot; if collaborator had 0 memberships, listener already set loading(false).
       return;
     }
 
@@ -227,6 +227,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     // In-memory live mirror of complex documents
     const liveComplexMap: Record<string, any> = {};
+    const respondedComplexIds = new Set<string>();
 
     const recomputeAuthorization = () => {
       if (expirationTimerRef.current) {
@@ -264,21 +265,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       }
 
-      setAuthorizedComplexes(authorized);
-
-      if (authorized.length === 0) {
-        // All user's complexes are inactive, paused or expired trial: ACCESS REVOKED IMMEDIATELY
-        console.log('[Auth] Real-time: No authorized complexes with active/trial status. Setting hasAccess=false.');
-        setHasAccess(false);
-        setActiveComplexIdState(null);
-        setActiveComplex(null);
-        try {
-          localStorage.removeItem('activeComplexId');
-        } catch (e) {}
-      } else {
+      if (authorized.length > 0) {
         // At least one complex has active/trial status: ACCESS GRANTED
-        setHasAccess(true);
-
         // Select or retain activeComplexId strictly among authorized complexes
         let chosenId = authorized[0].complexId;
         let savedPref: string | null = null;
@@ -296,7 +284,6 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         } catch (e) {}
 
         activeComplexIdRef.current = chosenId;
-        setActiveComplexIdState(chosenId);
 
         // Update activeComplex metadata directly from real-time snapshot
         const currentDoc = liveComplexMap[chosenId];
@@ -314,15 +301,34 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             recomputeAuthorization();
           }, delayMs);
         }
-      }
 
-      setLoading(false);
+        // Atomically set access, complex id and release loading in the exact same cycle
+        setAuthorizedComplexes(authorized);
+        setHasAccess(true);
+        setActiveComplexIdState(chosenId);
+        setLoading(false);
+      } else {
+        // Only if all complexes have responded at least once
+        const allResponded = complexIds.every(id => respondedComplexIds.has(id));
+        if (allResponded) {
+          console.log('[Auth] Real-time: All complex snapshots received, none authorized. Setting hasAccess=false.');
+          setAuthorizedComplexes([]);
+          setHasAccess(false);
+          setActiveComplexIdState(null);
+          setActiveComplex(null);
+          try {
+            localStorage.removeItem('activeComplexId');
+          } catch (e) {}
+          setLoading(false);
+        }
+      }
     };
 
     // Attach onSnapshot to every complex document in memberships
     const unsubs = complexIds.map((cid) => {
       const compRef = doc(db, 'complejos', cid);
       return onSnapshot(compRef, (snap) => {
+        respondedComplexIds.add(cid);
         if (snap.exists()) {
           liveComplexMap[cid] = snap.data();
         } else {
@@ -331,6 +337,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         recomputeAuthorization();
       }, (err) => {
         console.warn(`[Auth] Real-time snapshot error for complejo ${cid}:`, err);
+        respondedComplexIds.add(cid);
         delete liveComplexMap[cid];
         recomputeAuthorization();
       });

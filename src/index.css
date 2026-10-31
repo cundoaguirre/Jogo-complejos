@@ -1,6 +1,7 @@
 @import "tailwindcss";
 
 @theme {
+  --color-gray-370: #a8aeb8;
   --color-emerald-50: #eafbea;
   --color-emerald-100: #c9f3c9;
   --color-emerald-200: #96e996;

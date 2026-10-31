@@ -11724,15 +11724,9 @@ export default function App() {
   // 1. Pantalla de carga mientras se verifica el estado de autenticación de Firebase
   if (loading) {
     return (
-      <div className="flex w-full h-[100dvh] items-center justify-center bg-slate-50 dark:bg-slate-950 text-slate-800 dark:text-slate-100">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-emerald-600 to-[#0BA70B] flex items-center justify-center shadow-lg shadow-emerald-500/25 animate-pulse">
-            <span className="text-white font-black text-2xl tracking-tighter">J</span>
-          </div>
-          <div className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-            Iniciando Jogo SaaS...
-          </div>
-        </div>
+      <div className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#0BA70B] flex flex-col items-center justify-center select-none">
+        <img src="/logo-white.png" alt="Jogo" className="w-48 sm:w-56 h-auto object-contain" />
+        <div className="mt-6 w-7 h-7 border-3 border-white/25 border-t-white rounded-full animate-spin" />
       </div>
     );
   }

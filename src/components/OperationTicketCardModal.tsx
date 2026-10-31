@@ -466,7 +466,9 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
       complexName: venueProfile?.name || venueProfile?.company || 'Complejo Deportivo',
       complexPhone: venueProfile?.phone || '',
       operationType: isBooking ? 'Reserva de Cancha' : isSale ? 'Venta de Mostrador' : isPurchase ? 'Compra de Mercadería' : 'Gasto Operativo',
-      categoryOrRubro: isPurchase ? ((operation as any)?.categoryName || (operation as any)?.category || 'Insumos') : isExpense ? expenseDetails.rubro : undefined,
+      categoryOrRubro: isPurchase 
+        ? ((operation.items?.[0] as any)?.categoryName || (operation.items?.[0] as any)?.category || (operation as any)?.metadata?.category || (operation as any)?.categoryName || 'Mercadería') 
+        : isExpense ? expenseDetails.rubro : undefined,
       clientOrEntityLabel: isExpenseOrPurchase ? 'Entidad' : 'Cliente',
       clientOrEntityName: resolvedName !== 'n/n' ? resolvedName : 'Consumidor final',
       clientOrEntityPhone: resolvedPhone,
@@ -490,7 +492,8 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
       bookingInfo: isBooking ? {
         courtName: bookingCourtName,
         date: bookingDateFormatted,
-        timeRange: bookingTimeRange
+        timeRange: bookingTimeRange,
+        isCancelled: isBookingCancelled
       } : undefined,
       expenseInfo: isExpense ? {
         concept: expenseDetails.concept,

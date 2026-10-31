@@ -7,7 +7,13 @@ import {
   Ticket, 
   User as UserIcon, 
   Building2, 
-  Phone 
+  Phone,
+  ShoppingBag,
+  CircleDollarSign,
+  Landmark,
+  CreditCard,
+  Clock,
+  History
 } from 'lucide-react';
 import type { OperationDocument, FinancialMovementDocument, User } from '../types';
 import { safeFormatDate } from '../lib/utils';
@@ -99,7 +105,9 @@ export const TicketModal: React.FC<TicketModalProps> = ({
   const isPurchase = Boolean(
     (operation?.operationType as any) === 'inventory_purchase' || 
     (operation as any)?.category === 'compras' || 
-    (operation as any)?.category === 'purchase'
+    (operation as any)?.category === 'purchase' ||
+    (operation as any)?.operationType === 'purchase' ||
+    operation?.notes?.toLowerCase().includes('compra')
   );
 
   const isExpenseOrPurchase = isExpense || isPurchase;
@@ -108,11 +116,19 @@ export const TicketModal: React.FC<TicketModalProps> = ({
   const complexName = venueProfile?.name || venueProfile?.company || 'JOGO Complejo';
   const complexPhone = venueProfile?.phone || '';
 
-  // Dates
+  // Emission Dates
   const emissionDate = operation?.createdAt?.toDate 
     ? operation.createdAt.toDate() 
     : (operation?.createdAt ? new Date(operation.createdAt) : new Date());
-  const formattedCreationDate = safeFormatDate(emissionDate, "dd/MM/yyyy HH:mm", { locale: es }) || 'Reciente';
+
+  const formattedCreationDate = useMemo(() => {
+    try {
+      const raw = safeFormatDate(emissionDate, "d MMM, yyyy, HH:mm", { locale: es });
+      return raw ? raw.replace(/\./g, '') : 'Reciente';
+    } catch {
+      return 'Reciente';
+    }
+  }, [emissionDate]);
 
   // Ticket code
   const cleanTicketCode = (operation?.ticketCode || operation?.id?.slice(0, 8) || '').replace(/^#/, '').toUpperCase();
@@ -127,7 +143,15 @@ export const TicketModal: React.FC<TicketModalProps> = ({
       return operation?.expenseCategoryName || (operation as any)?.metadata?.rubro || (operation as any)?.category || 'Servicios';
     }
     if (isPurchase) {
-      return (operation as any)?.categoryName || (operation as any)?.metadata?.category || 'Insumos';
+      const opAny = operation as any;
+      const firstItem = Array.isArray(operation?.items) && operation.items.length > 0 ? (operation.items[0] as any) : null;
+      return (
+        firstItem?.categoryName || 
+        firstItem?.category || 
+        opAny?.metadata?.category || 
+        opAny?.categoryName || 
+        'Mercadería'
+      );
     }
     return '';
   }, [isExpense, isPurchase, operation]);
@@ -135,7 +159,7 @@ export const TicketModal: React.FC<TicketModalProps> = ({
   // Header Title
   const headerTitle = useMemo(() => {
     if (isBooking) return 'Reserva';
-    if (isPurchase) return `Compra • ${rubroOrCat || 'Insumos'}`;
+    if (isPurchase) return `Compra • ${rubroOrCat || 'Mercadería'}`;
     if (isExpense) return `Gasto • ${rubroOrCat || 'Servicios'}`;
     return 'Mostrador';
   }, [isBooking, isPurchase, isExpense, rubroOrCat]);
@@ -144,7 +168,7 @@ export const TicketModal: React.FC<TicketModalProps> = ({
   const entityName = useMemo(() => {
     if (!isExpenseOrPurchase || !operation) return '';
     return operation.entityName || (operation as any).supplierName || (operation as any).responsibleName || (isPurchase ? 'Proveedor' : 'Entidad');
-  }, [isExpenseOrPurchase, operation]);
+  }, [isExpenseOrPurchase, operation, isPurchase]);
 
   const entityPhone = useMemo(() => {
     if (!isExpenseOrPurchase || !operation) return '';
@@ -179,6 +203,12 @@ export const TicketModal: React.FC<TicketModalProps> = ({
   }, [isBooking, linkedBooking, operation, displayClientName, displayPhone]);
 
   // Booking concept breakdown
+  const isCancelled = Boolean(
+    linkedBooking?.status === 'cancelled' || 
+    (operation as any)?.status === 'cancelled' ||
+    (operation as any)?.originalDoc?.status === 'cancelled'
+  );
+
   const bookingCourtName = useMemo(() => {
     const b = linkedBooking || (operation as any)?.originalDoc;
     return b?.courtName || b?.court_name || (b?.courtId ? `Cancha ${b.courtId}` : 'Cancha 1');
@@ -186,9 +216,10 @@ export const TicketModal: React.FC<TicketModalProps> = ({
 
   const bookingTimeRange = useMemo(() => {
     const b = linkedBooking || (operation as any)?.originalDoc;
-    const start = b?.startTime || (b?.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : '17:00');
-    const end = b?.endTime || (b?.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : '18:00');
-    return `${start} a ${end}`;
+    const start = b?.startTime || (b?.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 5) : '20:00');
+    const end = b?.endTime || (b?.end_time && b.end_time.includes('T') ? b.end_time.split('T')[1].substring(0, 5) : '21:00');
+    const raw = `${start} a ${end}`;
+    return raw.toLowerCase().startsWith('de ') ? raw : `De ${raw}`;
   }, [linkedBooking, operation]);
 
   const bookingDateFormatted = useMemo(() => {
@@ -196,13 +227,16 @@ export const TicketModal: React.FC<TicketModalProps> = ({
     const rawDate = b?.date || (b?.start_time ? String(b.start_time).split('T')[0] : '');
     if (rawDate) {
       try {
-        const [year, month, day] = rawDate.split('-');
-        return `${day}/${month}/${year}`;
+        const [year, month, day] = rawDate.split('-').map(Number);
+        const d = new Date(year, month - 1, day);
+        const formatted = safeFormatDate(d, "d MMM, yyyy", { locale: es });
+        return formatted ? formatted.replace(/\./g, '') : rawDate;
       } catch {
         return rawDate;
       }
     }
-    return safeFormatDate(emissionDate, 'dd/MM/yyyy') || '';
+    const formatted = safeFormatDate(emissionDate, "d MMM, yyyy", { locale: es });
+    return formatted ? formatted.replace(/\./g, '') : '';
   }, [linkedBooking, operation, emissionDate]);
 
   // Items
@@ -216,7 +250,7 @@ export const TicketModal: React.FC<TicketModalProps> = ({
     }));
   }, [operation]);
 
-  // Associated movements formatting
+  // Associated movements formatting (SIN fecha/hora al lado del método)
   const formattedMovements = useMemo(() => {
     if (!operation) return [];
     const effectiveMovements = movements.filter(m => 
@@ -230,36 +264,39 @@ export const TicketModal: React.FC<TicketModalProps> = ({
       if (lower.includes('transf')) return 'Transferencia';
       if (lower.includes('tarj') || lower.includes('credit') || lower.includes('debit')) return 'Tarjeta';
       if (lower.includes('mercadopago') || lower.includes('mercado_pago')) return 'Mercado Pago';
-      if (lower.includes('fiado') || lower.includes('pend')) return 'Cuenta Corriente';
+      if (lower.includes('fiado') || lower.includes('pend') || lower.includes('cuenta corriente')) return 'Cuenta Corriente';
       return 'Efectivo';
     };
 
     if (effectiveMovements.length > 0) {
-      return effectiveMovements.map(m => {
-        const mDate = (m as any).date || m.createdAt;
-        const d = mDate?.toDate ? mDate.toDate() : (mDate ? new Date(mDate) : new Date());
-        return {
-          method: formatPaymentMethod(m.paymentMethod),
-          dateFormatted: safeFormatDate(d, 'dd/MM/yyyy HH:mm', { locale: es }) || '',
-          amount: Number(m.amount || 0)
-        };
-      });
+      return effectiveMovements.map(m => ({
+        method: formatPaymentMethod(m.paymentMethod),
+        amount: Number(m.amount || 0)
+      }));
     }
 
     if (Array.isArray((operation as any).payments) && (operation as any).payments.length > 0) {
-      return (operation as any).payments.map((p: any) => {
-        const pDate = p.date || operation.createdAt;
-        const d = pDate?.toDate ? pDate.toDate() : (pDate ? new Date(pDate) : new Date());
-        return {
-          method: formatPaymentMethod(p.method),
-          dateFormatted: safeFormatDate(d, 'dd/MM/yyyy HH:mm', { locale: es }) || '',
-          amount: Number(p.amount || 0)
-        };
-      });
+      return (operation as any).payments.map((p: any) => ({
+        method: formatPaymentMethod(p.method),
+        amount: Number(p.amount || 0)
+      }));
     }
 
     return [];
   }, [operation, movements]);
+
+  // Helper para íconos de métodos de pago en text-gray-400
+  const getPaymentMethodIcon = (method: string) => {
+    const lower = method.toLowerCase();
+    if (lower.includes('transf')) return <Landmark size={14} className="text-gray-400 shrink-0" />;
+    if (lower.includes('tarj') || lower.includes('credit') || lower.includes('debit') || lower.includes('mercadopago') || lower.includes('mercado_pago')) {
+      return <CreditCard size={14} className="text-gray-400 shrink-0" />;
+    }
+    if (lower.includes('fiado') || lower.includes('pend') || lower.includes('cuenta corriente')) {
+      return <Clock size={14} className="text-gray-400 shrink-0" />;
+    }
+    return <CircleDollarSign size={14} className="text-gray-400 shrink-0" />;
+  };
 
   if (!isOpen || !operation) return null;
 
@@ -305,7 +342,7 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                 </div>
               ) : (
                 <div className="w-14 h-14 rounded-2xl bg-[#eff6ff] flex items-center justify-center shrink-0">
-                  <Store size={28} className="text-[#1d63b8]" />
+                  <ShoppingBag size={28} strokeWidth={2} className="text-[#1d63b8]" />
                 </div>
               )}
 
@@ -316,20 +353,20 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                   {headerTitle}
                 </h2>
 
-                {/* Fila 2: Sede (izq) y Teléfono de la sede (der, col fija 115px) */}
+                {/* Fila 2: Sede (izq) y Teléfono de la sede (der, col fija 115px) en text-gray-400 */}
                 <div className="grid grid-cols-[1fr_115px] items-center gap-2 mt-0.5">
-                  <span className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 truncate">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-gray-400 truncate">
                     <Store size={13} className="text-gray-400 shrink-0" />
                     <span className="truncate">{complexName}</span>
                   </span>
-                  <span className="flex items-center justify-end gap-1 text-xs font-semibold text-gray-700 shrink-0">
+                  <span className="flex items-center justify-end gap-1 text-xs font-medium text-gray-400 shrink-0">
                     <Phone size={12} className="text-gray-400 shrink-0" />
                     <span className="truncate">{complexPhone || '—'}</span>
                   </span>
                 </div>
 
-                {/* Fila 3: Fecha de emisión */}
-                <div className="text-[11px] font-medium text-gray-500 mt-0.5">
+                {/* Fila 3: Fecha de emisión en formato d MMM, yyyy, HH:mm en text-gray-400 */}
+                <div className="text-[11px] font-medium text-gray-400 mt-0.5">
                   {formattedCreationDate}
                 </div>
               </div>
@@ -343,21 +380,21 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                 Información
               </div>
 
-              {/* Renglón 1: Ticket */}
-              <div className="flex items-center gap-2 text-xs font-medium text-gray-700">
+              {/* Renglón 1: Ticket en text-gray-400 */}
+              <div className="flex items-center gap-2 text-xs font-medium text-gray-400">
                 <Ticket size={14} className="text-gray-400 shrink-0" />
-                <span>{cleanTicketCode}</span>
+                <span>#{cleanTicketCode}</span>
               </div>
 
-              {/* Renglones de Cliente / Proveedor / Jugadores con columna derecha alineada a 115px */}
+              {/* Renglones de Cliente / Proveedor / Jugadores en text-gray-400 con col derecha 115px */}
               {isBooking ? (
                 allBookingPlayers.map((p, idx) => (
                   <div key={idx} className="grid grid-cols-[1fr_115px] items-center gap-2">
-                    <span className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 truncate">
+                    <span className="flex items-center gap-1.5 text-xs font-medium text-gray-400 truncate">
                       <UserIcon size={14} className="text-gray-400 shrink-0" />
                       <span className="truncate">{p.name}</span>
                     </span>
-                    <span className="flex items-center justify-end gap-1 text-xs font-semibold text-gray-700 shrink-0">
+                    <span className="flex items-center justify-end gap-1 text-xs font-medium text-gray-400 shrink-0">
                       <Phone size={12} className="text-gray-400 shrink-0" />
                       <span className="truncate">{p.phone || '—'}</span>
                     </span>
@@ -365,22 +402,22 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                 ))
               ) : isExpenseOrPurchase ? (
                 <div className="grid grid-cols-[1fr_115px] items-center gap-2">
-                  <span className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 truncate">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-gray-400 truncate">
                     <Building2 size={14} className="text-gray-400 shrink-0" />
                     <span className="truncate">{entityName || (isPurchase ? 'Proveedor' : 'Entidad')}</span>
                   </span>
-                  <span className="flex items-center justify-end gap-1 text-xs font-semibold text-gray-700 shrink-0">
+                  <span className="flex items-center justify-end gap-1 text-xs font-medium text-gray-400 shrink-0">
                     <Phone size={12} className="text-gray-400 shrink-0" />
                     <span className="truncate">{entityPhone || '—'}</span>
                   </span>
                 </div>
               ) : (
                 <div className="grid grid-cols-[1fr_115px] items-center gap-2">
-                  <span className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 truncate">
+                  <span className="flex items-center gap-1.5 text-xs font-medium text-gray-400 truncate">
                     <UserIcon size={14} className="text-gray-400 shrink-0" />
                     <span className="truncate">{displayClientName !== 'NN' ? displayClientName : 'Consumidor final'}</span>
                   </span>
-                  <span className="flex items-center justify-end gap-1 text-xs font-semibold text-gray-700 shrink-0">
+                  <span className="flex items-center justify-end gap-1 text-xs font-medium text-gray-400 shrink-0">
                     <Phone size={12} className="text-gray-400 shrink-0" />
                     <span className="truncate">{displayPhone || '—'}</span>
                   </span>
@@ -400,42 +437,66 @@ export const TicketModal: React.FC<TicketModalProps> = ({
               </div>
 
               {isBooking ? (
-                <div className="flex justify-between items-center text-xs font-medium text-gray-700">
-                  <span className="truncate pr-2">
-                    {bookingCourtName} • {bookingTimeRange} • {bookingDateFormatted}
-                  </span>
-                  <span className="font-semibold text-gray-900 shrink-0">
-                    ${totalContractual.toLocaleString('es-AR')}
-                  </span>
+                /* A. RESERVA: Fila 1 Cancha + Monto en text-gray-400, Fila 2 Fecha, Fila 3 Horario */
+                <div className="space-y-1">
+                  <div className="flex justify-between items-center text-xs text-gray-400 font-medium">
+                    <span className="truncate pr-2">
+                      {bookingCourtName}{isCancelled ? ' (cancelado)' : ''}
+                    </span>
+                    <span className="text-gray-400 shrink-0 font-medium">
+                      ${totalContractual.toLocaleString('es-AR')}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[10px] text-gray-370 font-normal">
+                    <Calendar size={13} className="text-gray-370 shrink-0" />
+                    <span>{bookingDateFormatted}</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 text-[10px] text-gray-370 font-normal">
+                    <Clock size={13} className="text-gray-370 shrink-0" />
+                    <span>{bookingTimeRange}</span>
+                  </div>
                 </div>
               ) : isExpense ? (
-                <div className="flex justify-between items-center text-xs font-medium text-gray-700">
+                /* GASTO: Concepto + Monto en text-gray-400 */
+                <div className="flex justify-between items-center text-xs text-gray-400 font-medium">
                   <span className="truncate pr-2">
                     {operation.expenseConceptName || (operation as any).concept || operation.notes || 'Gasto Operativo'}
                   </span>
-                  <span className="font-semibold text-gray-900 shrink-0">
+                  <span className="text-gray-400 shrink-0 font-medium">
                     ${totalContractual.toLocaleString('es-AR')}
                   </span>
                 </div>
               ) : items.length > 0 ? (
-                <div className="space-y-1.5">
+                /* B / C. MOSTRADOR O COMPRAS CON ARTÍCULOS */
+                <div className="space-y-2">
                   {items.map((it, idx) => (
-                    <div key={idx} className="flex justify-between items-center text-xs font-medium text-gray-700">
-                      <span className="truncate pr-2">{it.quantity}x {it.name}</span>
-                      <span className="font-semibold text-gray-900 shrink-0">
-                        ${it.subtotal.toLocaleString('es-AR')}
-                      </span>
+                    <div key={idx} className="space-y-0.5">
+                      <div className="flex justify-between items-center text-xs text-gray-400 font-medium">
+                        <span className="truncate pr-2">{it.name}</span>
+                        <span className="text-gray-400 shrink-0 font-medium">
+                          ${it.subtotal.toLocaleString('es-AR')}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-gray-370 font-normal">
+                        {it.quantity}u x ${it.unitPrice.toLocaleString('es-AR')} c/u
+                      </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <div className="flex justify-between items-center text-xs font-medium text-gray-700">
-                  <span className="truncate pr-2">
-                    {operation.notes || (isPurchase ? 'Compra de mercadería' : 'Venta de mostrador')}
-                  </span>
-                  <span className="font-semibold text-gray-900 shrink-0">
-                    ${totalContractual.toLocaleString('es-AR')}
-                  </span>
+                /* FALLBACK MONO-ARTÍCULO */
+                <div className="space-y-0.5">
+                  <div className="flex justify-between items-center text-xs text-gray-400 font-medium">
+                    <span className="truncate pr-2">
+                      {operation.notes || (isPurchase ? 'Compra de mercadería' : 'Venta de mostrador')}
+                    </span>
+                    <span className="text-gray-400 shrink-0 font-medium">
+                      ${totalContractual.toLocaleString('es-AR')}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-gray-370 font-normal">
+                    1u x ${totalContractual.toLocaleString('es-AR')} c/u
+                  </div>
                 </div>
               )}
 
@@ -457,33 +518,32 @@ export const TicketModal: React.FC<TicketModalProps> = ({
                 {isExpenseOrPurchase ? 'Método de pago' : 'Método de cobro'}
               </div>
 
+              {/* Métodos de pago con su ícono y SIN fecha/hora al lado en text-gray-400 */}
               {formattedMovements.length > 0 ? (
                 formattedMovements.map((m, idx) => (
-                  <div key={idx} className="flex justify-between items-center text-xs font-medium text-gray-700">
+                  <div key={idx} className="flex justify-between items-center text-xs text-gray-400 font-medium">
                     <span className="flex items-center gap-1.5 truncate pr-2">
-                      <span className="text-gray-900 font-semibold">{m.method}</span>
-                      {m.dateFormatted && (
-                        <span className="text-[11px] text-gray-400">({m.dateFormatted})</span>
-                      )}
+                      {getPaymentMethodIcon(m.method)}
+                      <span className="text-gray-400">{m.method}</span>
                     </span>
-                    <span className="font-semibold text-gray-900 shrink-0">
+                    <span className="text-gray-400 shrink-0 font-medium">
                       ${m.amount.toLocaleString('es-AR')}
                     </span>
                   </div>
                 ))
               ) : (
-                <div className="flex justify-between items-center text-xs font-medium text-gray-400">
+                <div className="flex justify-between items-center text-xs text-gray-400 font-medium">
                   <span>{isExpenseOrPurchase ? 'Sin pagos registrados' : 'Sin cobros registrados'}</span>
-                  <span>$0</span>
+                  <span className="text-gray-400 shrink-0 font-medium">$0</span>
                 </div>
               )}
 
-              {/* Renglón Falta cobrar / Falta pagar */}
-              <div className="flex justify-between items-center pt-2 mt-2 border-t border-gray-100 text-xs font-extrabold">
-                <span className={amountPending > 0 ? "text-red-600" : "text-gray-900"}>
+              {/* Renglón Falta cobrar / Falta pagar como título uniforme (text-[15px] font-extrabold text-gray-900) */}
+              <div className="flex justify-between items-center pt-2 mt-2 border-t border-gray-100 text-[15px] font-extrabold">
+                <span className="text-gray-900">
                   {isExpenseOrPurchase ? 'Falta pagar' : 'Falta cobrar'}
                 </span>
-                <span className={amountPending > 0 ? "text-red-600" : "text-gray-900"}>
+                <span className={amountPending > 0 ? "text-[#dc2626]" : "text-gray-900"}>
                   ${amountPending.toLocaleString('es-AR')}
                 </span>
               </div>
@@ -493,7 +553,7 @@ export const TicketModal: React.FC<TicketModalProps> = ({
             {/* 5. PIE DEL TICKET: LEMA + LOGO DE JOGO                         */}
             {/* ============================================================== */}
             <div className="mt-6 pt-5 border-t border-dashed border-gray-200 text-center space-y-2">
-              <p className="text-[13px] font-black tracking-wider text-gray-900">
+              <p className="text-xs font-extrabold tracking-wide uppercase text-gray-400">
                 NOS VEMOS EN LA CANCHA!
               </p>
               <img 
