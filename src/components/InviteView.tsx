@@ -162,10 +162,10 @@ export const InviteView: React.FC<InviteViewProps> = ({
           }}
         />
 
-        {/* Rectángulo verde #019F3A con transparencia del 14% para no oscurecer las sombras */}
+        {/* Rectángulo verde #019F3A translúcido con pointer-events-none */}
         <div 
-          className="absolute inset-0"
-          style={{ backgroundColor: 'rgba(1, 159, 58, 0.14)' }}
+          className="absolute inset-0 pointer-events-none"
+          style={{ backgroundColor: 'rgba(1, 159, 58, 0.16)' }}
         />
 
         {/* Difuminado suave en la base hacia el verde #019F3A */}
@@ -210,17 +210,18 @@ export const InviteView: React.FC<InviteViewProps> = ({
         </div>
 
         {/* Título Display calibrado en 2 renglones exactos */}
-        <h1 className="text-[32px] sm:text-[35px] font-bold text-white leading-[1.05] tracking-tight">
-          Felicidades<br />por este gran paso!
+        <h1 className="text-[38px] sm:text-[40px] font-bold text-white leading-[1.0] tracking-tight">
+          ¡Felicidades<br />por este gran paso!
         </h1>
 
-        {/* Bienvenida personalizada con el nombre real del complejo (sin espacio antes del punto) */}
-        <p className="text-base sm:text-lg text-white mt-3 font-normal leading-snug">
-          Bienvenido a Jogo,{displayComplexName ? <>, <strong className="font-bold">{displayComplexName}.</strong></> : '.'}
+        {/* Bienvenida personalizada con el nombre real del complejo (sin crash de insertBefore ni doble coma) */}
+        <p className="text-[19px] sm:text-[20px] text-white mt-3.5 font-normal leading-snug">
+          <span>Bienvenido a Jogo, </span>
+          <strong className="font-bold">{displayComplexName || 'tu complejo'}.</strong>
         </p>
 
         {/* Descripción en 3 renglones en blanco puro */}
-        <p className="text-[12.5px] sm:text-xs text-white font-normal leading-relaxed mt-2 max-w-[340px]">
+        <p className="text-[15px] sm:text-[16px] text-white font-normal leading-relaxed mt-2.5 max-w-[360px]">
           Desde hoy, tenés una nueva herramienta que<br />
           te facilitará el trabajo diario y te ayudará a<br />
           tomar mejores decisiones!
