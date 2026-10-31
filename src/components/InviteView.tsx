@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  ArrowLeft, 
-  Link2, 
-  AlertCircle, 
-  CheckCircle2, 
-  Loader2 
+  Link2,
+  ArrowLeft,
+  Loader2,
+  AlertCircle,
+  CheckCircle2
 } from 'lucide-react';
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
@@ -18,23 +18,23 @@ interface InviteViewProps {
   isDarkMode?: boolean;
 }
 
-const GoogleIcon = () => (
+const GoogleIcon: React.FC = () => (
   <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
     <path
       fill="#4285F4"
-      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+      d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"
     />
     <path
       fill="#34A853"
-      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+      d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.34 24 12 24z"
     />
     <path
       fill="#FBBC05"
-      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+      d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"
     />
     <path
       fill="#EA4335"
-      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+      d="M12 4.77c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.34 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.96 6.72-4.96z"
     />
   </svg>
 );
@@ -48,7 +48,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
   const [loading, setLoading] = useState(true);
   const [validation, setValidation] = useState<InvitationValidationResult | null>(null);
-  const [complexName, setComplexName] = useState<string>('tu complejo');
+  const [complexName, setComplexName] = useState<string>('El Colo Loco');
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
@@ -177,79 +177,100 @@ export const InviteView: React.FC<InviteViewProps> = ({
       {/* Capa de Imagen de Césped con Filtro y Difuminado Inferior */}
       <div className="absolute top-0 left-0 right-0 h-[68%] sm:h-[72%] overflow-hidden pointer-events-none">
         <img
-          src="/assets/turf-bg.jpg"
+          src="/assets/invite-turf-bg.jpg"
           alt="Césped sintético"
-          className="object-cover w-full h-full absolute top-0 left-0 right-0"
+          className="object-cover object-top w-full h-full absolute top-0 left-0 right-0"
+          onError={(e) => {
+            const target = e.currentTarget;
+            if (!target.src.includes('turf-bg.jpg')) {
+              target.src = '/assets/turf-bg.jpg';
+            }
+          }}
         />
+        {/* Capa verde oficial con mezcla suave para resaltar líneas y red */}
         <div className="absolute inset-0 bg-[#0BA70B]/75 mix-blend-multiply" />
-        <div className="absolute bottom-0 left-0 right-0 h-40 bg-gradient-to-b from-transparent to-[#0BA70B]" />
+        <div className="absolute bottom-0 left-0 right-0 h-44 bg-gradient-to-b from-transparent via-[#0BA70B]/40 to-[#0BA70B]" />
       </div>
 
       {/* Zona Verde Superior */}
-      <div className="relative z-10 px-6 pt-6 sm:pt-8 pb-4 flex-1 flex flex-col justify-between max-w-lg mx-auto w-full">
-        {/* Fila Superior */}
-        <div className="flex items-center justify-between w-full">
+      <div className="relative z-10 px-6 pt-7 sm:pt-9 pb-6 flex-1 flex flex-col justify-between max-w-lg mx-auto w-full">
+        {/* Cabecera con Botón Volver y Logo Jogo Centrado */}
+        <div className="flex items-center justify-between w-full relative">
           <button
             type="button"
             onClick={onNavigateHome}
             aria-label="Volver"
-            className="w-10 h-10 flex items-center justify-center text-white hover:opacity-80 transition-opacity cursor-pointer -ml-2 rounded-full active:bg-white/10"
+            className="w-11 h-11 flex items-center justify-center text-white hover:opacity-85 transition-opacity cursor-pointer -ml-2 rounded-full active:bg-white/10 z-10"
           >
-            <ArrowLeft size={24} />
+            <ArrowLeft size={30} strokeWidth={2.4} />
           </button>
 
-          <img
-            src="/logo-white.png"
-            alt="Jogo"
-            className="h-7 object-contain mx-auto"
-          />
-
-          <div className="w-10" />
-        </div>
-
-        {/* Bloque de Mensaje de Invitación */}
-        <div className="my-auto py-8 sm:py-10">
-          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white text-[#0BA70B] text-xs font-bold shadow-xs w-fit mb-4">
-            <Link2 size={13} className="shrink-0" />
-            <span>Link de invitación</span>
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <img
+              src="/assets/jogo-logo-white.png"
+              onError={(e) => {
+                e.currentTarget.src = '/logo-white.png';
+              }}
+              alt="Jogo"
+              className="h-16 sm:h-20 object-contain drop-shadow-sm"
+            />
           </div>
 
-          <h1 className="text-3xl sm:text-4xl font-black text-white leading-tight tracking-tight whitespace-pre-line">
-            Felicidades{'\n'}por este gran paso!
+          <div className="w-11" />
+        </div>
+
+        {/* Bloque Central de Textos de Bienvenida */}
+        <div className="my-auto pt-8 pb-4">
+          {/* Badge Link de Invitación */}
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-white shadow-xs w-fit mb-5">
+            <span className="w-6 h-6 rounded-full bg-[#0BA70B] flex items-center justify-center text-white shrink-0">
+              <Link2 size={13} className="text-white -rotate-45" strokeWidth={2.6} />
+            </span>
+            <span className="text-[#15803d] text-xs font-bold tracking-tight">
+              Link de invitación
+            </span>
+          </div>
+
+          {/* Gran Título en 2 renglones */}
+          <h1 className="text-4xl sm:text-5xl font-black text-white leading-[1.08] tracking-tight mb-4">
+            Felicidades<br />
+            por este gran paso!
           </h1>
 
-          <p className="text-white/95 text-base sm:text-lg font-medium mt-3">
-            Bienvenido a Jogo, <strong className="font-bold">{complexName}</strong>.
+          {/* Subtítulo con nombre del complejo */}
+          <p className="text-white text-lg sm:text-xl font-normal mb-3">
+            Bienvenido a Jogo, <strong className="font-bold">{complexName || 'El Colo Loco'}.</strong>
           </p>
 
-          <p className="text-white/80 text-sm mt-2 leading-relaxed">
-            Fuiste invitado a ser el administrador de este complejo. Podrás gestionar turnos, canchas, cobros y mucho más de forma simple y ágil.
+          {/* Descripción */}
+          <p className="text-white/95 text-sm sm:text-[15px] font-normal leading-relaxed max-w-md">
+            Desde hoy, tenés una nueva herramienta que te facilitará el trabajo diario y te ayudará a tomar mejores decisiones!
           </p>
         </div>
       </div>
 
-      {/* Tarjeta Inferior Blanca (Acciones) */}
-      <div className="bg-white rounded-t-[36px] w-full p-6 sm:p-8 space-y-5 shadow-2xl max-w-lg mx-auto relative z-10">
+      {/* Tarjeta Inferior Blanca (Acciones y Legal) */}
+      <div className="bg-white rounded-t-[50px] sm:rounded-t-[55px] w-full pt-8 pb-8 px-7 sm:px-9 shadow-2xl max-w-lg mx-auto relative z-10 flex flex-col items-center text-center">
         <div className="space-y-1">
-          <h2 className="text-xl font-black text-gray-900 tracking-tight">
+          <h2 className="text-2xl sm:text-3xl font-black text-gray-800 tracking-tight">
             Es sencillo...
           </h2>
-          <p className="text-gray-500 text-sm leading-snug">
-            Solo tenés que iniciar sesión con tu cuenta de Google para vincular tu complejo.
+          <p className="text-gray-400 text-sm font-normal mt-1.5">
+            Ingresá tu correo electrónico para continuar
           </p>
         </div>
 
         {/* Error de reclamo o popup */}
         {claimError && (
-          <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs flex items-center gap-2 text-left">
-            <AlertCircle size={16} className="shrink-0" />
+          <div className="mt-4 w-full p-3.5 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs flex items-center gap-2.5 text-left">
+            <AlertCircle size={16} className="shrink-0 text-red-500" />
             <span className="flex-1 font-medium">{claimError}</span>
           </div>
         )}
 
         {/* Mensaje de invitación inválida o expirada */}
         {invalidInfo && !claimSuccess && (
-          <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-left space-y-1">
+          <div className="mt-4 w-full p-4 bg-amber-50 border border-amber-200 rounded-2xl text-left space-y-1">
             <div className="flex items-center gap-2 text-amber-800 font-bold text-xs">
               <AlertCircle size={16} className="text-amber-600 shrink-0" />
               <span>{invalidInfo.title}</span>
@@ -262,7 +283,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
         {/* Banner de éxito */}
         {claimSuccess && (
-          <div className="p-4 bg-emerald-50 border border-[#0BA70B]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-3 text-left">
+          <div className="mt-4 w-full p-4 bg-emerald-50 border border-[#0BA70B]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-3 text-left">
             <CheckCircle2 size={24} className="text-[#0BA70B] shrink-0" />
             <div>
               <p className="font-bold text-sm">¡Complejo vinculado con éxito!</p>
@@ -273,37 +294,37 @@ export const InviteView: React.FC<InviteViewProps> = ({
           </div>
         )}
 
-        {/* Acciones principales */}
+        {/* Botón de acción */}
         {!claimSuccess && (
           <>
             {isInvalidToken ? (
               <button
                 type="button"
                 onClick={onNavigateHome}
-                className="w-full py-3 px-4 rounded-full bg-gray-900 hover:bg-black text-white font-semibold text-sm transition-colors cursor-pointer shadow-xs"
+                className="w-full mt-6 py-3.5 px-6 rounded-full bg-gray-900 hover:bg-black text-white font-semibold text-sm transition-colors cursor-pointer shadow-xs"
               >
                 Ir al inicio de Jogo
               </button>
             ) : (
-              <div className="space-y-3">
+              <div className="w-full mt-6 space-y-3">
                 <button
                   type="button"
                   disabled={isProcessing || loading}
                   onClick={handleAction}
-                  className="w-full py-2.5 px-4 rounded-full border border-gray-200 hover:bg-gray-50 active:scale-[0.99] flex items-center justify-center gap-3 transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+                  className="w-full py-3.5 px-6 rounded-full border border-gray-200 hover:border-gray-300 bg-white shadow-xs active:scale-[0.99] flex items-center justify-center gap-3 transition-all cursor-pointer disabled:opacity-50"
                 >
                   {isProcessing ? (
                     <>
-                      <Loader2 size={18} className="animate-spin text-gray-500" />
-                      <span className="text-gray-700 font-semibold text-sm">
+                      <Loader2 size={19} className="animate-spin text-gray-500" />
+                      <span className="text-gray-700 font-semibold text-base">
                         {isSigningIn ? 'Iniciando sesión...' : 'Vinculando complejo...'}
                       </span>
                     </>
                   ) : (
                     <>
                       <GoogleIcon />
-                      <span className="text-gray-700 font-semibold text-sm">
-                        Inicia sesión con Google
+                      <span className="text-gray-800 text-base font-normal">
+                        Inicia sesión con <strong className="font-bold">Google</strong>
                       </span>
                     </>
                   )}
@@ -328,13 +349,22 @@ export const InviteView: React.FC<InviteViewProps> = ({
           </>
         )}
 
-        {/* Términos y condiciones */}
-        <p className="text-[11px] text-gray-400 text-center leading-tight pt-1">
-          Al continuar, aceptas nuestros{' '}
-          <span className="underline hover:text-gray-600 cursor-pointer">términos y condiciones</span>{' '}
-          y{' '}
-          <span className="underline hover:text-gray-600 cursor-pointer">políticas de privacidad</span>.
-        </p>
+        {/* Términos y condiciones con color turquesa #249F87 */}
+        <div className="text-center text-[11px] sm:text-xs text-[#94a3b8] mt-6 leading-relaxed max-w-sm mx-auto">
+          <p>
+            Al continuar, tu cuenta de Google quedará vinculada con{' '}
+            <strong className="text-[#64748b] font-semibold">{complexName || 'El Colo Loco'}</strong> y aceptas nuestros
+          </p>
+          <p className="mt-0.5">
+            <span className="text-[#249F87] font-semibold hover:underline cursor-pointer">
+              Términos y Condiciones
+            </span>{' '}
+            y{' '}
+            <span className="text-[#249F87] font-semibold hover:underline cursor-pointer">
+              Políticas de Privacidad
+            </span>
+          </p>
+        </div>
       </div>
     </div>
   );
