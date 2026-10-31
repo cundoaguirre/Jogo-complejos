@@ -3,8 +3,7 @@ import {
   Link2,
   ArrowLeft,
   Loader2,
-  AlertCircle,
-  CheckCircle2
+  AlertCircle
 } from 'lucide-react';
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
@@ -44,18 +43,14 @@ export const InviteView: React.FC<InviteViewProps> = ({
   onSuccess,
   onNavigateHome
 }) => {
-  const { user, reloadCollaboratorData, logout } = useFirebase();
+  const { user, reloadCollaboratorData } = useFirebase();
 
   const [loading, setLoading] = useState(true);
   const [validation, setValidation] = useState<InvitationValidationResult | null>(null);
-  const [complexName, setComplexName] = useState<string>('');
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
-  const [claimSuccess, setClaimSuccess] = useState<boolean>(false);
-  const [legalModal, setLegalModal] = useState<'terms' | 'privacy' | null>(null);
 
-  // Validate invitation token and fetch complex name on load
   useEffect(() => {
     let isMounted = true;
     const checkToken = async () => {
@@ -65,15 +60,11 @@ export const InviteView: React.FC<InviteViewProps> = ({
         const res = await validateSaasInvitation(token);
         if (isMounted) {
           setValidation(res);
-          if (res.complexName) {
-            setComplexName(res.complexName);
-          }
           setLoading(false);
         }
       } catch (err: any) {
         if (isMounted) {
-          console.warn('[InviteView] Token pre-check error:', err);
-          setValidation({ valid: false, reason: 'error', errorMessage: err.message });
+          console.warn('[InviteView] Error validando token:', err);
           setLoading(false);
         }
       }
@@ -85,31 +76,21 @@ export const InviteView: React.FC<InviteViewProps> = ({
     };
   }, [token]);
 
-  // Handle Google Login & Claim flow
   const handleAction = async () => {
     setClaimError(null);
-
-    // If already validated as invalid, do not proceed
-    if (!validation || !validation.valid) {
-      return;
-    }
+    if (validation && !validation.valid) return;
 
     let targetUser = auth.currentUser || user;
 
-    // 1. If not authenticated, initiate Google popup sign-in
     if (!targetUser) {
       setIsSigningIn(true);
       try {
-        googleProvider.setCustomParameters({
-          prompt: 'select_account'
-        });
+        googleProvider.setCustomParameters({ prompt: 'select_account' });
         const cred = await signInWithPopup(auth, googleProvider);
         targetUser = cred.user;
       } catch (err: any) {
         setIsSigningIn(false);
-        if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
-          setClaimError('El inicio de sesión con Google fue cancelado.');
-        } else {
+        if (err.code !== 'auth/popup-closed-by-user' && err.code !== 'auth/cancelled-popup-request') {
           setClaimError('No se pudo completar el inicio de sesión con Google.');
         }
         return;
@@ -120,15 +101,15 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
     if (!targetUser) return;
 
-    // 2. Claim invitation with current user
     setIsClaiming(true);
     try {
-      const claimResult = await claimSaasInvitation(token, targetUser, validation.documentId);
-      setClaimSuccess(true);
+      const claimResult = await claimSaasInvitation(token, targetUser, validation?.documentId);
       await reloadCollaboratorData();
-      onSuccess(claimResult.complexId, claimResult.complexName);
+      setTimeout(() => {
+        onSuccess(claimResult.complexId, claimResult.complexName || validation?.complexName || 'Mi Complejo');
+      }, 900);
     } catch (err: any) {
-      console.warn('[InviteView] Error claiming invitation:', err);
+      console.warn('[InviteView] Error al reclamar invitación:', err);
       setClaimError(err.message || 'Error al vincular el complejo. Intentá nuevamente.');
       setIsClaiming(false);
     }
@@ -136,48 +117,39 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
   const isProcessing = isSigningIn || isClaiming;
 
-  // 1. Estado de carga inicial
-  if (loading) {
+  // ---------------------------------------------------------------------------
+  // ESTADO: PANTALLA SOBRIA SI EL ENLACE ES INVÁLIDO O EXPIRÓ (SIN NOMBRES FALSOS)
+  // ---------------------------------------------------------------------------
+  if (!loading && validation && !validation.valid) {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center p-6 bg-white dark:bg-slate-950 text-center select-none font-['Plus_Jakarta_Sans',sans-serif]">
-        <Loader2 size={32} className="animate-spin text-[#019F3A] mb-3" />
-        <p className="text-sm font-medium text-gray-400 dark:text-slate-500">
-          Verificando enlace de invitación...
-        </p>
-      </div>
-    );
-  }
-
-  // 2. Pantalla sobria cuando el link no es válido o expiró
-  if (!validation || !validation.valid) {
-    return (
-      <div className="min-h-screen w-full relative flex flex-col items-center justify-center p-6 bg-white dark:bg-slate-950 text-center select-none font-['Plus_Jakarta_Sans',sans-serif]">
+      <div className="min-h-[100dvh] w-full relative flex flex-col items-center justify-center p-6 bg-white dark:bg-slate-950 text-center select-none">
         <button
           type="button"
           onClick={onNavigateHome}
           aria-label="Volver"
-          className="absolute top-6 left-6 p-2 text-gray-500 hover:text-gray-700 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer"
+          className="absolute top-6 left-6 p-2 text-gray-500 hover:text-gray-800 dark:text-slate-400 dark:hover:text-slate-100 transition-colors cursor-pointer"
         >
-          <ArrowLeft size={24} />
+          <ArrowLeft size={24} strokeWidth={2.2} />
         </button>
-        <p className="text-base font-medium text-gray-400 dark:text-slate-500">
+
+        <p className="text-base sm:text-lg font-medium text-gray-400 dark:text-slate-500">
           Enlace no válido o expirado
         </p>
       </div>
     );
   }
 
-  // 3. Link válido verificado — Pantalla oficial con la foto y tratamiento verde #019F3A al 14%
-  const displayComplexName = validation.complexName || complexName || 'tu complejo';
+  const displayComplexName = validation?.complexName || 'Mi Complejo';
 
   return (
-    <div className="relative w-full min-h-[100dvh] overflow-hidden select-none bg-[#019F3A] flex flex-col justify-between font-['Plus_Jakarta_Sans',sans-serif]">
-      {/* 1. FOTO REAL DE FONDO Y TRATAMIENTO CON VERDE #019F3A AL 14% */}
-      <div className="absolute top-0 inset-x-0 w-full h-[72%] overflow-hidden pointer-events-none z-0">
+    <div className="min-h-[100dvh] w-full relative flex flex-col justify-between overflow-x-hidden bg-[#0BA70B] select-none font-sans">
+      
+      {/* 1. SECCIÓN SUPERIOR: FOTO AL NATURAL + OVERLAY VERDE #019F3A AL 14% */}
+      <div className="absolute top-0 left-0 right-0 h-[72%] w-full overflow-hidden pointer-events-none z-0">
         <img
           src="/assets/invite-turf-bg.jpg"
           alt="Cancha de fútbol"
-          className="object-cover object-top w-full h-full absolute top-0 inset-x-0"
+          className="w-full h-full object-cover object-top"
           onError={(e) => {
             const target = e.currentTarget;
             if (!target.src.includes('0be87cd4.jpg')) {
@@ -185,214 +157,141 @@ export const InviteView: React.FC<InviteViewProps> = ({
             }
           }}
         />
-        {/* Capa verde translúcida exacta #019F3A al 14% de opacidad real */}
+
+        {/* Overlay verde #019F3A al 14% de opacidad real sin quemar sombras */}
         <div 
-          className="absolute inset-0 w-full h-full pointer-events-none"
+          className="absolute inset-0"
           style={{ backgroundColor: 'rgba(1, 159, 58, 0.14)' }}
         />
-        {/* Transición inferior difuminada suave */}
-        <div className="absolute bottom-0 inset-x-0 h-32 bg-gradient-to-b from-transparent to-[#019F3A]/25 pointer-events-none" />
+
+        {/* Difuminado suave en la base hacia el panel blanco */}
+        <div className="absolute bottom-0 left-0 right-0 h-36 bg-gradient-to-b from-transparent to-[#019F3A]/20" />
       </div>
 
-      {/* 2. ZONA SUPERIOR: FLECHA Y LOGO AL DOBLE DE TAMAÑO */}
-      <div className="relative z-20 w-full pt-6 px-6 max-w-[460px] mx-auto flex flex-col">
-        {/* Flecha volver blanca en fila independiente */}
-        <div className="w-full flex items-center justify-start">
-          <button
-            type="button"
-            onClick={onNavigateHome}
-            aria-label="Volver"
-            className="p-1 -ml-1 text-white hover:opacity-80 active:opacity-60 transition-opacity cursor-pointer bg-transparent border-0"
-          >
-            <ArrowLeft size={28} strokeWidth={2.4} className="text-white" />
-          </button>
-        </div>
+      {/* 2. FLECHA BLANCA DE REGRESO Y LOGO JOGO AL DOBLE DE TAMAÑO */}
+      <header className="relative z-20 w-full max-w-md mx-auto pt-7 sm:pt-9 px-6 sm:px-8 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={onNavigateHome}
+          aria-label="Volver"
+          className="text-white hover:opacity-85 transition-opacity p-1 -ml-1 cursor-pointer bg-transparent border-0"
+        >
+          <ArrowLeft size={28} strokeWidth={2.4} className="text-white" />
+        </button>
 
-        {/* Logo Jogo blanco centrado, duplicado en tamaño (h-16 sm:h-20 w-auto object-contain mx-auto) */}
-        <div className="pt-2 pb-4 flex justify-center items-center w-full">
+        {/* Logo Jogo blanco ampliado al doble (~200px de ancho) */}
+        <div className="flex-1 flex justify-center pr-7">
           <img
-            src="/assets/aistudio/Photoroom-20261027_123311_8fbc6431.png"
+            src="/assets/jogo-logo-white.png"
             onError={(e) => {
               const target = e.currentTarget;
-              if (!target.src.includes('jogo-logo-white.png')) {
-                target.src = '/assets/jogo-logo-white.png';
-              } else if (!target.src.includes('logo-white.png')) {
-                target.src = '/logo-white.png';
+              if (!target.src.includes('Photoroom')) {
+                target.src = '/assets/aistudio/Photoroom-20261027_123311_8fbc6431.png';
               }
             }}
             alt="Jogo"
-            className="h-16 sm:h-20 w-auto object-contain mx-auto select-none pointer-events-none drop-shadow-sm"
+            className="w-[195px] sm:w-[215px] h-auto object-contain block drop-shadow-xs"
           />
         </div>
-      </div>
+      </header>
 
-      {/* 3 & 4. BLOQUE CENTRAL: CÁPSULA COMPACTA, TÍTULOS Y DESCRIPCIÓN */}
-      <div className="relative z-20 my-auto px-7 sm:px-8 max-w-[460px] mx-auto w-full flex flex-col items-start text-left">
-        {/* Cápsula compacta Link de invitación */}
-        <div 
-          className="h-[26px] rounded-full bg-white !bg-white pl-0 pr-3 flex items-center gap-2 shadow-xs w-fit mb-5"
-          style={{ backgroundColor: '#ffffff' }}
-        >
-          <span 
-            className="w-[26px] h-[26px] rounded-full bg-[#019F3A] !bg-[#019F3A] flex items-center justify-center shrink-0"
-            style={{ backgroundColor: '#019F3A' }}
-          >
-            <Link2 size={13} strokeWidth={2.5} className="text-white -rotate-45" />
-          </span>
-          <span className="text-xs font-bold text-[#019F3A] tracking-tight">
+      {/* 3. CONTENIDO: CÁPSULA 22px AL RAS, TÍTULO DISPLAY Y TEXTOS EN BLANCO PURO */}
+      <div className="relative z-10 w-full max-w-md mx-auto px-7 sm:px-8 pt-6 pb-5 flex-1 flex flex-col justify-end">
+        {/* Cápsula de 22px de alto con círculo verde al ras del borde izquierdo */}
+        <div className="h-[22px] rounded-full bg-white pl-0 pr-2.5 flex items-center gap-1.5 shadow-xs w-fit mb-5">
+          <div className="w-[22px] h-[22px] rounded-full bg-[#019F3A] flex items-center justify-center shrink-0">
+            <Link2 size={11} strokeWidth={2.5} className="text-white -rotate-45" />
+          </div>
+          <span className="text-[11px] font-bold text-[#019F3A] tracking-tight leading-none">
             Link de invitación
           </span>
         </div>
 
-        {/* Título principal en 2 líneas, blanco puro display */}
-        <h1 className="text-[42px] sm:text-[46px] font-black leading-[1.0] tracking-tight text-white">
-          ¡Felicidades<br />
-          por este gran paso!
+        {/* Título Display grande e impactante */}
+        <h1 className="text-[44px] sm:text-[48px] font-bold text-white leading-[1.0] tracking-tight">
+          ¡Felicidades<br />por este gran paso!
         </h1>
 
-        {/* Bienvenida */}
-        <p className="text-lg text-white mt-3.5">
+        {/* Bienvenida personalizada con nombre del complejo en negrita */}
+        <p className="text-lg sm:text-[19px] text-white mt-4 font-normal leading-snug">
           Bienvenido a Jogo, <strong className="font-bold">{displayComplexName}.</strong>
         </p>
 
-        {/* Descripción en 3 líneas exactas en blanco puro */}
-        <p className="text-xs sm:text-sm text-white font-normal leading-relaxed mt-2.5 max-w-[340px]">
-          Desde hoy, tenés una nueva herramienta que<br />
-          te facilitará el trabajo diario y te ayudará a<br />
-          tomar mejores decisiones!
+        {/* Descripción en 3 renglones en blanco puro */}
+        <p className="text-[13px] sm:text-sm text-white font-normal leading-relaxed mt-2.5 max-w-[340px]">
+          Desde hoy, tenés una nueva herramienta que te facilitará el trabajo diario y te ayudará a tomar mejores decisiones!
         </p>
       </div>
 
-      {/* 5. PANEL BLANCO INFERIOR (ESQUINAS DE 50px) */}
-      <div 
-        className="rounded-t-[50px] bg-white !bg-white w-full pt-8 pb-6 px-7 sm:px-8 max-w-[460px] mx-auto relative z-20 shadow-none text-left"
-        style={{ backgroundColor: '#ffffff' }}
-      >
-        {/* Título y subtítulo */}
-        <h2 className="text-[#4B5563] text-xl font-bold text-left leading-snug">
-          Es sencillo...
-        </h2>
-        <p className="text-xs text-[#9CA3AF] text-left mt-1 whitespace-nowrap overflow-hidden text-ellipsis">
-          Ingresá tu correo electrónico para continuar
-        </p>
-
-        {/* Banner de error */}
-        {claimError && (
-          <div className="mt-3.5 w-full p-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs flex items-center gap-2 text-left">
-            <AlertCircle size={15} className="shrink-0 text-red-500" />
-            <span className="flex-1 font-medium">{claimError}</span>
+      {/* 4. PANEL BLANCO INFERIOR (ESQUINAS DE 50px) */}
+      <div className="relative z-20 w-full bg-white rounded-t-[50px] sm:rounded-t-[55px] pt-7 sm:pt-8 px-7 sm:px-8 pb-6 shadow-[0_-10px_35px_rgba(0,0,0,0.06)]">
+        <div className="w-full max-w-md mx-auto space-y-4">
+          
+          {/* Título en gris oscuro y subtítulo en una sola línea */}
+          <div>
+            <h2 className="text-xl sm:text-2xl font-bold text-[#4B5563] tracking-tight">
+              Es sencillo...
+            </h2>
+            <p className="text-xs sm:text-[13px] text-[#9CA3AF] font-normal mt-1 whitespace-nowrap">
+              Ingresá tu correo electrónico para continuar
+            </p>
           </div>
-        )}
 
-        {/* Banner de éxito */}
-        {claimSuccess && (
-          <div className="mt-3.5 w-full p-3.5 bg-emerald-50 border border-[#019F3A]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-2.5 text-left">
-            <CheckCircle2 size={20} className="text-[#019F3A] shrink-0" />
-            <div>
-              <p className="font-bold text-xs">¡Complejo vinculado con éxito!</p>
-              <p className="text-[10.5px] text-emerald-700 mt-0.5">
-                Entrando al panel de administración...
-              </p>
+          {claimError && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs flex items-center gap-2">
+              <AlertCircle size={15} className="shrink-0 text-red-500" />
+              <span>{claimError}</span>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Botón de Google tipo píldora */}
-        {!claimSuccess && (
-          <div className="w-full mt-4">
-            <button
-              type="button"
-              disabled={isProcessing}
-              onClick={handleAction}
-              style={{ backgroundColor: '#ffffff' }}
-              className="rounded-full py-3.5 border border-gray-200/90 hover:bg-gray-50 flex items-center justify-center gap-3 w-full cursor-pointer transition-all active:scale-[0.99] disabled:opacity-50 !bg-white"
-            >
-              {isProcessing ? (
-                <>
-                  <Loader2 size={18} className="animate-spin text-gray-500" />
-                  <span className="text-sm font-semibold text-gray-700">
-                    {isSigningIn ? 'Iniciando sesión...' : 'Vinculando complejo...'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <GoogleIcon />
-                  <span className="text-sm text-gray-800 font-normal">
-                    Inicia sesión con <strong className="font-bold text-gray-800">Google</strong>
-                  </span>
-                </>
-              )}
-            </button>
-
-            {user && (
-              <div className="mt-2 flex items-center justify-between px-2 text-[11px] text-[#888888]">
-                <span className="truncate max-w-[210px] sm:max-w-[250px]">
-                  Sesión: <strong className="text-[#555555]">{user.email}</strong>
-                </span>
-                <button
-                  type="button"
-                  onClick={logout}
-                  className="text-[#019F3A] hover:underline cursor-pointer shrink-0 ml-2"
-                >
-                  Cambiar cuenta
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Aviso legal al pie: 3 líneas en gris claro y links en turquesa #249F87 sin cursiva */}
-        <div className="mt-4 text-center text-[10.5px] leading-relaxed text-[#A0A0A0]">
-          <p>
-            Al continuar, tu cuenta de Google quedará<br />
-            vinculada con <strong className="font-bold text-[#6B7280]">{displayComplexName}</strong> y aceptas nuestros<br />
-            <a 
-              href="#terminos" 
-              onClick={(e) => { e.preventDefault(); setLegalModal('terms'); }}
-              className="font-semibold text-[#249F87] hover:underline cursor-pointer"
-            >
-              Términos y Condiciones
-            </a>
-            {' '}y{' '}
-            <a 
-              href="#privacidad" 
-              onClick={(e) => { e.preventDefault(); setLegalModal('privacy'); }}
-              className="font-semibold text-[#249F87] hover:underline cursor-pointer"
-            >
-              Políticas de Privacidad
-            </a>
-          </p>
-        </div>
-      </div>
-
-      {/* Modal interactivo de Términos / Privacidad */}
-      {legalModal && (
-        <div 
-          className="fixed inset-0 z-50 !bg-white flex flex-col p-6 overflow-y-auto"
-          style={{ backgroundColor: '#ffffff' }}
-        >
+          {/* Botón de Google redondeado tipo píldora con tipografía mixta */}
           <button
             type="button"
-            onClick={() => setLegalModal(null)}
-            className="absolute top-6 left-6 text-gray-800 p-1 cursor-pointer hover:opacity-75 transition-opacity"
-            aria-label="Volver"
+            disabled={isProcessing}
+            onClick={handleAction}
+            className="w-full h-13 sm:h-14 py-3.5 px-5 bg-white hover:bg-gray-50 active:scale-[0.99] border border-gray-200 rounded-full flex items-center justify-center gap-3 transition-all cursor-pointer shadow-xs disabled:opacity-50"
           >
-            <ArrowLeft size={24} strokeWidth={2.2} />
+            {isProcessing ? (
+              <div className="flex items-center gap-2 text-xs font-semibold text-gray-600">
+                <Loader2 size={18} className="animate-spin text-[#0BA70B]" />
+                <span>{isSigningIn ? 'Iniciando sesión...' : 'Vinculando complejo...'}</span>
+              </div>
+            ) : (
+              <>
+                <GoogleIcon />
+                <span className="text-sm sm:text-base font-normal text-gray-800">
+                  Inicia sesión con <strong className="font-bold text-gray-900">Google</strong>
+                </span>
+              </>
+            )}
           </button>
-          <div className="pt-16 max-w-lg mx-auto w-full text-left">
-            <h3 className="text-xl font-bold text-gray-900 mb-4">
-              {legalModal === 'terms' ? 'Términos y Condiciones' : 'Políticas de Privacidad'}
-            </h3>
-            <div className="text-sm text-gray-600 leading-relaxed space-y-3">
-              <p>
-                {legalModal === 'terms'
-                  ? 'Al utilizar la plataforma Jogo para complejos deportivos, usted acepta cumplir con los términos de servicio, confidencialidad y condiciones de administración del complejo.'
-                  : 'Jogo se compromete a proteger la privacidad y seguridad de sus datos y los de su complejo deportivo, utilizándolos exclusivamente para la gestión operativa y administrativa.'}
-              </p>
-            </div>
+
+          {/* Aviso legal en gris claro y enlaces en verde agua suave #249F87 (sin cursiva) */}
+          <div className="pt-1 text-center">
+            <p className="text-[10.5px] sm:text-[11px] text-[#A0A0A0] leading-tight">
+              Al continuar, tu cuenta de Google quedará<br />
+              vinculada con <strong className="font-bold text-[#6B7280]">{displayComplexName}</strong> y aceptas nuestros<br />
+              <a 
+                href="#" 
+                onClick={(e) => e.preventDefault()} 
+                className="font-semibold text-[#249F87] hover:underline"
+              >
+                Términos y Condiciones
+              </a>
+              {' '}y{' '}
+              <a 
+                href="#" 
+                onClick={(e) => e.preventDefault()} 
+                className="font-semibold text-[#249F87] hover:underline"
+              >
+                Políticas de Privacidad
+              </a>
+            </p>
           </div>
+
         </div>
-      )}
+      </div>
+
     </div>
   );
 };
