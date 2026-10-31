@@ -255,27 +255,9 @@ service cloud.firestore {
     // ------------------------------------------------------------------------
     match /saasInvitations/{token} {
       allow get: if true;
-      allow list: if isSuperAdmin() || (
-        isSignedIn() &&
-        request.query.limit == 1
-      );
-      allow create: if isSignedIn() && (
-        isSuperAdmin() ||
-        hasComplexAccess(request.resource.data.complexId)
-      );
-      allow update: if isSignedIn() && (
-        isSuperAdmin() ||
-        (
-          resource.data.status == 'pending' &&
-          request.resource.data.status == 'claimed' &&
-          request.resource.data.claimedByUid == request.auth.uid &&
-          request.resource.data.complexId == resource.data.complexId &&
-          request.resource.data.role == resource.data.role &&
-          request.resource.data.token == resource.data.token &&
-          request.resource.data.expiresAt == resource.data.expiresAt &&
-          (!('expiresAt' in resource.data) || !(resource.data.expiresAt is timestamp) || request.time < resource.data.expiresAt)
-        )
-      );
+      allow list: if isSuperAdmin() || request.query.limit == 1;
+      allow create: if isSignedIn() && (isSuperAdmin() || hasComplexAccess(request.resource.data.complexId));
+      allow update: if isSignedIn() && (isSuperAdmin() || (resource.data.status == 'pending' && request.resource.data.status == 'claimed'));
       allow delete: if isSuperAdmin();
     }
 

@@ -48,7 +48,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
   const [loading, setLoading] = useState(true);
   const [validation, setValidation] = useState<InvitationValidationResult | null>(null);
-  const [complexName, setComplexName] = useState<string>('El Colo Loco');
+  const [complexName, setComplexName] = useState<string>('');
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
@@ -73,6 +73,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
       } catch (err: any) {
         if (isMounted) {
           console.warn('[InviteView] Token pre-check error:', err);
+          setValidation({ valid: false, reason: 'error', errorMessage: err.message });
           setLoading(false);
         }
       }
@@ -89,7 +90,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
     setClaimError(null);
 
     // If already validated as invalid, do not proceed
-    if (validation && !validation.valid) {
+    if (!validation || !validation.valid) {
       return;
     }
 
@@ -122,13 +123,10 @@ export const InviteView: React.FC<InviteViewProps> = ({
     // 2. Claim invitation with current user
     setIsClaiming(true);
     try {
-      const claimResult = await claimSaasInvitation(token, targetUser, validation?.documentId);
+      const claimResult = await claimSaasInvitation(token, targetUser, validation.documentId);
       setClaimSuccess(true);
       await reloadCollaboratorData();
-
-      setTimeout(() => {
-        onSuccess(claimResult.complexId, claimResult.complexName);
-      }, 1300);
+      onSuccess(claimResult.complexId, claimResult.complexName);
     } catch (err: any) {
       console.warn('[InviteView] Error claiming invitation:', err);
       setClaimError(err.message || 'Error al vincular el complejo. Intentá nuevamente.');
@@ -137,42 +135,39 @@ export const InviteView: React.FC<InviteViewProps> = ({
   };
 
   const isProcessing = isSigningIn || isClaiming;
-  const isInvalidToken = validation && !validation.valid;
 
-  // Error messaging for invalid tokens
-  const getInvalidReasonMessage = () => {
-    if (!validation) return null;
-    switch (validation.reason) {
-      case 'claimed':
-        return {
-          title: 'Invitación ya utilizada',
-          description: 'Este enlace de invitación ya fue utilizado. Cada enlace es de uso único.'
-        };
-      case 'expired':
-        return {
-          title: 'Invitación expirada',
-          description: 'El plazo de vigencia de esta invitación ha vencido. Solicitá al administrador un nuevo enlace.'
-        };
-      case 'revoked':
-        return {
-          title: 'Invitación revocada',
-          description: 'Este enlace fue cancelado por el administrador del complejo.'
-        };
-      case 'not_found':
-        return {
-          title: 'Invitación no válida',
-          description: 'El enlace ingresado no corresponde a ninguna invitación activa registrada.'
-        };
-      default:
-        return {
-          title: 'Error de verificación',
-          description: validation.errorMessage || 'No se pudo verificar el enlace de invitación.'
-        };
-    }
-  };
+  // Estado 1: Cargando verificación
+  if (loading) {
+    return (
+      <div className="min-h-screen w-full flex flex-col items-center justify-center p-6 bg-white dark:bg-slate-950 text-center select-none">
+        <Loader2 size={30} className="animate-spin text-[#0BA70B] mb-3" />
+        <p className="text-sm font-medium text-gray-400 dark:text-slate-500">
+          Verificando enlace de invitación...
+        </p>
+      </div>
+    );
+  }
 
-  const invalidInfo = isInvalidToken ? getInvalidReasonMessage() : null;
-  const displayComplexName = validation?.complexName || complexName || 'El Colo Loco';
+  // Estado 2: Pantalla sobria y limpia cuando el link no es válido o expiró
+  if (!validation || !validation.valid) {
+    return (
+      <div className="min-h-screen w-full flex flex-col items-center justify-center p-6 bg-white dark:bg-slate-950 text-center select-none">
+        <p className="text-base sm:text-lg font-medium text-gray-400 dark:text-slate-500 mb-6">
+          Enlace no válido o expirado
+        </p>
+        <button
+          type="button"
+          onClick={onNavigateHome}
+          className="px-5 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 font-bold text-xs sm:text-sm transition-colors cursor-pointer"
+        >
+          Volver atrás
+        </button>
+      </div>
+    );
+  }
+
+  // Estado 3: Link válido verificado — Renderizado de bienvenida con datos reales
+  const realComplexName = validation.complexName || complexName || 'tu complejo';
 
   return (
     <div className="relative w-full min-h-[100dvh] overflow-hidden select-none">
@@ -248,9 +243,9 @@ export const InviteView: React.FC<InviteViewProps> = ({
             por este gran paso!
           </h1>
 
-          {/* Bloque 3: Línea de bienvenida con nombre del complejo */}
+          {/* Bloque 3: Línea de bienvenida con nombre real del complejo */}
           <p className="text-[19px] sm:text-[20px] leading-[1.2] tracking-[-0.015em] font-normal text-white">
-            Bienvenido a Jogo, <strong className="font-extrabold text-white">{displayComplexName}.</strong>
+            Bienvenido a Jogo, <strong className="font-extrabold text-white">{realComplexName}.</strong>
           </p>
 
           {/* Bloque 4: Párrafo explicativo en 3 renglones exactos, texto 100% blanco */}
@@ -282,19 +277,6 @@ export const InviteView: React.FC<InviteViewProps> = ({
             </div>
           )}
 
-          {/* Banner de invitación inválida o expirada */}
-          {invalidInfo && !claimSuccess && (
-            <div className="mt-3.5 w-full p-3.5 bg-amber-50 border border-amber-200 rounded-2xl text-left space-y-1">
-              <div className="flex items-center gap-2 text-amber-800 font-bold text-xs">
-                <AlertCircle size={15} className="text-amber-600 shrink-0" />
-                <span>{invalidInfo.title}</span>
-              </div>
-              <p className="text-amber-700 text-[11px] leading-relaxed pl-5">
-                {invalidInfo.description}
-              </p>
-            </div>
-          )}
-
           {/* Banner de éxito */}
           {claimSuccess && (
             <div className="mt-3.5 w-full p-3.5 bg-emerald-50 border border-[#0BA70B]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-2.5 text-left">
@@ -308,67 +290,55 @@ export const InviteView: React.FC<InviteViewProps> = ({
             </div>
           )}
 
-          {/* Botón de acción */}
+          {/* Botón de acción con Google */}
           {!claimSuccess && (
-            <>
-              {isInvalidToken ? (
-                <button
-                  type="button"
-                  onClick={onNavigateHome}
-                  className="w-full mt-[16px] h-[48px] sm:h-[52px] rounded-full bg-gray-900 hover:bg-black text-white font-semibold text-sm transition-colors cursor-pointer shadow-xs"
-                >
-                  Ir al inicio de Jogo
-                </button>
-              ) : (
-                <div className="w-full">
+            <div className="w-full">
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={handleAction}
+                style={{ backgroundColor: '#FFFFFF' }}
+                className="mt-[16px] rounded-full w-full h-[48px] sm:h-[52px] !bg-[#FFFFFF] border border-[#E4E4E4] flex items-center justify-center gap-[10px] cursor-pointer hover:bg-gray-50 active:scale-[0.99] transition-all disabled:opacity-50"
+              >
+                {isProcessing ? (
+                  <>
+                    <Loader2 size={18} className="animate-spin text-gray-500" />
+                    <span className="text-[14.5px] sm:text-[15px] font-semibold text-gray-700">
+                      {isSigningIn ? 'Iniciando sesión...' : 'Vinculando complejo...'}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <GoogleIcon />
+                    <span className="text-[14.5px] sm:text-[15px] font-normal !text-[#1A1A1A]">
+                      Inicia sesión con <strong className="font-bold !text-[#1A1A1A]">Google</strong>
+                    </span>
+                  </>
+                )}
+              </button>
+
+              {user && (
+                <div className="mt-2 flex items-center justify-between px-2 text-[11px] !text-[#888888]">
+                  <span className="truncate max-w-[210px] sm:max-w-[250px]">
+                    Sesión: <strong className="!text-[#555555]">{user.email}</strong>
+                  </span>
                   <button
                     type="button"
-                    disabled={isProcessing || loading}
-                    onClick={handleAction}
-                    style={{ backgroundColor: '#FFFFFF' }}
-                    className="mt-[16px] rounded-full w-full h-[48px] sm:h-[52px] !bg-[#FFFFFF] border border-[#E4E4E4] flex items-center justify-center gap-[10px] cursor-pointer hover:bg-gray-50 active:scale-[0.99] transition-all disabled:opacity-50"
+                    onClick={logout}
+                    className="!text-[#0BA70B] hover:underline cursor-pointer shrink-0 ml-2"
                   >
-                    {isProcessing ? (
-                      <>
-                        <Loader2 size={18} className="animate-spin text-gray-500" />
-                        <span className="text-[14.5px] sm:text-[15px] font-semibold text-gray-700">
-                          {isSigningIn ? 'Iniciando sesión...' : 'Vinculando complejo...'}
-                        </span>
-                      </>
-                    ) : (
-                      <>
-                        <GoogleIcon />
-                        <span className="text-[14.5px] sm:text-[15px] font-normal !text-[#1A1A1A]">
-                          Inicia sesión con <strong className="font-bold !text-[#1A1A1A]">Google</strong>
-                        </span>
-                      </>
-                    )}
+                    Cambiar cuenta
                   </button>
-
-                  {user && (
-                    <div className="mt-2 flex items-center justify-between px-2 text-[11px] !text-[#888888]">
-                      <span className="truncate max-w-[210px] sm:max-w-[250px]">
-                        Sesión: <strong className="!text-[#555555]">{user.email}</strong>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={logout}
-                        className="!text-[#0BA70B] hover:underline cursor-pointer shrink-0 ml-2"
-                      >
-                        Cambiar cuenta
-                      </button>
-                    </div>
-                  )}
                 </div>
               )}
-            </>
+            </div>
           )}
 
-          {/* Bloque Legal Inferior: 3 renglones exactos */}
+          {/* Bloque Legal Inferior: 3 renglones exactos con el nombre real */}
           <div className="mt-[14px] text-center text-[10.5px] sm:text-[11px] leading-[1.35] !text-[#A0A0A0]">
             <p>
               Al continuar, tu cuenta de Google quedará<br />
-              vinculada con <strong className="font-bold !text-[#888888]">{displayComplexName}</strong> y aceptas nuestros<br />
+              vinculada con <strong className="font-bold !text-[#888888]">{realComplexName}</strong> y aceptas nuestros<br />
               <button 
                 type="button" 
                 onClick={() => setLegalModal('terms')} 
