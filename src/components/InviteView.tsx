@@ -1,15 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Building2, 
-  ShieldCheck, 
+  ArrowLeft, 
+  Link2, 
   AlertCircle, 
   CheckCircle2, 
-  Loader2, 
-  ArrowRight, 
-  Lock, 
-  LogOut,
-  Calendar,
-  Sparkles
+  Loader2 
 } from 'lucide-react';
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
@@ -23,312 +18,324 @@ interface InviteViewProps {
   isDarkMode?: boolean;
 }
 
+const GoogleIcon = () => (
+  <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
+    <path
+      fill="#4285F4"
+      d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+    />
+    <path
+      fill="#34A853"
+      d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+    />
+    <path
+      fill="#FBBC05"
+      d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+    />
+    <path
+      fill="#EA4335"
+      d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+    />
+  </svg>
+);
+
 export const InviteView: React.FC<InviteViewProps> = ({
   token,
   onSuccess,
-  onNavigateHome,
-  isDarkMode
+  onNavigateHome
 }) => {
   const { user, reloadCollaboratorData, logout } = useFirebase();
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [validation, setValidation] = useState<InvitationValidationResult | null>(null);
+  const [complexName, setComplexName] = useState<string>('tu complejo');
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
   const [claimSuccess, setClaimSuccess] = useState<boolean>(false);
 
-  // REQUIREMENT 3: Only execute validateSaasInvitation once the user is authenticated!
+  // Validate invitation token and fetch complex name on load
   useEffect(() => {
-    if (!user) {
-      setLoading(false);
-      setValidation(null);
-      return;
-    }
-
     let isMounted = true;
     const checkToken = async () => {
       setLoading(true);
       setClaimError(null);
-      const res = await validateSaasInvitation(token);
-      if (isMounted) {
-        setValidation(res);
-        setLoading(false);
+      try {
+        const res = await validateSaasInvitation(token);
+        if (isMounted) {
+          setValidation(res);
+          if (res.complexName) {
+            setComplexName(res.complexName);
+          }
+          setLoading(false);
+        }
+      } catch (err: any) {
+        if (isMounted) {
+          console.warn('[InviteView] Token pre-check error:', err);
+          setLoading(false);
+        }
       }
     };
+
     checkToken();
     return () => {
       isMounted = false;
     };
-  }, [token, user]);
+  }, [token]);
 
-  const handleGoogleSignIn = async () => {
-    setIsSigningIn(true);
+  // Handle Google Login & Claim flow
+  const handleAction = async () => {
     setClaimError(null);
-    try {
-      googleProvider.setCustomParameters({
-        prompt: 'select_account'
-      });
-      await signInWithPopup(auth, googleProvider);
-    } catch (err: any) {
-      console.warn('[InviteView] Login popup error:', err);
-      setClaimError('No se pudo completar el inicio de sesión con Google.');
-    } finally {
-      setIsSigningIn(false);
-    }
-  };
 
-  const handleClaim = async () => {
-    const currentUser = auth.currentUser || user;
-    if (!currentUser) {
-      await handleGoogleSignIn();
+    // If already validated as invalid, do not proceed
+    if (validation && !validation.valid) {
       return;
     }
 
+    let targetUser = auth.currentUser || user;
+
+    // 1. If not authenticated, initiate Google popup sign-in
+    if (!targetUser) {
+      setIsSigningIn(true);
+      try {
+        googleProvider.setCustomParameters({
+          prompt: 'select_account'
+        });
+        const cred = await signInWithPopup(auth, googleProvider);
+        targetUser = cred.user;
+      } catch (err: any) {
+        setIsSigningIn(false);
+        if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+          setClaimError('El inicio de sesión con Google fue cancelado.');
+        } else {
+          setClaimError('No se pudo completar el inicio de sesión con Google.');
+        }
+        return;
+      } finally {
+        setIsSigningIn(false);
+      }
+    }
+
+    if (!targetUser) return;
+
+    // 2. Claim invitation with current user
     setIsClaiming(true);
-    setClaimError(null);
-
     try {
-      // Execute atomic claim in Firestore passing the resolved documentId
-      const claimResult = await claimSaasInvitation(token, currentUser, validation?.documentId);
-
+      const claimResult = await claimSaasInvitation(token, targetUser, validation?.documentId);
       setClaimSuccess(true);
       await reloadCollaboratorData();
 
       setTimeout(() => {
         onSuccess(claimResult.complexId, claimResult.complexName);
-      }, 1200);
-
+      }, 1300);
     } catch (err: any) {
       console.warn('[InviteView] Error claiming invitation:', err);
-      setClaimError(err.message || 'Error al reclamar la invitación. Reintentá nuevamente.');
+      setClaimError(err.message || 'Error al vincular el complejo. Intentá nuevamente.');
       setIsClaiming(false);
     }
   };
 
-  return (
-    <div className="min-h-screen w-full bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col justify-between selection:bg-emerald-500 selection:text-white transition-colors duration-200">
-      {/* Top Navbar */}
-      <header className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-600 to-[#0BA70B] flex items-center justify-center shadow-lg shadow-emerald-500/25">
-            <span className="text-white font-black text-xl tracking-tighter">J</span>
-          </div>
-          <div>
-            <span className="font-extrabold text-xl tracking-tight text-slate-900 dark:text-white">JOGO</span>
-            <span className="ml-1.5 text-[10px] uppercase font-bold tracking-widest px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400">SaaS</span>
-          </div>
-        </div>
+  const isProcessing = isSigningIn || isClaiming;
+  const isInvalidToken = validation && !validation.valid;
 
-        {user && (
+  // Error messaging for invalid tokens
+  const getInvalidReasonMessage = () => {
+    if (!validation) return null;
+    switch (validation.reason) {
+      case 'claimed':
+        return {
+          title: 'Invitación ya utilizada',
+          description: 'Este enlace de invitación ya fue utilizado. Cada enlace es de uso único.'
+        };
+      case 'expired':
+        return {
+          title: 'Invitación expirada',
+          description: 'El plazo de vigencia de esta invitación ha vencido. Solicitá al administrador un nuevo enlace.'
+        };
+      case 'revoked':
+        return {
+          title: 'Invitación revocada',
+          description: 'Este enlace fue cancelado por el administrador del complejo.'
+        };
+      case 'not_found':
+        return {
+          title: 'Invitación no válida',
+          description: 'El enlace ingresado no corresponde a ninguna invitación activa registrada.'
+        };
+      default:
+        return {
+          title: 'Error de verificación',
+          description: validation.errorMessage || 'No se pudo verificar el enlace de invitación.'
+        };
+    }
+  };
+
+  const invalidInfo = isInvalidToken ? getInvalidReasonMessage() : null;
+
+  return (
+    <div className="min-h-[100dvh] w-full relative flex flex-col justify-between overflow-x-hidden bg-[#0BA70B] select-none">
+      {/* Capa de Imagen de Césped con Filtro y Difuminado Inferior */}
+      <div className="absolute top-0 left-0 right-0 h-[68%] sm:h-[72%] overflow-hidden pointer-events-none">
+        <img
+          src="/assets/turf-bg.jpg"
+          alt="Césped sintético"
+          className="object-cover w-full h-full absolute top-0 left-0 right-0"
+        />
+        <div className="absolute inset-0 bg-[#0BA70B]/75 mix-blend-multiply" />
+        <div className="absolute bottom-0 left-0 right-0 h-40 bg-gradient-to-b from-transparent to-[#0BA70B]" />
+      </div>
+
+      {/* Zona Verde Superior */}
+      <div className="relative z-10 px-6 pt-6 sm:pt-8 pb-4 flex-1 flex flex-col justify-between max-w-lg mx-auto w-full">
+        {/* Fila Superior */}
+        <div className="flex items-center justify-between w-full">
           <button
             type="button"
-            onClick={logout}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs transition-colors cursor-pointer"
+            onClick={onNavigateHome}
+            aria-label="Volver"
+            className="w-10 h-10 flex items-center justify-center text-white hover:opacity-80 transition-opacity cursor-pointer -ml-2 rounded-full active:bg-white/10"
           >
-            <LogOut size={14} />
-            <span>Cerrar sesión ({user.email?.split('@')[0]})</span>
+            <ArrowLeft size={24} />
           </button>
+
+          <img
+            src="/logo-white.png"
+            alt="Jogo"
+            className="h-7 object-contain mx-auto"
+          />
+
+          <div className="w-10" />
+        </div>
+
+        {/* Bloque de Mensaje de Invitación */}
+        <div className="my-auto py-8 sm:py-10">
+          <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white text-[#0BA70B] text-xs font-bold shadow-xs w-fit mb-4">
+            <Link2 size={13} className="shrink-0" />
+            <span>Link de invitación</span>
+          </div>
+
+          <h1 className="text-3xl sm:text-4xl font-black text-white leading-tight tracking-tight whitespace-pre-line">
+            Felicidades{'\n'}por este gran paso!
+          </h1>
+
+          <p className="text-white/95 text-base sm:text-lg font-medium mt-3">
+            Bienvenido a Jogo, <strong className="font-bold">{complexName}</strong>.
+          </p>
+
+          <p className="text-white/80 text-sm mt-2 leading-relaxed">
+            Fuiste invitado a ser el administrador de este complejo. Podrás gestionar turnos, canchas, cobros y mucho más de forma simple y ágil.
+          </p>
+        </div>
+      </div>
+
+      {/* Tarjeta Inferior Blanca (Acciones) */}
+      <div className="bg-white rounded-t-[36px] w-full p-6 sm:p-8 space-y-5 shadow-2xl max-w-lg mx-auto relative z-10">
+        <div className="space-y-1">
+          <h2 className="text-xl font-black text-gray-900 tracking-tight">
+            Es sencillo...
+          </h2>
+          <p className="text-gray-500 text-sm leading-snug">
+            Solo tenés que iniciar sesión con tu cuenta de Google para vincular tu complejo.
+          </p>
+        </div>
+
+        {/* Error de reclamo o popup */}
+        {claimError && (
+          <div className="p-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs flex items-center gap-2 text-left">
+            <AlertCircle size={16} className="shrink-0" />
+            <span className="flex-1 font-medium">{claimError}</span>
+          </div>
         )}
-      </header>
 
-      {/* Main Content */}
-      <main className="w-full max-w-lg mx-auto px-4 py-8 flex-1 flex flex-col items-center justify-center">
-        <div className="w-full bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-xl shadow-slate-200/50 dark:shadow-black/40 p-6 sm:p-8 text-center space-y-6">
+        {/* Mensaje de invitación inválida o expirada */}
+        {invalidInfo && !claimSuccess && (
+          <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl text-left space-y-1">
+            <div className="flex items-center gap-2 text-amber-800 font-bold text-xs">
+              <AlertCircle size={16} className="text-amber-600 shrink-0" />
+              <span>{invalidInfo.title}</span>
+            </div>
+            <p className="text-amber-700 text-xs leading-relaxed pl-6">
+              {invalidInfo.description}
+            </p>
+          </div>
+        )}
 
-          {/* STATE: Prompt Google Sign-In first */}
-          {!user && (
-            <div className="py-4 space-y-6">
-              <div className="w-16 h-16 rounded-3xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto shadow-inner">
-                <ShieldCheck size={32} />
-              </div>
+        {/* Banner de éxito */}
+        {claimSuccess && (
+          <div className="p-4 bg-emerald-50 border border-[#0BA70B]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-3 text-left">
+            <CheckCircle2 size={24} className="text-[#0BA70B] shrink-0" />
+            <div>
+              <p className="font-bold text-sm">¡Complejo vinculado con éxito!</p>
+              <p className="text-[11px] text-emerald-700 mt-0.5">
+                Entrando al panel de administración...
+              </p>
+            </div>
+          </div>
+        )}
 
-              <div className="space-y-2">
-                <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-                  Invitación a Jogo SaaS
-                </h2>
-                <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed">
-                  Para acceder a esta invitación y validar tus permisos, por favor continuá con tu cuenta de Google.
-                </p>
-              </div>
-
-              {claimError && (
-                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 rounded-xl text-red-600 dark:text-red-400 text-xs flex items-center gap-2 text-left">
-                  <AlertCircle size={15} className="shrink-0" />
-                  <span className="flex-1">{claimError}</span>
-                </div>
-              )}
-
-              <div className="pt-2">
+        {/* Acciones principales */}
+        {!claimSuccess && (
+          <>
+            {isInvalidToken ? (
+              <button
+                type="button"
+                onClick={onNavigateHome}
+                className="w-full py-3 px-4 rounded-full bg-gray-900 hover:bg-black text-white font-semibold text-sm transition-colors cursor-pointer shadow-xs"
+              >
+                Ir al inicio de Jogo
+              </button>
+            ) : (
+              <div className="space-y-3">
                 <button
                   type="button"
-                  disabled={isSigningIn}
-                  onClick={handleGoogleSignIn}
-                  className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-bold rounded-2xl text-xs sm:text-sm shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-50"
+                  disabled={isProcessing || loading}
+                  onClick={handleAction}
+                  className="w-full py-2.5 px-4 rounded-full border border-gray-200 hover:bg-gray-50 active:scale-[0.99] flex items-center justify-center gap-3 transition-colors cursor-pointer shadow-xs disabled:opacity-50"
                 >
-                  {isSigningIn ? (
+                  {isProcessing ? (
                     <>
-                      <Loader2 size={16} className="animate-spin" />
-                      <span>Conectando con Google...</span>
+                      <Loader2 size={18} className="animate-spin text-gray-500" />
+                      <span className="text-gray-700 font-semibold text-sm">
+                        {isSigningIn ? 'Iniciando sesión...' : 'Vinculando complejo...'}
+                      </span>
                     </>
                   ) : (
                     <>
-                      <span>Continuar con Google</span>
-                      <ArrowRight size={16} />
+                      <GoogleIcon />
+                      <span className="text-gray-700 font-semibold text-sm">
+                        Inicia sesión con Google
+                      </span>
                     </>
                   )}
                 </button>
-              </div>
-            </div>
-          )}
 
-          {/* STATE: Loading */}
-          {user && loading && (
-            <div className="py-8 space-y-4">
-              <Loader2 className="w-10 h-10 text-emerald-500 animate-spin mx-auto" />
-              <p className="text-sm font-semibold text-slate-600 dark:text-slate-400">
-                Verificando enlace de invitación...
-              </p>
-            </div>
-          )}
-
-          {/* STATE: Invalid / Error / Expired / Claimed */}
-          {user && !loading && validation && !validation.valid && (
-            <div className="py-4 space-y-6">
-              <div className="w-16 h-16 rounded-3xl bg-red-500/10 border border-red-500/20 text-red-500 flex items-center justify-center mx-auto shadow-inner">
-                <AlertCircle size={32} />
-              </div>
-
-              <div className="space-y-2">
-                <h2 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-                  {validation.reason === 'claimed' && 'Invitación ya utilizada'}
-                  {validation.reason === 'expired' && 'Invitación expirada'}
-                  {validation.reason === 'revoked' && 'Invitación revocada'}
-                  {validation.reason === 'not_found' && 'Invitación no válida'}
-                  {validation.reason === 'error' && 'Error al validar invitación'}
-                </h2>
-                <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed">
-                  {validation.reason === 'claimed' && 'Este enlace de invitación ya fue reclamado por otro usuario. Las invitaciones son de uso único por seguridad.'}
-                  {validation.reason === 'expired' && 'El plazo de vigencia de esta invitación ha vencido. Solicitá al administrador que te genere una nueva invitación.'}
-                  {validation.reason === 'revoked' && 'Este enlace ha sido cancelado o revocado por el administrador del complejo.'}
-                  {validation.reason === 'not_found' && 'El enlace ingresado no corresponde a ninguna invitación activa registrada.'}
-                  {validation.reason === 'error' && (validation.errorMessage || 'Ocurrió un error al verificar los datos de la invitación.')}
-                </p>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={onNavigateHome}
-                  className="w-full py-3 px-4 bg-slate-900 hover:bg-slate-800 dark:bg-slate-100 dark:hover:bg-white text-white dark:text-slate-900 font-bold rounded-2xl text-xs sm:text-sm transition-all cursor-pointer shadow-sm"
-                >
-                  Ir al inicio de Jogo
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STATE: Valid Invitation Ready to Claim */}
-          {user && !loading && validation && validation.valid && (
-            <div className="space-y-6">
-              {/* Badge */}
-              <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/50 border border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-300 text-xs font-semibold">
-                <ShieldCheck size={13} className="text-emerald-500" />
-                <span>Invitación Oficial Verificada</span>
-              </div>
-
-              {/* Title & Info */}
-              <div className="space-y-2">
-                <h1 className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white tracking-tight">
-                  Unirse a {validation.complexName || 'Complejo Deportivo'}
-                </h1>
-                <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 max-w-sm mx-auto leading-relaxed">
-                  Fuiste invitado para gestionar este complejo como operador autorizado. Vinculá tu cuenta de Google para tomar el control.
-                </p>
-              </div>
-
-              {/* Complex Card */}
-              <div className="p-4 bg-slate-50 dark:bg-slate-850 rounded-2xl border border-slate-200/80 dark:border-slate-800 flex items-center justify-between text-left">
-                <div className="flex items-center gap-3">
-                  <div className="w-11 h-11 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0">
-                    <Building2 size={20} />
+                {user && (
+                  <div className="flex items-center justify-between px-2 text-[11px] text-gray-500">
+                    <span className="truncate max-w-[200px] sm:max-w-[240px]">
+                      Sesión: <strong className="text-gray-700">{user.email}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={logout}
+                      className="text-gray-400 hover:text-gray-600 underline cursor-pointer shrink-0"
+                    >
+                      Cambiar cuenta
+                    </button>
                   </div>
-                  <div>
-                    <h4 className="font-bold text-slate-900 dark:text-white text-sm">
-                      {validation.complexName}
-                    </h4>
-                    <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                      Rol: <span className="font-semibold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide">{validation.invitation?.role || 'owner'}</span>
-                    </p>
-                  </div>
-                </div>
-
-                <span className="text-[10px] font-mono px-2 py-1 rounded-md bg-emerald-100 dark:bg-emerald-950/70 text-emerald-700 dark:text-emerald-300 font-bold">
-                  1 SOLO USO
-                </span>
+                )}
               </div>
+            )}
+          </>
+        )}
 
-              {/* Error Banner */}
-              {claimError && (
-                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/50 rounded-xl text-red-600 dark:text-red-400 text-xs flex items-center gap-2 text-left">
-                  <AlertCircle size={15} className="shrink-0" />
-                  <span className="flex-1">{claimError}</span>
-                </div>
-              )}
-
-              {/* Success Banner */}
-              {claimSuccess && (
-                <div className="p-4 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-2xl text-emerald-800 dark:text-emerald-200 text-xs flex items-center gap-3 text-left">
-                  <CheckCircle2 size={20} className="text-emerald-600 shrink-0" />
-                  <div>
-                    <p className="font-bold">¡Invitación aceptada exitosamente!</p>
-                    <p className="text-[11px] text-emerald-700 dark:text-emerald-300">
-                      Entrando al panel de control de tu complejo...
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Primary Action Button */}
-              {!claimSuccess && (
-                <div className="space-y-3 pt-1">
-                  <button
-                    type="button"
-                    disabled={isClaiming}
-                    onClick={handleClaim}
-                    className="w-full py-3.5 px-4 bg-emerald-600 hover:bg-emerald-700 active:scale-[0.99] text-white font-bold rounded-2xl text-xs sm:text-sm shadow-lg shadow-emerald-900/20 flex items-center justify-center gap-2.5 transition-all cursor-pointer disabled:opacity-50"
-                  >
-                    {isClaiming ? (
-                      <>
-                        <Loader2 size={16} className="animate-spin" />
-                        <span>Vinculando complejo a tu cuenta...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles size={16} />
-                        <span>Aceptar Invitación con Google</span>
-                        <ArrowRight size={16} />
-                      </>
-                    )}
-                  </button>
-
-                  {user && (
-                    <p className="text-[11px] text-slate-400 dark:text-slate-500">
-                      Se vinculará a la cuenta activa: <span className="font-semibold text-slate-700 dark:text-slate-300">{user.email}</span>
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-        </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="w-full text-center py-5 text-[11px] text-slate-400 dark:text-slate-600">
-        Jogo SaaS © {new Date().getFullYear()} — Plataforma de Gestión de Canchas Deportivas
-      </footer>
+        {/* Términos y condiciones */}
+        <p className="text-[11px] text-gray-400 text-center leading-tight pt-1">
+          Al continuar, aceptas nuestros{' '}
+          <span className="underline hover:text-gray-600 cursor-pointer">términos y condiciones</span>{' '}
+          y{' '}
+          <span className="underline hover:text-gray-600 cursor-pointer">políticas de privacidad</span>.
+        </p>
+      </div>
     </div>
   );
 };

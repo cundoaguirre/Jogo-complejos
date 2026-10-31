@@ -89,23 +89,29 @@ export async function validateSaasInvitation(token: string): Promise<InvitationV
   }
 
   try {
-    const q = query(
-      collection(db, 'saasInvitations'),
-      where('token', '==', cleanToken),
-      limit(1)
-    );
-    const snap = await getDocs(q);
-
-    let inviteDoc = !snap.empty ? snap.docs[0] : null;
+    let inviteDoc = null;
+    try {
+      const directDoc = await getDoc(doc(db, 'saasInvitations', cleanToken));
+      if (directDoc.exists()) {
+        inviteDoc = directDoc;
+      }
+    } catch {
+      // Fallback silently if direct get failed
+    }
 
     if (!inviteDoc) {
       try {
-        const directDoc = await getDoc(doc(db, 'saasInvitations', cleanToken));
-        if (directDoc.exists()) {
-          inviteDoc = directDoc;
+        const q = query(
+          collection(db, 'saasInvitations'),
+          where('token', '==', cleanToken),
+          limit(1)
+        );
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          inviteDoc = snap.docs[0];
         }
       } catch {
-        // Fallback silently if not found or unauthorized
+        // Fallback silently if query failed
       }
     }
 
