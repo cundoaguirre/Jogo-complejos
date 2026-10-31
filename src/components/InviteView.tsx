@@ -136,11 +136,11 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
   const isProcessing = isSigningIn || isClaiming;
 
-  // Estado 1: Cargando verificación
+  // 1. Estado de carga inicial
   if (loading) {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center p-6 bg-white dark:bg-slate-950 text-center select-none">
-        <Loader2 size={30} className="animate-spin text-[#0BA70B] mb-3" />
+      <div className="min-h-screen w-full flex flex-col items-center justify-center p-6 bg-white dark:bg-slate-950 text-center select-none font-['Plus_Jakarta_Sans',sans-serif]">
+        <Loader2 size={32} className="animate-spin text-[#019F3A] mb-3" />
         <p className="text-sm font-medium text-gray-400 dark:text-slate-500">
           Verificando enlace de invitación...
         </p>
@@ -148,62 +148,68 @@ export const InviteView: React.FC<InviteViewProps> = ({
     );
   }
 
-  // Estado 2: Pantalla sobria y limpia cuando el link no es válido o expiró
+  // 2. Pantalla sobria cuando el link no es válido o expiró
   if (!validation || !validation.valid) {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center p-6 bg-white dark:bg-slate-950 text-center select-none">
-        <p className="text-base sm:text-lg font-medium text-gray-400 dark:text-slate-500 mb-6">
-          Enlace no válido o expirado
-        </p>
-        <button
-          type="button"
-          onClick={onNavigateHome}
-          className="px-5 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-gray-700 dark:text-slate-300 font-bold text-xs sm:text-sm transition-colors cursor-pointer"
-        >
-          Volver atrás
-        </button>
-      </div>
-    );
-  }
-
-  // Estado 3: Link válido verificado — Renderizado de bienvenida con datos reales
-  const realComplexName = validation.complexName || complexName || 'tu complejo';
-
-  return (
-    <div className="relative w-full min-h-[100dvh] overflow-hidden select-none">
-      {/* CAPA 0: Fondo fotográfico de la cancha al 100% de alto y ancho (z-0) */}
-      <img
-        src="/assets/invite-turf-bg.jpg"
-        alt="Cancha de fútbol"
-        className="absolute inset-0 w-full h-full object-cover object-center opacity-100 pointer-events-none z-0"
-        onError={(e) => {
-          const target = e.currentTarget;
-          if (!target.src.includes('0be87cd4.jpg')) {
-            target.src = '/assets/aistudio/9b17478566e4541d0358a0917f54a00e_0be87cd4.jpg';
-          }
-        }}
-      />
-
-      {/* CAPA 1: Superposición verde oficial #0BA70B al 86% de opacidad (14% transparencia) (z-10) */}
-      <div 
-        className="absolute inset-0 w-full h-full pointer-events-none z-10"
-        style={{ backgroundColor: 'rgba(11, 167, 11, 0.86)' }}
-      />
-
-      {/* CAPA 2: Contenido interactivo y textos (z-20) */}
-      <div className="relative z-20 min-h-[100dvh] w-full flex flex-col justify-between overflow-x-hidden">
-        {/* Flecha de retroceso arriba a la izquierda, independiente en su propia línea */}
+      <div className="min-h-screen w-full relative flex flex-col items-center justify-center p-6 bg-white dark:bg-slate-950 text-center select-none font-['Plus_Jakarta_Sans',sans-serif]">
         <button
           type="button"
           onClick={onNavigateHome}
           aria-label="Volver"
-          className="absolute top-[22px] left-[20px] z-30 p-1 text-white hover:opacity-80 active:opacity-60 transition-opacity cursor-pointer bg-transparent border-0"
+          className="absolute top-6 left-6 p-2 text-gray-500 hover:text-gray-700 dark:text-slate-400 dark:hover:text-slate-200 transition-colors cursor-pointer"
         >
-          <ArrowLeft size={24} strokeWidth={2.2} className="text-white" />
+          <ArrowLeft size={24} />
         </button>
+        <p className="text-base font-medium text-gray-400 dark:text-slate-500">
+          Enlace no válido o expirado
+        </p>
+      </div>
+    );
+  }
 
-        {/* Zona superior: Logo oficial de Jogo en blanco (76px, centrado, debajo de la flecha) */}
-        <div className="pt-[56px] pb-[18px] flex justify-center items-center w-full">
+  // 3. Link válido verificado — Pantalla oficial con la foto y tratamiento verde #019F3A al 14%
+  const displayComplexName = validation.complexName || complexName || 'tu complejo';
+
+  return (
+    <div className="relative w-full min-h-[100dvh] overflow-hidden select-none bg-[#019F3A] flex flex-col justify-between font-['Plus_Jakarta_Sans',sans-serif]">
+      {/* 1. FOTO REAL DE FONDO Y TRATAMIENTO CON VERDE #019F3A AL 14% */}
+      <div className="absolute top-0 inset-x-0 w-full h-[72%] overflow-hidden pointer-events-none z-0">
+        <img
+          src="/assets/invite-turf-bg.jpg"
+          alt="Cancha de fútbol"
+          className="object-cover object-top w-full h-full absolute top-0 inset-x-0"
+          onError={(e) => {
+            const target = e.currentTarget;
+            if (!target.src.includes('0be87cd4.jpg')) {
+              target.src = '/assets/aistudio/9b17478566e4541d0358a0917f54a00e_0be87cd4.jpg';
+            }
+          }}
+        />
+        {/* Capa verde translúcida exacta #019F3A al 14% de opacidad real */}
+        <div 
+          className="absolute inset-0 w-full h-full pointer-events-none"
+          style={{ backgroundColor: 'rgba(1, 159, 58, 0.14)' }}
+        />
+        {/* Transición inferior difuminada suave */}
+        <div className="absolute bottom-0 inset-x-0 h-32 bg-gradient-to-b from-transparent to-[#019F3A]/25 pointer-events-none" />
+      </div>
+
+      {/* 2. ZONA SUPERIOR: FLECHA Y LOGO AL DOBLE DE TAMAÑO */}
+      <div className="relative z-20 w-full pt-6 px-6 max-w-[460px] mx-auto flex flex-col">
+        {/* Flecha volver blanca en fila independiente */}
+        <div className="w-full flex items-center justify-start">
+          <button
+            type="button"
+            onClick={onNavigateHome}
+            aria-label="Volver"
+            className="p-1 -ml-1 text-white hover:opacity-80 active:opacity-60 transition-opacity cursor-pointer bg-transparent border-0"
+          >
+            <ArrowLeft size={28} strokeWidth={2.4} className="text-white" />
+          </button>
+        </div>
+
+        {/* Logo Jogo blanco centrado, duplicado en tamaño (h-16 sm:h-20 w-auto object-contain mx-auto) */}
+        <div className="pt-2 pb-4 flex justify-center items-center w-full">
           <img
             src="/assets/aistudio/Photoroom-20261027_123311_8fbc6431.png"
             onError={(e) => {
@@ -215,160 +221,160 @@ export const InviteView: React.FC<InviteViewProps> = ({
               }
             }}
             alt="Jogo"
-            className="w-[76px] h-auto object-contain mx-auto select-none pointer-events-none drop-shadow-xs"
+            className="h-16 sm:h-20 w-auto object-contain mx-auto select-none pointer-events-none drop-shadow-sm"
           />
-        </div>
-
-        {/* Bloque Central de Textos (Alineados a la izquierda, margen simétrico, gap 16px uniforme) */}
-        <div className="my-auto px-[32px] sm:px-[36px] flex flex-col items-start text-left gap-[16px] max-w-[460px] mx-auto w-full">
-          {/* Bloque 1: Cápsula Link de invitación */}
-          <div 
-            className="h-[28px] rounded-full !bg-[#EAFBEA] pl-[3px] pr-[12px] flex items-center gap-[7px] w-fit shadow-xs"
-            style={{ backgroundColor: '#EAFBEA' }}
-          >
-            <span 
-              className="w-[22px] h-[22px] rounded-full !bg-[#0BA70B] flex items-center justify-center shrink-0"
-              style={{ backgroundColor: '#0BA70B' }}
-            >
-              <Link2 size={12} strokeWidth={2.5} className="!text-[#EAFBEA] -rotate-45" />
-            </span>
-            <span className="text-[12px] sm:text-[12.5px] font-bold !text-[#0BA70B] leading-none tracking-[-0.01em]">
-              Link de invitación
-            </span>
-          </div>
-
-          {/* Bloque 2: Gran Título en 2 renglones con interlineado ceñido */}
-          <h1 className="text-[36px] xs:text-[38px] sm:text-[42px] font-extrabold text-white leading-[1.0] tracking-[-0.03em]">
-            Felicidades<br />
-            por este gran paso!
-          </h1>
-
-          {/* Bloque 3: Línea de bienvenida con nombre real del complejo */}
-          <p className="text-[19px] sm:text-[20px] leading-[1.2] tracking-[-0.015em] font-normal text-white">
-            Bienvenido a Jogo, <strong className="font-extrabold text-white">{realComplexName}.</strong>
-          </p>
-
-          {/* Bloque 4: Párrafo explicativo en 3 renglones exactos, texto 100% blanco */}
-          <p className="text-[14px] sm:text-[15px] leading-[1.32] tracking-[-0.01em] text-white font-normal">
-            Desde hoy, tenés una nueva herramienta que<br />
-            te facilitará el trabajo diario y te ayudará a<br />
-            tomar mejores decisiones!
-          </p>
-        </div>
-
-        {/* Tarjeta Inferior Blanca (Acciones y Legal) */}
-        <div 
-          className="rounded-t-[34px] !bg-[#FFFFFF] w-full pt-[22px] pb-[18px] px-[32px] sm:px-[36px] max-w-[460px] mx-auto relative z-20 shadow-none text-left"
-          style={{ backgroundColor: '#FFFFFF' }}
-        >
-          {/* Cabecera de la tarjeta */}
-          <h2 className="text-[19px] sm:text-[20px] font-bold !text-[#707070] text-left leading-[1.15] tracking-[-0.015em]">
-            Es sencillo...
-          </h2>
-          <p className="text-[12.5px] sm:text-[13.5px] font-normal !text-[#9E9E9E] text-left mt-[2px] whitespace-nowrap leading-[1.25]">
-            Ingresá tu correo electrónico para continuar
-          </p>
-
-          {/* Banner de error de reclamo o popup */}
-          {claimError && (
-            <div className="mt-3.5 w-full p-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs flex items-center gap-2 text-left">
-              <AlertCircle size={15} className="shrink-0 text-red-500" />
-              <span className="flex-1 font-medium">{claimError}</span>
-            </div>
-          )}
-
-          {/* Banner de éxito */}
-          {claimSuccess && (
-            <div className="mt-3.5 w-full p-3.5 bg-emerald-50 border border-[#0BA70B]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-2.5 text-left">
-              <CheckCircle2 size={20} className="text-[#0BA70B] shrink-0" />
-              <div>
-                <p className="font-bold text-xs">¡Complejo vinculado con éxito!</p>
-                <p className="text-[10.5px] text-emerald-700 mt-0.5">
-                  Entrando al panel de administración...
-                </p>
-              </div>
-            </div>
-          )}
-
-          {/* Botón de acción con Google */}
-          {!claimSuccess && (
-            <div className="w-full">
-              <button
-                type="button"
-                disabled={isProcessing}
-                onClick={handleAction}
-                style={{ backgroundColor: '#FFFFFF' }}
-                className="mt-[16px] rounded-full w-full h-[48px] sm:h-[52px] !bg-[#FFFFFF] border border-[#E4E4E4] flex items-center justify-center gap-[10px] cursor-pointer hover:bg-gray-50 active:scale-[0.99] transition-all disabled:opacity-50"
-              >
-                {isProcessing ? (
-                  <>
-                    <Loader2 size={18} className="animate-spin text-gray-500" />
-                    <span className="text-[14.5px] sm:text-[15px] font-semibold text-gray-700">
-                      {isSigningIn ? 'Iniciando sesión...' : 'Vinculando complejo...'}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <GoogleIcon />
-                    <span className="text-[14.5px] sm:text-[15px] font-normal !text-[#1A1A1A]">
-                      Inicia sesión con <strong className="font-bold !text-[#1A1A1A]">Google</strong>
-                    </span>
-                  </>
-                )}
-              </button>
-
-              {user && (
-                <div className="mt-2 flex items-center justify-between px-2 text-[11px] !text-[#888888]">
-                  <span className="truncate max-w-[210px] sm:max-w-[250px]">
-                    Sesión: <strong className="!text-[#555555]">{user.email}</strong>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={logout}
-                    className="!text-[#0BA70B] hover:underline cursor-pointer shrink-0 ml-2"
-                  >
-                    Cambiar cuenta
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Bloque Legal Inferior: 3 renglones exactos con el nombre real */}
-          <div className="mt-[14px] text-center text-[10.5px] sm:text-[11px] leading-[1.35] !text-[#A0A0A0]">
-            <p>
-              Al continuar, tu cuenta de Google quedará<br />
-              vinculada con <strong className="font-bold !text-[#888888]">{realComplexName}</strong> y aceptas nuestros<br />
-              <button 
-                type="button" 
-                onClick={() => setLegalModal('terms')} 
-                className="font-bold italic !text-[#0BA70B] cursor-pointer bg-transparent border-0 p-0 inline hover:underline"
-              >
-                Términos y Condiciones
-              </button>
-              {' '}y{' '}
-              <button 
-                type="button" 
-                onClick={() => setLegalModal('privacy')} 
-                className="font-bold italic !text-[#0BA70B] cursor-pointer bg-transparent border-0 p-0 inline hover:underline"
-              >
-                Políticas de Privacidad
-              </button>
-            </p>
-          </div>
         </div>
       </div>
 
-      {/* Modal de Términos / Privacidad con botón de retroceso */}
+      {/* 3 & 4. BLOQUE CENTRAL: CÁPSULA COMPACTA, TÍTULOS Y DESCRIPCIÓN */}
+      <div className="relative z-20 my-auto px-7 sm:px-8 max-w-[460px] mx-auto w-full flex flex-col items-start text-left">
+        {/* Cápsula compacta Link de invitación */}
+        <div 
+          className="h-[26px] rounded-full bg-white !bg-white pl-0 pr-3 flex items-center gap-2 shadow-xs w-fit mb-5"
+          style={{ backgroundColor: '#ffffff' }}
+        >
+          <span 
+            className="w-[26px] h-[26px] rounded-full bg-[#019F3A] !bg-[#019F3A] flex items-center justify-center shrink-0"
+            style={{ backgroundColor: '#019F3A' }}
+          >
+            <Link2 size={13} strokeWidth={2.5} className="text-white -rotate-45" />
+          </span>
+          <span className="text-xs font-bold text-[#019F3A] tracking-tight">
+            Link de invitación
+          </span>
+        </div>
+
+        {/* Título principal en 2 líneas, blanco puro display */}
+        <h1 className="text-[42px] sm:text-[46px] font-black leading-[1.0] tracking-tight text-white">
+          ¡Felicidades<br />
+          por este gran paso!
+        </h1>
+
+        {/* Bienvenida */}
+        <p className="text-lg text-white mt-3.5">
+          Bienvenido a Jogo, <strong className="font-bold">{displayComplexName}.</strong>
+        </p>
+
+        {/* Descripción en 3 líneas exactas en blanco puro */}
+        <p className="text-xs sm:text-sm text-white font-normal leading-relaxed mt-2.5 max-w-[340px]">
+          Desde hoy, tenés una nueva herramienta que<br />
+          te facilitará el trabajo diario y te ayudará a<br />
+          tomar mejores decisiones!
+        </p>
+      </div>
+
+      {/* 5. PANEL BLANCO INFERIOR (ESQUINAS DE 50px) */}
+      <div 
+        className="rounded-t-[50px] bg-white !bg-white w-full pt-8 pb-6 px-7 sm:px-8 max-w-[460px] mx-auto relative z-20 shadow-none text-left"
+        style={{ backgroundColor: '#ffffff' }}
+      >
+        {/* Título y subtítulo */}
+        <h2 className="text-[#4B5563] text-xl font-bold text-left leading-snug">
+          Es sencillo...
+        </h2>
+        <p className="text-xs text-[#9CA3AF] text-left mt-1 whitespace-nowrap overflow-hidden text-ellipsis">
+          Ingresá tu correo electrónico para continuar
+        </p>
+
+        {/* Banner de error */}
+        {claimError && (
+          <div className="mt-3.5 w-full p-3 bg-red-50 border border-red-200 rounded-2xl text-red-600 text-xs flex items-center gap-2 text-left">
+            <AlertCircle size={15} className="shrink-0 text-red-500" />
+            <span className="flex-1 font-medium">{claimError}</span>
+          </div>
+        )}
+
+        {/* Banner de éxito */}
+        {claimSuccess && (
+          <div className="mt-3.5 w-full p-3.5 bg-emerald-50 border border-[#019F3A]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-2.5 text-left">
+            <CheckCircle2 size={20} className="text-[#019F3A] shrink-0" />
+            <div>
+              <p className="font-bold text-xs">¡Complejo vinculado con éxito!</p>
+              <p className="text-[10.5px] text-emerald-700 mt-0.5">
+                Entrando al panel de administración...
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Botón de Google tipo píldora */}
+        {!claimSuccess && (
+          <div className="w-full mt-4">
+            <button
+              type="button"
+              disabled={isProcessing}
+              onClick={handleAction}
+              style={{ backgroundColor: '#ffffff' }}
+              className="rounded-full py-3.5 border border-gray-200/90 hover:bg-gray-50 flex items-center justify-center gap-3 w-full cursor-pointer transition-all active:scale-[0.99] disabled:opacity-50 !bg-white"
+            >
+              {isProcessing ? (
+                <>
+                  <Loader2 size={18} className="animate-spin text-gray-500" />
+                  <span className="text-sm font-semibold text-gray-700">
+                    {isSigningIn ? 'Iniciando sesión...' : 'Vinculando complejo...'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <GoogleIcon />
+                  <span className="text-sm text-gray-800 font-normal">
+                    Inicia sesión con <strong className="font-bold text-gray-800">Google</strong>
+                  </span>
+                </>
+              )}
+            </button>
+
+            {user && (
+              <div className="mt-2 flex items-center justify-between px-2 text-[11px] text-[#888888]">
+                <span className="truncate max-w-[210px] sm:max-w-[250px]">
+                  Sesión: <strong className="text-[#555555]">{user.email}</strong>
+                </span>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="text-[#019F3A] hover:underline cursor-pointer shrink-0 ml-2"
+                >
+                  Cambiar cuenta
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Aviso legal al pie: 3 líneas en gris claro y links en turquesa #249F87 sin cursiva */}
+        <div className="mt-4 text-center text-[10.5px] leading-relaxed text-[#A0A0A0]">
+          <p>
+            Al continuar, tu cuenta de Google quedará<br />
+            vinculada con <strong className="font-bold text-[#6B7280]">{displayComplexName}</strong> y aceptas nuestros<br />
+            <a 
+              href="#terminos" 
+              onClick={(e) => { e.preventDefault(); setLegalModal('terms'); }}
+              className="font-semibold text-[#249F87] hover:underline cursor-pointer"
+            >
+              Términos y Condiciones
+            </a>
+            {' '}y{' '}
+            <a 
+              href="#privacidad" 
+              onClick={(e) => { e.preventDefault(); setLegalModal('privacy'); }}
+              className="font-semibold text-[#249F87] hover:underline cursor-pointer"
+            >
+              Políticas de Privacidad
+            </a>
+          </p>
+        </div>
+      </div>
+
+      {/* Modal interactivo de Términos / Privacidad */}
       {legalModal && (
         <div 
-          className="fixed inset-0 z-50 !bg-[#FFFFFF] flex flex-col p-6 overflow-y-auto"
-          style={{ backgroundColor: '#FFFFFF' }}
+          className="fixed inset-0 z-50 !bg-white flex flex-col p-6 overflow-y-auto"
+          style={{ backgroundColor: '#ffffff' }}
         >
           <button
             type="button"
             onClick={() => setLegalModal(null)}
-            className="absolute top-[22px] left-[20px] text-gray-800 p-1 cursor-pointer hover:opacity-75 transition-opacity"
+            className="absolute top-6 left-6 text-gray-800 p-1 cursor-pointer hover:opacity-75 transition-opacity"
             aria-label="Volver"
           >
             <ArrowLeft size={24} strokeWidth={2.2} />
