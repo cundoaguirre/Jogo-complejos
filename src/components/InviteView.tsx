@@ -225,7 +225,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
         </div>
 
         {/* Bloque Central de Textos (gap uniforme de 18px entre elementos y mayor separación con la tarjeta inferior) */}
-        <div className="my-auto mb-6 sm:mb-7 px-[32px] sm:px-[36px] flex flex-col items-start text-left gap-[18px] max-w-[460px] mx-auto w-full">
+        <div className="my-auto mb-[40px] px-[32px] sm:px-[36px] flex flex-col items-start text-left gap-[18px] max-w-[460px] mx-auto w-full">
           {/* Bloque 1: Cápsula Link de invitación (22px de alto total, círculo de 22px de alto total) */}
           <div 
             className="h-[22px] rounded-full !bg-[#EAFBEA] pl-0 pr-[10px] flex items-center gap-[6px] w-fit shadow-xs"
@@ -243,17 +243,14 @@ export const InviteView: React.FC<InviteViewProps> = ({
           </div>
 
           {/* Bloque 2: Título en 2 renglones */}
-          <h1 className="text-[36px] xs:text-[38px] sm:text-[42px] font-extrabold text-white leading-[1.0] tracking-[-0.03em]">
+          <h1 className="text-[37px] xs:text-[39px] sm:text-[43px] font-extrabold text-white leading-[1.0] tracking-[-0.03em]">
             Felicidades<br />
             por este gran paso!
           </h1>
 
           {/* Bloque 3: Línea de bienvenida con nombre dinámico del complejo (sin Colo Loco por defecto) */}
           <p className="text-[19px] sm:text-[20px] leading-[1.2] tracking-[-0.015em] font-normal text-white">
-            <span>Bienvenido a Jogo{displayComplexName ? ', ' : '.'}</span>
-            {displayComplexName && (
-              <span className="font-extrabold text-white">{displayComplexName}.</span>
-            )}
+            <span>Bienvenido a Jogo, </span><span className="font-extrabold text-white">{displayComplexName}.</span>
           </p>
 
           {/* Bloque 4: Párrafo explicativo */}
@@ -368,7 +365,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
           )}
 
           {/* Bloque Legal Inferior: Color original #249F87 y franja blanca inferior holgada */}
-          <div className="mt-[14px] text-center text-[10.5px] sm:text-[11px] leading-[1.35] !text-[#A0A0A0]">
+          <div className="mt-[14px] text-center text-[9.5px] sm:text-[10px] leading-[1.35] !text-[#A0A0A0]">
             <p>
               <span>Al continuar, tu cuenta de Google quedará</span><br />
               <span>vinculada con </span>
