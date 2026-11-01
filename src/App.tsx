@@ -22,6 +22,7 @@ import { useFirebase } from './components/FirebaseContext';
 import { LandingAuthView } from './components/LandingAuthView';
 import { AccessDeniedView } from './components/AccessDeniedView';
 import { InviteView } from './components/InviteView';
+import { WelcomeCelebrationModal } from './components/WelcomeCelebrationModal';
 import { BillingNoticeModal } from './components/BillingNoticeModal';
 import { PayBalanceModal } from './components/PayBalanceModal';
 import { 
@@ -11279,6 +11280,7 @@ export default function App() {
   const [showPersonalInfoModal, setShowPersonalInfoModal] = useState(false);
   const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [welcomeCelebration, setWelcomeCelebration] = useState<{ userName: string; complexName: string } | null>(null);
 
   // Unified navigation controller ensuring exact sync and widget reset
   const handleNavigate = useCallback((tabId: NavTabId | string) => {
@@ -11817,6 +11819,10 @@ export default function App() {
           setActiveTab('schedule');
           setRefreshKey(prev => prev + 1);
           setActivationSuccessBanner(`¡Bienvenido! Has tomado el control del complejo "${complexName}".`);
+          setWelcomeCelebration({
+            userName: user?.displayName || user?.email?.split('@')[0] || 'Administrador',
+            complexName: complexName || 'tu complejo'
+          });
         }}
       />
     );
@@ -12398,6 +12404,15 @@ export default function App() {
         billingConfig={billingConfig}
         complexName={activeComplejoName}
       />
+
+      {/* Modal de Bienvenida y Celebración */}
+      {welcomeCelebration && (
+        <WelcomeCelebrationModal
+          userName={welcomeCelebration.userName}
+          complexName={welcomeCelebration.complexName}
+          onClose={() => setWelcomeCelebration(null)}
+        />
+      )}
 
       {/* Mobile Bottom Navigation */}
       <BottomNav active={activeTab} onNavigate={handleNavigate} />

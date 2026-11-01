@@ -22,6 +22,7 @@ export interface BillingConfig {
   alias: string;
   cvu: string;
   whatsappNumber: string;
+  email?: string;
   updatedAt?: string;
 }
 
@@ -189,6 +190,7 @@ export const DEFAULT_BILLING_CONFIG: BillingConfig = {
   alias: '',
   cvu: '',
   whatsappNumber: SUPPORT_CONFIG.whatsappNumber || '',
+  email: SUPPORT_CONFIG.email || 'soporte@jogo.app',
 };
 
 /**
@@ -206,6 +208,7 @@ export function subscribeBillingConfig(onUpdate: (config: BillingConfig) => void
         alias: '',
         cvu: '',
         whatsappNumber: (SUPPORT_CONFIG.whatsappNumber || '').trim(),
+        email: (SUPPORT_CONFIG.email || 'soporte@jogo.app').trim(),
       });
       return;
     }
@@ -216,12 +219,15 @@ export function subscribeBillingConfig(onUpdate: (config: BillingConfig) => void
     const cvu = (data.cvu || data.cbu || '').toString().trim();
     const rawWa = (data.whatsappNumber || '').toString().trim();
     const whatsappNumber = rawWa || (SUPPORT_CONFIG.whatsappNumber || '').trim();
+    const rawEmail = (data.email || '').toString().trim();
+    const email = rawEmail || (SUPPORT_CONFIG.email || 'soporte@jogo.app').trim();
 
     onUpdate({
       accountHolder,
       alias,
       cvu,
       whatsappNumber,
+      email,
       updatedAt: data.updatedAt ? String(data.updatedAt) : undefined
     });
   }, (err) => {
@@ -231,6 +237,7 @@ export function subscribeBillingConfig(onUpdate: (config: BillingConfig) => void
       alias: '',
       cvu: '',
       whatsappNumber: (SUPPORT_CONFIG.whatsappNumber || '').trim(),
+      email: (SUPPORT_CONFIG.email || 'soporte@jogo.app').trim(),
     });
   });
 
