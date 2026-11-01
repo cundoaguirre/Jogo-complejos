@@ -175,7 +175,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
   const displayComplexName = validation?.complexName || complexName || '';
 
   return (
-    <div className="relative w-full min-h-[100dvh] overflow-hidden select-none">
+    <div translate="no" className="notranslate relative w-full min-h-[100dvh] overflow-hidden select-none">
       {/* CAPA 0: Fondo fotográfico de la cancha al 100% de alto y ancho (z-0) */}
       <img
         src="/assets/invite-turf-bg.jpg"
@@ -249,7 +249,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
           </h1>
 
           {/* Bloque 3: Línea de bienvenida con nombre dinámico del complejo (sin Colo Loco por defecto) */}
-          <p className="text-[19px] sm:text-[20px] leading-[1.2] tracking-[-0.015em] font-normal text-white">
+          <p translate="no" className="notranslate text-[19px] sm:text-[20px] leading-[1.2] tracking-[-0.015em] font-normal text-white">
             <span>Bienvenido a Jogo, </span><span className="font-extrabold text-white">{displayComplexName}.</span>
           </p>
 
