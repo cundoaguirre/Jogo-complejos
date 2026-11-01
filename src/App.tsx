@@ -11273,6 +11273,13 @@ export default function App() {
   const [deleteModalBooking, setDeleteModalBooking] = useState<any | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
+  // Estados de modales para soporte, reportes y facturación (control global y retroceso)
+  const [showReportsModal, setShowReportsModal] = useState(false);
+  const [showGlobalSupportModal, setShowGlobalSupportModal] = useState(false);
+  const [showPersonalInfoModal, setShowPersonalInfoModal] = useState(false);
+  const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
+  const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+
   // Unified navigation controller ensuring exact sync and widget reset
   const handleNavigate = useCallback((tabId: NavTabId | string) => {
     const validTab = tabId as NavTabId;
@@ -11298,6 +11305,76 @@ export default function App() {
       mainContainer.scrollLeft = 0;
     }
   }, [activeTab]);
+
+  // ---------------------------------------------------------------------------
+  // GESTO NATIVO DE RETROCESO (MOBILE BACK SWIPE / BACK BUTTON HANDLER)
+  // ---------------------------------------------------------------------------
+  const closeTopmostLayer = useCallback(() => {
+    // Nivel 3: Modales secundarios (capa superior)
+    if (deleteModalBooking) { setDeleteModalBooking(null); return true; }
+    if (cancelModalBooking) { setCancelModalBooking(null); return true; }
+    if (selectedUser && selectedMatch) { setSelectedUser(null); return true; }
+    if (agendaTicketModalOp) { setAgendaTicketModalOp(null); return true; }
+    if (agendaSettleModalTarget) { setAgendaSettleTarget(null); return true; }
+
+    // Nivel 2: Modales y hojas principales
+    if (selectedUser) { setSelectedUser(null); return true; }
+    if (selectedMatch) { setSelectedMatch(null); return true; }
+    if (isCreateMatchOpen) { setCreateMatchOpen(false); return true; }
+    if (isCreateUserOpen) { setCreateUserOpen(false); return true; }
+    if (isNotificationsOpen) { setNotificationsOpen(false); return true; }
+    if (isSidebarOpen) { setSidebarOpen(false); return true; }
+    if (showReportsModal) { setShowReportsModal(false); return true; }
+    if (showGlobalSupportModal) { setShowGlobalSupportModal(false); return true; }
+    if (showPersonalInfoModal) { setShowPersonalInfoModal(false); return true; }
+    if (isNoticeModalOpen) { setIsNoticeModalOpen(false); return true; }
+    if (isPayModalOpen) { setIsPayModalOpen(false); return true; }
+
+    // Nivel 1: Si está en otra pestaña (Agenda, Usuarios, Perfil), retrocede a Finanzas
+    if (activeTab !== 'finance') {
+      setActiveTab('finance');
+      return true;
+    }
+
+    // Nivel 0: Todo cerrado y en Finanzas => Permite salir normalmente de la app
+    return false;
+  }, [
+    deleteModalBooking, cancelModalBooking, selectedUser, selectedMatch,
+    agendaTicketModalOp, agendaSettleModalTarget, isCreateMatchOpen,
+    isCreateUserOpen, isNotificationsOpen, isSidebarOpen, showReportsModal,
+    showGlobalSupportModal, showPersonalInfoModal, isNoticeModalOpen,
+    isPayModalOpen, activeTab
+  ]);
+
+  const hasOpenLayer = Boolean(
+    deleteModalBooking || cancelModalBooking || selectedUser || selectedMatch ||
+    agendaTicketModalOp || agendaSettleModalTarget || isCreateMatchOpen ||
+    isCreateUserOpen || isNotificationsOpen || isSidebarOpen || showReportsModal ||
+    showGlobalSupportModal || showPersonalInfoModal || isNoticeModalOpen ||
+    isPayModalOpen || activeTab !== 'finance'
+  );
+
+  const prevLayerRef = useRef(false);
+
+  useEffect(() => {
+    if (hasOpenLayer && !prevLayerRef.current) {
+      window.history.pushState({ appLayer: true }, '');
+    }
+    prevLayerRef.current = hasOpenLayer;
+  }, [hasOpenLayer]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const closed = closeTopmostLayer();
+      if (closed) {
+        // Si aún quedan capas abiertas debajo, aseguramos el estado para el siguiente gesto
+        window.history.pushState({ appLayer: true }, '');
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [closeTopmostLayer]);
   
   // Firebase Auth, Active Complex & Database Hook
   const { 
@@ -11315,15 +11392,6 @@ export default function App() {
     billingConfig,
     setActiveComplexId 
   } = useFirebase();
-
-  // Temporizador para garantizar que la animación de splash inicial se aprecie completa (1.1s)
-  const [splashMinElapsed, setSplashMinElapsed] = useState(false);
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setSplashMinElapsed(true);
-    }, 1100);
-    return () => clearTimeout(timer);
-  }, []);
 
   // Router & URL parameters evaluation
   const [currentPath, setCurrentPath] = useState(() => {
@@ -11367,9 +11435,6 @@ export default function App() {
   const [showDemandStats, setShowDemandStats] = useState(false);
   const [showRetentionStats, setShowRetentionStats] = useState(false);
   const [showFinanceChart, setShowFinanceChart] = useState(false);
-  const [showReportsModal, setShowReportsModal] = useState(false);
-  const [showGlobalSupportModal, setShowGlobalSupportModal] = useState(false);
-  const [showPersonalInfoModal, setShowPersonalInfoModal] = useState(false);
 
   const [isDarkMode, setIsDarkMode] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -11513,8 +11578,6 @@ export default function App() {
   }, [activeComplexId, activeComplex, weeklyObligations]);
 
   // Estados de control para modales de aviso y pago
-  const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
-  const [isPayModalOpen, setIsPayModalOpen] = useState(false);
   const [payTargetObligation, setPayTargetObligation] = useState<WeeklyPaymentObligation | null>(null);
 
   // Apertura reactiva del aviso correspondiente según regla de frecuencia
@@ -11726,58 +11789,11 @@ export default function App() {
     setRefreshKey(prev => prev + 1);
   };
 
-  // 1. Pantalla de carga mientras se verifica la autenticación y se completa la animación fluida de bienvenida
-  if (loading || !splashMinElapsed) {
+  // 1. Pantalla de carga mientras se verifica el estado de autenticación de Firebase
+  if (loading) {
     return (
-      <div className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#129D44] flex items-center justify-center select-none overflow-hidden">
-        <style>{`
-          @keyframes logoSlideUp {
-            0% {
-              transform: translateY(0) scale(1.294);
-              opacity: 0.9;
-            }
-            100% {
-              transform: translateY(-110px) scale(1);
-              opacity: 1;
-            }
-          }
-          @keyframes spinnerFadeIn {
-            0%, 30% {
-              opacity: 0;
-              transform: scale(0.8);
-            }
-            100% {
-              opacity: 1;
-              transform: scale(1);
-            }
-          }
-        `}</style>
-        
-        {/* Logo oficial de Jogo blanco sin fondo: Inicia en 220px (scale 1.294) en el centro exacto y sube a -110px achicándose a 170px (scale 1) */}
-        <div 
-          className="absolute flex justify-center items-center pointer-events-none"
-          style={{ animation: 'logoSlideUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
-        >
-          <img 
-            src="/assets/jogo-logo-white.png" 
-            alt="Jogo" 
-            className="w-[170px] h-auto object-contain select-none drop-shadow-sm" 
-            onError={(e) => {
-              const target = e.currentTarget;
-              if (!target.src.includes('logo-white.png')) {
-                target.src = '/logo-white.png';
-              }
-            }}
-          />
-        </div>
-
-        {/* Spinner: Anclado exactamente en el centro del eje vertical de la pantalla */}
-        <div 
-          className="absolute flex justify-center items-center pointer-events-none"
-          style={{ animation: 'spinnerFadeIn 0.85s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
-        >
-          <div className="w-8 h-8 border-3 border-white/25 border-t-white rounded-full animate-spin" />
-        </div>
+      <div className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#129D44] flex items-center justify-center select-none">
+        <div className="w-8 h-8 border-3 border-white/25 border-t-white rounded-full animate-spin" />
       </div>
     );
   }
