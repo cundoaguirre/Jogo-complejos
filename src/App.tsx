@@ -11721,8 +11721,7 @@ export default function App() {
   if (loading) {
     return (
       <div className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#0BA70B] flex flex-col items-center justify-center select-none">
-        <img src="/logo-white.png" alt="Jogo" className="w-48 sm:w-56 h-auto object-contain" />
-        <div className="mt-6 w-7 h-7 border-3 border-white/25 border-t-white rounded-full animate-spin" />
+        <div className="w-8 h-8 border-3 border-white/25 border-t-white rounded-full animate-spin" />
       </div>
     );
   }
