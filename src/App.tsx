@@ -11316,6 +11316,15 @@ export default function App() {
     setActiveComplexId 
   } = useFirebase();
 
+  // Temporizador para garantizar que la animación de splash inicial se aprecie completa (1.1s)
+  const [splashMinElapsed, setSplashMinElapsed] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSplashMinElapsed(true);
+    }, 1100);
+    return () => clearTimeout(timer);
+  }, []);
+
   // Router & URL parameters evaluation
   const [currentPath, setCurrentPath] = useState(() => {
     if (typeof window !== 'undefined') {
@@ -11717,11 +11726,58 @@ export default function App() {
     setRefreshKey(prev => prev + 1);
   };
 
-  // 1. Pantalla de carga mientras se verifica el estado de autenticación de Firebase
-  if (loading) {
+  // 1. Pantalla de carga mientras se verifica la autenticación y se completa la animación fluida de bienvenida
+  if (loading || !splashMinElapsed) {
     return (
-      <div className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#129D44] flex flex-col items-center justify-center select-none">
-        <div className="w-8 h-8 border-3 border-white/25 border-t-white rounded-full animate-spin" />
+      <div className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#129D44] flex items-center justify-center select-none overflow-hidden">
+        <style>{`
+          @keyframes logoSlideUp {
+            0% {
+              transform: translateY(0) scale(1.294);
+              opacity: 0.9;
+            }
+            100% {
+              transform: translateY(-110px) scale(1);
+              opacity: 1;
+            }
+          }
+          @keyframes spinnerFadeIn {
+            0%, 30% {
+              opacity: 0;
+              transform: scale(0.8);
+            }
+            100% {
+              opacity: 1;
+              transform: scale(1);
+            }
+          }
+        `}</style>
+        
+        {/* Logo oficial de Jogo blanco sin fondo: Inicia en 220px (scale 1.294) en el centro exacto y sube a -110px achicándose a 170px (scale 1) */}
+        <div 
+          className="absolute flex justify-center items-center pointer-events-none"
+          style={{ animation: 'logoSlideUp 0.7s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
+        >
+          <img 
+            src="/assets/jogo-logo-white.png" 
+            alt="Jogo" 
+            className="w-[170px] h-auto object-contain select-none drop-shadow-sm" 
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (!target.src.includes('logo-white.png')) {
+                target.src = '/logo-white.png';
+              }
+            }}
+          />
+        </div>
+
+        {/* Spinner: Anclado exactamente en el centro del eje vertical de la pantalla */}
+        <div 
+          className="absolute flex justify-center items-center pointer-events-none"
+          style={{ animation: 'spinnerFadeIn 0.85s cubic-bezier(0.16, 1, 0.3, 1) forwards' }}
+        >
+          <div className="w-8 h-8 border-3 border-white/25 border-t-white rounded-full animate-spin" />
+        </div>
       </div>
     );
   }
