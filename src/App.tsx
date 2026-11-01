@@ -7448,7 +7448,7 @@ export function getPeriodRange(period: FinancePeriod, now = new Date()) {
     return {
       current: { start: tStart, end: tEnd },
       previous: { start: startOfDay(yDate), end: endOfDay(yDate) },
-      compareLabel: 'de ayer'
+      compareLabel: 'ayer'
     };
   }
   if (period === 'this_week') {
@@ -7458,7 +7458,7 @@ export function getPeriodRange(period: FinancePeriod, now = new Date()) {
     return {
       current: { start: cStart, end: cEnd },
       previous: { start: startOfWeek(pRef, { weekStartsOn: 1 }), end: endOfWeek(pRef, { weekStartsOn: 1 }) },
-      compareLabel: 'de sem. ant.'
+      compareLabel: 'sem. ant.'
     };
   }
   if (period === 'last_week') {
@@ -7470,7 +7470,7 @@ export function getPeriodRange(period: FinancePeriod, now = new Date()) {
     return {
       current: { start: cStart, end: cEnd },
       previous: { start: startOfWeek(pRef, { weekStartsOn: 1 }), end: endOfWeek(pRef, { weekStartsOn: 1 }) },
-      compareLabel: 'de sem. ant.'
+      compareLabel: 'sem. ant.'
     };
   }
   if (period === 'this_month') {
@@ -7480,7 +7480,7 @@ export function getPeriodRange(period: FinancePeriod, now = new Date()) {
     return {
       current: { start: cStart, end: cEnd },
       previous: { start: startOfMonth(pRef), end: endOfMonth(pRef) },
-      compareLabel: 'del mes ant.'
+      compareLabel: 'mes ant.'
     };
   }
   // 'last_month'
@@ -7492,7 +7492,7 @@ export function getPeriodRange(period: FinancePeriod, now = new Date()) {
   return {
     current: { start: cStart, end: cEnd },
     previous: { start: startOfMonth(pRef), end: endOfMonth(pRef) },
-    compareLabel: 'del mes ant.'
+    compareLabel: 'mes ant.'
   };
 }
 
@@ -8899,21 +8899,12 @@ const FinanceView = ({
     ? Math.round((financialSummary.pendingToPay / financialSummary.economicExpense) * 100)
     : (financialSummary.pendingToPay > 0 ? 100 : 0);
 
-  // Cantidad de productos distintos vendidos en mostrador en el período
-  const distinctProductsCount = useMemo(() => {
-    const set = new Set<string>();
-    periodOperations.forEach(op => {
+  // Cantidad de ventas realizadas en mostrador en el período
+  const mostradorSalesCount = useMemo(() => {
+    return periodOperations.filter(op => {
       const isBooking = op.originalDoc?.operationType === 'court_booking' || op.originalDoc?.operationType === 'booking' || Boolean(op.originalDoc?.bookingId) || op.id.endsWith('-booking');
-      if (op.isExpense || isBooking) return;
-      if (Array.isArray(op.originalDoc?.items) && op.originalDoc.items.length > 0) {
-        op.originalDoc.items.forEach(it => {
-          if (it.name) set.add(it.name.trim().toLowerCase());
-        });
-      } else if (op.concept) {
-        set.add(op.concept.trim().toLowerCase());
-      }
-    });
-    return set.size;
+      return !op.isExpense && !isBooking;
+    }).length;
   }, [periodOperations]);
 
   // Cantidad de reservas confirmadas en el período
@@ -9094,29 +9085,29 @@ const FinanceView = ({
       {/* =================================================================== */}
       {/* 1. TARJETA GRANDE 1: LAYOUT DE 2 COLUMNAS (MÉTRICAS CONSOLIDADAS)   */}
       {/* =================================================================== */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-gray-100 dark:border-slate-800 p-4 sm:p-5 shrink-0">
-        <div className="grid grid-cols-12 gap-3.5 items-stretch">
+      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-gray-100 dark:border-slate-800 p-3.5 sm:p-5 shrink-0">
+        <div className="grid grid-cols-12 gap-2.5 sm:gap-3.5 items-stretch">
           
-          {/* 2.1. Columna Izquierda (col-span-5) */}
-          <div className="col-span-5 border border-gray-200 dark:border-slate-700 rounded-3xl p-3.5 sm:p-4 flex flex-col justify-between space-y-3">
+          {/* 2.1. Columna Izquierda: Reducida a col-span-4 para no quitar espacio */}
+          <div className="col-span-4 border border-gray-200 dark:border-slate-700 rounded-2xl p-2.5 sm:p-3.5 flex flex-col justify-between space-y-2">
             {/* 1. Ingresos */}
             <div>
-              <div className="text-xs font-normal text-gray-500 dark:text-slate-400">
+              <div className="text-[10.5px] font-normal text-gray-500 dark:text-slate-400">
                 Ingresos
               </div>
-              <div className="text-lg sm:text-xl font-bold text-gray-600 dark:text-slate-100 leading-tight">
+              <div className="text-[14px] sm:text-[16px] font-bold text-gray-700 dark:text-slate-100 leading-tight">
                 ${financialSummary.economicIncome.toLocaleString('es-AR')}
               </div>
-              <div className="mt-1 flex items-center flex-wrap">
+              <div className="mt-0.5 flex items-center whitespace-nowrap gap-1 overflow-hidden">
                 <span className={cn(
-                  "rounded-full px-2 py-0.5 text-[10px] font-semibold inline-flex items-center gap-0.5",
+                  "rounded-full px-1 py-0.2 text-[8px] sm:text-[8.5px] font-bold inline-flex items-center gap-0.5 shrink-0",
                   incomeTrend.isUp
-                    ? "bg-emerald-50 text-emerald-600 dark:bg-emerald-950/60 dark:text-emerald-400"
-                    : "bg-red-50 text-red-600 dark:bg-red-950/60 dark:text-red-400"
+                    ? "bg-emerald-100 text-[#0BA70B] dark:bg-emerald-950/60 dark:text-emerald-400"
+                    : "bg-red-100 text-red-600 dark:bg-red-950/60 dark:text-red-400"
                 )}>
                   {incomeTrend.pct} {incomeTrend.isUp ? '↑' : '↓'}
                 </span>
-                <span className="text-[10px] text-gray-500 dark:text-slate-400 ml-1">
+                <span className="text-[8px] sm:text-[8.5px] text-gray-400 truncate">
                   {compareLabel}
                 </span>
               </div>
@@ -9124,110 +9115,115 @@ const FinanceView = ({
 
             {/* 2. Gastos */}
             <div>
-              <div className="text-xs font-normal text-gray-500 dark:text-slate-400">
+              <div className="text-[10.5px] font-normal text-gray-500 dark:text-slate-400">
                 Gastos
               </div>
-              <div className="text-lg sm:text-xl font-bold text-gray-600 dark:text-slate-100 leading-tight">
+              <div className="text-[14px] sm:text-[16px] font-bold text-gray-700 dark:text-slate-100 leading-tight">
                 ${financialSummary.economicExpense.toLocaleString('es-AR')}
               </div>
             </div>
 
             {/* 3. Neto */}
             <div>
-              <div className="text-xs font-normal text-gray-500 dark:text-slate-400">
+              <div className="text-[10.5px] font-normal text-gray-500 dark:text-slate-400">
                 Neto
               </div>
-              <div className="text-lg sm:text-xl font-bold text-gray-600 dark:text-slate-100 leading-tight">
+              <div className="text-[14px] sm:text-[16px] font-bold text-gray-700 dark:text-slate-100 leading-tight">
                 ${financialSummary.netResult.toLocaleString('es-AR')}
               </div>
             </div>
           </div>
 
-          {/* 2.2. Columna Derecha (col-span-7) */}
-          <div className="col-span-7 flex flex-col justify-between space-y-3.5">
-            {/* Arriba: Sub-tarjeta Verde de Caja */}
-            <div className="bg-[#0BA70B] text-white rounded-3xl p-3.5 sm:p-4 shadow-sm flex items-center justify-between gap-2">
+          {/* 2.2. Columna Derecha: Ampliada a col-span-8 para formato apaisado */}
+          <div className="col-span-8 flex flex-col justify-between space-y-2.5">
+            {/* Arriba: Sub-tarjeta Verde de Caja (Rectángulo acostado / apaisado con $) */}
+            <div className="bg-[#0BA70B] text-white rounded-2xl py-2 px-3 sm:py-2.5 sm:px-3.5 shadow-sm flex items-center justify-between gap-2">
               {/* Izquierda: Caja */}
               <div className="min-w-0">
-                <div className="text-xs font-normal text-white/90">
+                <div className="text-[10px] font-normal text-white/90">
                   Caja
                 </div>
-                <div className="text-2xl sm:text-3xl font-bold text-white leading-tight my-0.5 truncate">
-                  {financialSummary.cashAvailable.toLocaleString('es-AR')}
+                <div className="text-[18px] sm:text-[20px] font-extrabold text-white leading-tight my-0.5 whitespace-nowrap">
+                  ${financialSummary.cashAvailable.toLocaleString('es-AR')}
                 </div>
-                <div className="flex items-center flex-wrap">
-                  <span className="bg-emerald-100 text-[#0BA70B] rounded-full px-2 py-0.5 text-[10px] font-bold inline-flex items-center gap-0.5">
+                <div className="flex items-center gap-1 whitespace-nowrap text-[8px] sm:text-[8.5px] text-white/90 overflow-hidden">
+                  <span className={cn(
+                    "rounded-full px-1 py-0.2 text-[8px] sm:text-[8.5px] font-bold inline-flex items-center shrink-0",
+                    cashTrend.isUp
+                      ? "bg-emerald-100 text-[#0BA70B]"
+                      : "bg-red-100 text-red-600"
+                  )}>
                     {cashTrend.pct} {cashTrend.isUp ? '↑' : '↓'}
                   </span>
-                  <span className="text-[10px] text-white/90 ml-1">
+                  <span className="truncate">
                     {compareLabel}
                   </span>
                 </div>
               </div>
 
-              {/* Derecha: Por cobrar y Por pagar */}
-              <div className="space-y-1.5 shrink-0 text-right">
+              {/* Derecha: Por cobrar y Por pagar en negrita */}
+              <div className="space-y-1 shrink-0 text-right">
                 <div>
-                  <div className="flex items-center justify-end gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-emerald-300 shrink-0" />
-                    <span className="text-[11px] font-bold text-white">Por cobrar ({porCobrarPct}%)</span>
+                  <div className="flex items-center justify-end gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 shrink-0" />
+                    <span className="text-[9.5px] font-bold text-white">Por cobrar ({porCobrarPct}%)</span>
                   </div>
-                  <div className="text-[11px] font-normal text-white/95 pl-3.5">
+                  <div className="text-[9.5px] font-normal text-white">
                     ${financialSummary.pendingToCollect.toLocaleString('es-AR')}
                   </div>
                 </div>
 
                 <div>
-                  <div className="flex items-center justify-end gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-red-500 shrink-0" />
-                    <span className="text-[11px] font-bold text-white">Por pagar ({porPagarPct}%)</span>
+                  <div className="flex items-center justify-end gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
+                    <span className="text-[9.5px] font-bold text-white">Por pagar ({porPagarPct}%)</span>
                   </div>
-                  <div className="text-[11px] font-normal text-white/95 pl-3.5">
+                  <div className="text-[9.5px] font-normal text-white">
                     ${financialSummary.pendingToPay.toLocaleString('es-AR')}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Abajo: Mostrador y Agenda flotando sobre fondo blanco */}
+            {/* Abajo: Mostrador y Agenda con montos perfectamente alineados al título */}
             <div className="space-y-2 pt-0.5">
               {/* Fila Mostrador */}
-              <div className="flex items-center justify-between px-1">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-[#1d63b8] text-white flex items-center justify-center shrink-0">
-                    <ShoppingBasket size={18} />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-gray-600 dark:text-slate-200 leading-tight">
-                      Mostrador
-                    </div>
-                    <div className="text-[10px] text-gray-400">
-                      {distinctProductsCount} {distinctProductsCount === 1 ? 'producto' : 'productos'}
-                    </div>
-                  </div>
+              <div className="flex items-center gap-2.5 px-0.5">
+                <div className="w-8 h-8 rounded-xl bg-[#1d63b8] text-white flex items-center justify-center shrink-0">
+                  <ShoppingBasket size={16} />
                 </div>
-                <div className="text-xs sm:text-sm font-bold text-gray-600 dark:text-slate-200">
-                  ${financialSummary.mostradorIncome.toLocaleString('es-AR')}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between leading-tight">
+                    <span className="text-xs sm:text-[13px] font-bold text-gray-700 dark:text-slate-200">
+                      Mostrador
+                    </span>
+                    <span className="text-xs sm:text-[13px] font-bold text-gray-700 dark:text-slate-200">
+                      ${financialSummary.mostradorIncome.toLocaleString('es-AR')}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-gray-400 mt-0.5">
+                    {mostradorSalesCount} {mostradorSalesCount === 1 ? 'venta' : 'ventas'}
+                  </div>
                 </div>
               </div>
 
               {/* Fila Agenda */}
-              <div className="flex items-center justify-between px-1">
-                <div className="flex items-center gap-3">
-                  <div className="w-9 h-9 rounded-xl bg-[#0BA70B] text-white flex items-center justify-center shrink-0">
-                    <Calendar size={18} />
-                  </div>
-                  <div>
-                    <div className="text-xs sm:text-sm font-bold text-gray-600 dark:text-slate-200 leading-tight">
-                      Agenda
-                    </div>
-                    <div className="text-[10px] text-gray-400">
-                      {periodBookingsCount} {periodBookingsCount === 1 ? 'reserva' : 'reservas'}
-                    </div>
-                  </div>
+              <div className="flex items-center gap-2.5 px-0.5">
+                <div className="w-8 h-8 rounded-xl bg-[#0BA70B] text-white flex items-center justify-center shrink-0">
+                  <Calendar size={16} />
                 </div>
-                <div className="text-xs sm:text-sm font-bold text-gray-600 dark:text-slate-200">
-                  ${financialSummary.reservasIncome.toLocaleString('es-AR')}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between leading-tight">
+                    <span className="text-xs sm:text-[13px] font-bold text-gray-700 dark:text-slate-200">
+                      Agenda
+                    </span>
+                    <span className="text-xs sm:text-[13px] font-bold text-gray-700 dark:text-slate-200">
+                      ${financialSummary.reservasIncome.toLocaleString('es-AR')}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-gray-400 mt-0.5">
+                    {periodBookingsCount} {periodBookingsCount === 1 ? 'reserva' : 'reservas'}
+                  </div>
                 </div>
               </div>
             </div>
@@ -11264,7 +11260,7 @@ function PersonalInfoModal({
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<NavTabId>('schedule');
+  const [activeTab, setActiveTab] = useState<NavTabId>('finance');
   const [isSidebarOpen, setSidebarOpen] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [selectedMatch, setSelectedMatch] = useState<Match | null>(null);
