@@ -108,7 +108,7 @@ export const BillingNoticeModal: React.FC<BillingNoticeModalProps> = ({
               href={trialWaUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="w-full py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-[#0BA70B] hover:from-emerald-700 hover:to-emerald-600 text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.99] cursor-pointer"
+              className="w-full py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-[#129D44] hover:from-emerald-700 hover:to-emerald-600 text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.99] cursor-pointer"
             >
               <MessageCircle size={17} />
               <span>Contactanos para activar</span>
@@ -195,7 +195,7 @@ export const BillingNoticeModal: React.FC<BillingNoticeModalProps> = ({
                 handleDismiss();
                 onOpenPayModal();
               }}
-              className="w-full py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-[#0BA70B] hover:from-emerald-700 hover:to-emerald-600 text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.99] cursor-pointer"
+              className="w-full py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-[#129D44] hover:from-emerald-700 hover:to-emerald-600 text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.99] cursor-pointer"
             >
               <CreditCard size={17} />
               <span>Pagar</span>
@@ -275,7 +275,7 @@ export const BillingNoticeModal: React.FC<BillingNoticeModalProps> = ({
                 handleDismiss();
                 onOpenPayModal();
               }}
-              className="w-full py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-[#0BA70B] hover:from-emerald-700 hover:to-emerald-600 text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.99] cursor-pointer"
+              className="w-full py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-[#129D44] hover:from-emerald-700 hover:to-emerald-600 text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.99] cursor-pointer"
             >
               <CreditCard size={17} />
               <span>Pagar</span>

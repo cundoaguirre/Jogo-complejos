@@ -252,7 +252,7 @@ export const PayBalanceModal: React.FC<PayBalanceModalProps> = ({
             href={waUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="w-full sm:flex-1 py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-[#0BA70B] hover:from-emerald-700 hover:to-emerald-600 text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.99] cursor-pointer"
+            className="w-full sm:flex-1 py-3 px-4 rounded-2xl font-bold text-xs sm:text-sm bg-gradient-to-r from-emerald-600 to-[#129D44] hover:from-emerald-700 hover:to-emerald-600 text-white flex items-center justify-center gap-2 shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.99] cursor-pointer"
           >
             <MessageCircle size={18} />
             <span>Ya pagué · Avisar por WhatsApp</span>

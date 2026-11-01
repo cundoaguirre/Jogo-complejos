@@ -900,7 +900,7 @@ async function startServer() {
           id: 'falta_gente', 
           label: 'Falta gente', 
           percentage: 31, 
-          colorHex: '#0BA70B', 
+          colorHex: '#129D44', 
           count: Math.round(baseReservations * 0.31) 
         },
         desafio: { 

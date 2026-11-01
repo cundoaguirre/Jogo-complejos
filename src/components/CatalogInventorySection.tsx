@@ -1707,7 +1707,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                                             {ent.type}
                                           </span>
                                         </div>
-                                        <span className="text-[11px] text-[#0BA70B]">
+                                        <span className="text-[11px] text-[#129D44]">
                                           {ent.phone || ent.cuit || '-'}
                                         </span>
                                       </div>
@@ -1729,7 +1729,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                                 {selectedPurchaseEntity.type}
                               </span>
                             </div>
-                            <p className="text-xs font-mono text-[#0BA70B]">
+                            <p className="text-xs font-mono text-[#129D44]">
                               {selectedPurchaseEntity.phone || selectedPurchaseEntity.cuit || '-'}
                             </p>
                           </div>
@@ -2869,7 +2869,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
             >
               <div className="flex items-center justify-between pb-2 border-b border-gray-100 dark:border-slate-800">
                 <h4 className="font-black text-sm sm:text-base text-gray-900 dark:text-white flex items-center gap-2">
-                  <Building2 size={18} className="text-[#0BA70B]" />
+                  <Building2 size={18} className="text-[#129D44]" />
                   <span>Nueva Entidad</span>
                 </h4>
                 <button
@@ -2899,7 +2899,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                     placeholder="Ej. Distribuidora Quilmes SRL, Mayorista Sur..."
                     value={quickEntityForm.name}
                     onChange={(e) => setQuickEntityForm({ ...quickEntityForm, name: e.target.value })}
-                    className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                    className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-semibold text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
                     autoFocus
                   />
                 </div>
@@ -2943,7 +2943,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                       placeholder="11 2345-6789"
                       value={quickEntityForm.phone}
                       onChange={(e) => setQuickEntityForm({ ...quickEntityForm, phone: e.target.value })}
-                      className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                      className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
                     />
                   </div>
                   <div>
@@ -2955,7 +2955,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                       placeholder="30-12345678-9"
                       value={quickEntityForm.cuit}
                       onChange={(e) => setQuickEntityForm({ ...quickEntityForm, cuit: e.target.value })}
-                      className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-mono text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                      className="w-full h-9 px-3 rounded-xl bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 text-xs font-mono text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
                     />
                   </div>
                 </div>
@@ -2971,7 +2971,7 @@ export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = (
                   <button
                     type="submit"
                     disabled={isSavingQuickEntity || !quickEntityForm.name.trim()}
-                    className="flex-1 py-2.5 rounded-xl bg-[#0BA70B] hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs shadow-md transition-all cursor-pointer"
+                    className="flex-1 py-2.5 rounded-xl bg-[#129D44] hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs shadow-md transition-all cursor-pointer"
                   >
                     {isSavingQuickEntity ? 'Guardando...' : 'Guardar y Usar'}
                   </button>

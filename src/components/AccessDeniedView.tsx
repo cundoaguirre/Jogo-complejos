@@ -77,7 +77,7 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
       {/* Top Navbar */}
       <header className="w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-600 to-[#0BA70B] flex items-center justify-center shadow-lg shadow-emerald-500/25">
+          <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-600 to-[#129D44] flex items-center justify-center shadow-lg shadow-emerald-500/25">
             <span className="text-white font-black text-xl tracking-tighter">J</span>
           </div>
           <div>
@@ -205,7 +205,7 @@ export const AccessDeniedView: React.FC<AccessDeniedViewProps> = ({
                   <button
                     type="button"
                     onClick={onOpenPayModal}
-                    className="w-full py-3.5 px-4 bg-gradient-to-r from-emerald-600 to-[#0BA70B] hover:from-emerald-700 hover:to-emerald-600 text-white font-bold rounded-2xl text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg shadow-emerald-500/20 active:scale-[0.99]"
+                    className="w-full py-3.5 px-4 bg-gradient-to-r from-emerald-600 to-[#129D44] hover:from-emerald-700 hover:to-emerald-600 text-white font-bold rounded-2xl text-sm flex items-center justify-center gap-2 transition-all cursor-pointer shadow-lg shadow-emerald-500/20 active:scale-[0.99]"
                   >
                     <CreditCard size={18} />
                     <span>Pagar total adeudado ({amountFormatted})</span>

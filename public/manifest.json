@@ -1,11 +1,11 @@
 {
-  "name": "Jogo Complejos",
+  "name": "Jogo",
   "short_name": "Jogo",
   "description": "Plataforma de gestión de canchas y complejos deportivos",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0BA70B",
-  "theme_color": "#0BA70B",
+  "background_color": "#129D44",
+  "theme_color": "#129D44",
   "icons": [
     {
       "src": "/Logo-jogo-verde.jpg",

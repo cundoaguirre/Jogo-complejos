@@ -423,7 +423,7 @@ export async function generateThermalTicketBlob(data: TicketImageData): Promise<
 
   if (isBooking) {
     iconBg = '#ecfdf5';
-    iconFg = '#0BA70B';
+    iconFg = '#129D44';
     headerTitle = 'Reserva';
   } else if (isPurchase) {
     iconBg = '#f5f3ff';
@@ -761,7 +761,7 @@ export async function generateThermalTicketBlob(data: TicketImageData): Promise<
     const logoH = logoW * aspect;
     ctx.drawImage(logoImg, (cardX + cardW / 2) - (logoW / 2), y, logoW, logoH);
   } else {
-    ctx.fillStyle = '#0BA70B';
+    ctx.fillStyle = '#129D44';
     ctx.font = '900 24px system-ui, -apple-system, sans-serif';
     ctx.fillText('Jogo', cardX + cardW / 2, y + 16);
   }

@@ -232,12 +232,12 @@ export const InviteView: React.FC<InviteViewProps> = ({
             style={{ backgroundColor: '#EAFBEA' }}
           >
             <span 
-              className="w-[22px] h-[22px] rounded-full !bg-[#0BA70B] flex items-center justify-center shrink-0"
-              style={{ backgroundColor: '#0BA70B' }}
+              className="w-[22px] h-[22px] rounded-full !bg-[#129D44] flex items-center justify-center shrink-0"
+              style={{ backgroundColor: '#129D44' }}
             >
               <Link2 size={11} strokeWidth={2.5} className="!text-[#EAFBEA] -rotate-45" />
             </span>
-            <span className="text-[10.5px] sm:text-[11px] font-bold !text-[#0BA70B] leading-none tracking-[-0.01em]">
+            <span className="text-[10.5px] sm:text-[11px] font-bold !text-[#129D44] leading-none tracking-[-0.01em]">
               Link de invitación
             </span>
           </div>
@@ -297,8 +297,8 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
           {/* Banner de éxito */}
           {claimSuccess && (
-            <div className="mt-3.5 w-full p-3.5 bg-emerald-50 border border-[#0BA70B]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-2.5 text-left">
-              <CheckCircle2 size={20} className="text-[#0BA70B] shrink-0" />
+            <div className="mt-3.5 w-full p-3.5 bg-emerald-50 border border-[#129D44]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-2.5 text-left">
+              <CheckCircle2 size={20} className="text-[#129D44] shrink-0" />
               <div>
                 <p className="font-bold text-xs">¡Complejo vinculado con éxito!</p>
                 <p className="text-[10.5px] text-emerald-700 mt-0.5">
@@ -353,7 +353,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
                       <button
                         type="button"
                         onClick={logout}
-                        className="!text-[#0BA70B] hover:underline cursor-pointer shrink-0 ml-2"
+                        className="!text-[#129D44] hover:underline cursor-pointer shrink-0 ml-2"
                       >
                         Cambiar cuenta
                       </button>

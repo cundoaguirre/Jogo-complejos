@@ -1250,7 +1250,7 @@ export const POSModal: React.FC<POSModalProps> = ({
                                         {ent.type}
                                       </span>
                                     </div>
-                                    <span className="text-[11px] text-[#0BA70B]">
+                                    <span className="text-[11px] text-[#129D44]">
                                       {ent.phone || ent.cuit || '-'}
                                     </span>
                                   </div>
@@ -1272,7 +1272,7 @@ export const POSModal: React.FC<POSModalProps> = ({
                             {selectedExpenseEntity.type}
                           </span>
                         </div>
-                        <p className="text-xs font-mono text-[#0BA70B]">
+                        <p className="text-xs font-mono text-[#129D44]">
                           {selectedExpenseEntity.phone || '-'}
                         </p>
                       </div>
@@ -1781,7 +1781,7 @@ export const POSModal: React.FC<POSModalProps> = ({
                                 <span className="font-bold text-gray-900 dark:text-white block">
                                   {client.name}
                                 </span>
-                                <span className="text-[11px] text-[#0BA70B]">
+                                <span className="text-[11px] text-[#129D44]">
                                   {client.phone || '-'}
                                 </span>
                               </div>
@@ -1803,7 +1803,7 @@ export const POSModal: React.FC<POSModalProps> = ({
                     <p className="text-sm font-bold text-gray-900 dark:text-white truncate">
                       {selectedClient.name}
                     </p>
-                    <p className="text-xs font-mono text-[#0BA70B]">
+                    <p className="text-xs font-mono text-[#129D44]">
                       {selectedClient.phone || '-'}
                     </p>
                   </div>

@@ -641,7 +641,7 @@ const NewUserModal = ({
                 type="text" 
                 placeholder="Nombre y apellido *"
                 autoFocus={false}
-                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#0BA70B] outline-none"
+                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#129D44] outline-none"
                 value={formData.name}
                 onChange={e => setFormData({ ...formData, name: e.target.value })}
               />
@@ -653,7 +653,7 @@ const NewUserModal = ({
                 value={formData.acquisitionChannel}
                 onChange={e => setFormData({ ...formData, acquisitionChannel: e.target.value })}
                 className={cn(
-                  "w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium focus:ring-2 focus:ring-[#0BA70B] outline-none",
+                  "w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium focus:ring-2 focus:ring-[#129D44] outline-none",
                   !formData.acquisitionChannel ? "text-gray-400" : "text-gray-900 dark:text-white"
                 )}
               >
@@ -677,7 +677,7 @@ const NewUserModal = ({
                 required
                 type="tel" 
                 placeholder="Teléfono *"
-                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#0BA70B] outline-none"
+                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#129D44] outline-none"
                 value={formData.phone}
                 onChange={e => setFormData({ ...formData, phone: e.target.value })}
               />
@@ -688,7 +688,7 @@ const NewUserModal = ({
               <input 
                 type="email" 
                 placeholder="Email (opcional)"
-                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#0BA70B] outline-none"
+                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#129D44] outline-none"
                 value={formData.email}
                 onChange={e => setFormData({ ...formData, email: e.target.value })}
               />
@@ -755,7 +755,7 @@ const NewUserModal = ({
               <input 
                 type="text" 
                 placeholder="Dirección (opcional)"
-                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#0BA70B] outline-none"
+                className="w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium text-gray-900 dark:text-white placeholder:text-gray-400 focus:ring-2 focus:ring-[#129D44] outline-none"
                 value={formData.address}
                 onChange={e => setFormData({ ...formData, address: e.target.value })}
               />
@@ -771,7 +771,7 @@ const NewUserModal = ({
               <input 
                 type="date"
                 className={cn(
-                  "w-full h-9 pl-8 pr-7 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium focus:ring-2 focus:ring-[#0BA70B] outline-none",
+                  "w-full h-9 pl-8 pr-7 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium focus:ring-2 focus:ring-[#129D44] outline-none",
                   !formData.birthDate ? "text-transparent" : "text-gray-900 dark:text-white"
                 )}
                 value={formData.birthDate}
@@ -818,7 +818,7 @@ const NewUserModal = ({
               type="submit" 
               form="new-user-form" 
               disabled={!formData.name || !formData.phone || isSubmitting || isDeleting} 
-              className="px-5 py-2 bg-[#0BA70B] text-white rounded-xl font-bold hover:bg-[#0BA70B]/90 disabled:opacity-50 cursor-pointer shadow-md shadow-emerald-900/10 flex items-center gap-2 text-xs sm:text-sm"
+              className="px-5 py-2 bg-[#129D44] text-white rounded-xl font-bold hover:bg-[#129D44]/90 disabled:opacity-50 cursor-pointer shadow-md shadow-emerald-900/10 flex items-center gap-2 text-xs sm:text-sm"
             >
               {isSubmitting ? 'Guardando...' : (isEdit ? 'Guardar cambios' : 'Guardar Usuario')}
             </button>
@@ -1928,7 +1928,7 @@ const UserDetailModal = ({
                                 "w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-2xs transition-colors",
                                 item.isPending
                                   ? "bg-red-50 border border-red-200 text-red-600"
-                                  : "bg-white border border-gray-200 text-[#0BA70B]"
+                                  : "bg-white border border-gray-200 text-[#129D44]"
                               )}>
                                 {item.iconType === 'booking' ? (
                                   <Calendar size={18} />
@@ -2001,7 +2001,7 @@ const UserDetailModal = ({
                       href={`https://wa.me/${cleanPhone}`}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-[#0BA70B] font-bold text-sm hover:underline cursor-pointer"
+                      className="text-[#129D44] font-bold text-sm hover:underline cursor-pointer"
                     >
                       {currentUser.phone}
                     </a>
@@ -2016,7 +2016,7 @@ const UserDetailModal = ({
                   {currentUser.email ? (
                     <a 
                       href={`mailto:${currentUser.email}`}
-                      className="text-gray-600 hover:text-[#0BA70B] hover:underline text-sm"
+                      className="text-gray-600 hover:text-[#129D44] hover:underline text-sm"
                     >
                       {currentUser.email}
                     </a>
@@ -2045,7 +2045,7 @@ const UserDetailModal = ({
               setIsEditModalOpen(true);
             }}
             aria-label="Editar perfil"
-            className="absolute bottom-6 right-6 w-14 h-14 rounded-2xl bg-[#0BA70B] text-white flex items-center justify-center shadow-lg hover:bg-emerald-600 active:scale-95 transition-all z-20 cursor-pointer"
+            className="absolute bottom-6 right-6 w-14 h-14 rounded-2xl bg-[#129D44] text-white flex items-center justify-center shadow-lg hover:bg-emerald-600 active:scale-95 transition-all z-20 cursor-pointer"
           >
             <Pencil size={24} className="text-white" />
           </button>
@@ -2211,7 +2211,7 @@ const NotificationsModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () 
       >
         <div className="flex justify-between items-center p-6 border-b border-gray-100">
           <h2 className="text-xl font-bold text-gray-900 flex items-center gap-2">
-            <Bell size={24} className="text-[#0BA70B]" />
+            <Bell size={24} className="text-[#129D44]" />
             Notificaciones
           </h2>
           <button 
@@ -2240,7 +2240,7 @@ const NotificationsModal = ({ isOpen, onClose }: { isOpen: boolean, onClose: () 
           ) : (
             notifications.map((n, nIdx) => (
               <div key={`notif-${n.id || nIdx}-${nIdx}`} className="p-4 bg-gray-50 rounded-xl border border-gray-100 flex items-start gap-3">
-                <div className="mt-1 w-2 h-2 rounded-full bg-[#0BA70B] shrink-0" />
+                <div className="mt-1 w-2 h-2 rounded-full bg-[#129D44] shrink-0" />
                 <div>
                   <p className="text-sm text-gray-900 font-medium">{n.text}</p>
                   <p className="text-xs text-gray-500 mt-1">{n.time}</p>
@@ -3693,7 +3693,7 @@ const CreateMatchModal = ({
                   </span>
                   <div className={cn(
                     "h-1 rounded-full w-full transition-all",
-                    step === 1 ? "bg-[#0BA70B]" : "bg-gray-200 dark:bg-slate-700"
+                    step === 1 ? "bg-[#129D44]" : "bg-gray-200 dark:bg-slate-700"
                   )} />
                 </button>
                 <button
@@ -3743,7 +3743,7 @@ const CreateMatchModal = ({
                         setTimeout(() => userSearchInputRef.current?.focus(), 80);
                       }
                     }}
-                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-left flex justify-between items-center focus:ring-2 focus:ring-[#0BA70B] outline-none cursor-pointer relative"
+                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-left flex justify-between items-center focus:ring-2 focus:ring-[#129D44] outline-none cursor-pointer relative"
                   >
                     <UserIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                     <span className={selectedUserName ? "text-gray-900 dark:text-white font-medium truncate text-xs sm:text-sm" : "text-gray-400 truncate text-xs sm:text-sm"}>
@@ -3790,7 +3790,7 @@ const CreateMatchModal = ({
                               <span className="font-semibold text-gray-900 dark:text-white truncate block">{u.name}</span>
                               {u.phone && <span className="text-[11px] text-gray-400 dark:text-slate-400 block">{u.phone}</span>}
                             </div>
-                            {String(data.host_id) === String(u.id) && <Check size={14} className="text-[#0BA70B] shrink-0" />}
+                            {String(data.host_id) === String(u.id) && <Check size={14} className="text-[#129D44] shrink-0" />}
                           </div>
                         ))}
                         {filteredUsers.length === 0 && (
@@ -3806,7 +3806,7 @@ const CreateMatchModal = ({
                 <button 
                   type="button"
                   onClick={() => setIsAddingNewUser(true)}
-                  className="h-9.5 px-3 inline-flex items-center gap-1.5 text-xs font-bold text-[#0BA70B] bg-[#0BA70B]/10 hover:bg-[#0BA70B]/20 rounded-xl cursor-pointer border border-[#0BA70B]/30 shrink-0 transition-colors"
+                  className="h-9.5 px-3 inline-flex items-center gap-1.5 text-xs font-bold text-[#129D44] bg-[#129D44]/10 hover:bg-[#129D44]/20 rounded-xl cursor-pointer border border-[#129D44]/30 shrink-0 transition-colors"
                 >
                   <Plus size={13} strokeWidth={2.5} />
                   <span>Nuevo Cliente</span>
@@ -3821,7 +3821,7 @@ const CreateMatchModal = ({
                     type="date" 
                     value={data.date || ''}
                     onChange={e => setData({ ...data, date: e.target.value })}
-                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]" 
+                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]" 
                   />
                 </div>
 
@@ -3831,7 +3831,7 @@ const CreateMatchModal = ({
                     value={data.time || ''}
                     onChange={e => setData({ ...data, time: e.target.value })}
                     disabled={!data.date || displayHours.length === 0}
-                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B] disabled:opacity-50"
+                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44] disabled:opacity-50"
                   >
                     <option value="" disabled>
                       {!data.date ? 'Elige fecha' : displayHours.length === 0 ? 'Sin horarios' : 'Seleccionar horario...'}
@@ -3865,7 +3865,7 @@ const CreateMatchModal = ({
                       ]);
                     }
                   }}
-                  className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                  className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
                 >
                   <option value="" disabled>Seleccionar cancha...</option>
                   {courts.map((court, cIdx) => {
@@ -3900,7 +3900,7 @@ const CreateMatchModal = ({
                   placeholder="Notas u observaciones (opcional)..."
                   value={data.notes || ''}
                   onChange={e => setData({ ...data, notes: e.target.value })}
-                  className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B] placeholder:text-gray-400"
+                  className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44] placeholder:text-gray-400"
                 />
               </div>
 
@@ -4005,7 +4005,7 @@ const CreateMatchModal = ({
                           placeholder="Buscar por nombre o teléfono..."
                           value={userSearch}
                           onChange={(e) => setUserSearch(e.target.value)}
-                          className="w-full h-8 pl-8 pr-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[#0BA70B]"
+                          className="w-full h-8 pl-8 pr-3 rounded-xl bg-gray-50 dark:bg-slate-900 border border-gray-200 dark:border-slate-700 text-xs font-medium text-gray-900 dark:text-white outline-none focus:ring-1 focus:ring-[#129D44]"
                           autoFocus
                         />
                       </div>
@@ -4037,7 +4037,7 @@ const CreateMatchModal = ({
                             >
                               <div>
                                 <p className="font-bold text-gray-900 dark:text-white">{u.name}</p>
-                                <p className="text-[11px] text-[#0BA70B] font-mono">{u.phone || '-'}</p>
+                                <p className="text-[11px] text-[#129D44] font-mono">{u.phone || '-'}</p>
                               </div>
                             </div>
                           ))
@@ -4058,7 +4058,7 @@ const CreateMatchModal = ({
                           const cleanPhone = clientDisplayPhone.replace(/\D/g, '');
                           if (cleanPhone) window.open(`https://wa.me/${cleanPhone}`, '_blank');
                         }}
-                        className="text-xs font-mono text-[#0BA70B] hover:underline cursor-pointer"
+                        className="text-xs font-mono text-[#129D44] hover:underline cursor-pointer"
                         title="Enviar WhatsApp"
                       >
                         {clientDisplayPhone}
@@ -4140,7 +4140,7 @@ const CreateMatchModal = ({
                             className={`border-0 border-none ring-0 focus:ring-0 outline-none rounded-lg px-3 py-1.5 w-24 text-center font-bold text-xs sm:text-sm transition-colors ${
                               isBookingFalta 
                                 ? 'bg-[#fce8e8] text-gray-900 dark:bg-red-950/50 dark:text-white' 
-                                : 'bg-emerald-100 text-[#0BA70B] dark:bg-emerald-950/60 dark:text-emerald-400 font-black'
+                                : 'bg-emerald-100 text-[#129D44] dark:bg-emerald-950/60 dark:text-emerald-400 font-black'
                             }`}
                           />
 
@@ -4202,7 +4202,7 @@ const CreateMatchModal = ({
                           <button
                             type="button"
                             onClick={handleAutocorrectBookingSobrante}
-                            className="text-[11px] font-bold text-[#0BA70B] underline cursor-pointer"
+                            className="text-[11px] font-bold text-[#129D44] underline cursor-pointer"
                           >
                             Sobran ${bookingSobrante.toLocaleString()}
                           </button>
@@ -4241,7 +4241,7 @@ const CreateMatchModal = ({
                 type="button"
                 onClick={handleSubmit}
                 disabled={!canConfirmBooking}
-                className="w-full py-3.5 bg-[#0BA70B] hover:bg-[#099609] text-white font-black text-sm rounded-2xl shadow-lg shadow-[#0BA70B]/25 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full py-3.5 bg-[#129D44] hover:bg-[#099609] text-white font-black text-sm rounded-2xl shadow-lg shadow-[#129D44]/25 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isSubmitting ? 'Guardando...' : (data.id ? 'Guardar Cambios' : 'Confirmar Reserva')}
               </button>
@@ -4478,7 +4478,7 @@ const ExposureStatsModal = ({
 
     const bookingModes = {
       clasico: { id: 'clasico', label: 'Clásico', percentage: 54, colorHex: '#2563EB', count: Math.round(baseReservations * 0.54) },
-      falta_gente: { id: 'falta_gente', label: 'Falta gente', percentage: 31, colorHex: '#0BA70B', count: Math.round(baseReservations * 0.31) },
+      falta_gente: { id: 'falta_gente', label: 'Falta gente', percentage: 31, colorHex: '#129D44', count: Math.round(baseReservations * 0.31) },
       desafio: { id: 'desafio', label: 'Desafío', percentage: 15, colorHex: '#8B5CF6', count: Math.round(baseReservations * 0.15) }
     };
 
@@ -4662,10 +4662,10 @@ const ExposureStatsModal = ({
       label: 'Falta gente', 
       percentage: data?.bookingModes?.falta_gente?.percentage ?? 31, 
       count: data?.bookingModes?.falta_gente?.count ?? 23,
-      bgClass: 'bg-[#0BA70B]', 
-      textClass: 'text-[#0BA70B]',
-      borderClass: 'border-[#0BA70B]',
-      dotClass: 'bg-[#0BA70B]'
+      bgClass: 'bg-[#129D44]', 
+      textClass: 'text-[#129D44]',
+      borderClass: 'border-[#129D44]',
+      dotClass: 'bg-[#129D44]'
     },
     desafio: { 
       label: 'Desafío', 
@@ -4804,7 +4804,7 @@ const ExposureStatsModal = ({
                 </span>
               </div>
               <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-[#0BA70B]"></span>
+                <span className="w-2 h-2 rounded-full bg-[#129D44]"></span>
                 <span className="font-semibold text-slate-700 dark:text-slate-300">
                   Falta gente <strong className="text-slate-900 dark:text-white">{modesData.falta_gente.count}</strong>
                 </span>
@@ -5103,7 +5103,7 @@ const ExposureStatsModal = ({
                       className={cn(
                         "w-7 h-7 sm:w-8 sm:h-8 rounded-lg font-bold text-xs flex items-center justify-center transition-all cursor-pointer select-none",
                         isDaySelected
-                          ? "bg-[#0BA70B] text-white shadow-xs scale-105"
+                          ? "bg-[#129D44] text-white shadow-xs scale-105"
                           : "bg-slate-100 dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600"
                       )}
                     >
@@ -5159,7 +5159,7 @@ const ExposureStatsModal = ({
                           className={cn(
                             "w-full rounded transition-all duration-300",
                             isHigh 
-                              ? "bg-[#0BA70B] dark:bg-emerald-500 shadow-xs" 
+                              ? "bg-[#129D44] dark:bg-emerald-500 shadow-xs" 
                               : isMedium 
                                 ? "bg-emerald-400/80 dark:bg-emerald-600/80" 
                                 : "bg-slate-300 dark:bg-slate-600"
@@ -6339,7 +6339,7 @@ const ScheduleView = ({
                     className={cn(
                       "flex flex-col items-center justify-center rounded-2xl transition-all cursor-pointer relative py-2",
                       isSelected
-                        ? "bg-[#0BA70B] text-white shadow-sm"
+                        ? "bg-[#129D44] text-white shadow-sm"
                         : "hover:bg-gray-50 dark:hover:bg-slate-800/80"
                     )}
                   >
@@ -6358,7 +6358,7 @@ const ScheduleView = ({
                     {day.isToday ? (
                       <span className={cn(
                         "w-1.5 h-1.5 rounded-full mt-1 animate-pulse",
-                        isSelected ? "bg-white" : "bg-[#0BA70B]"
+                        isSelected ? "bg-white" : "bg-[#129D44]"
                       )} />
                     ) : (
                       <span className="w-1.5 h-1.5 mt-1" />
@@ -6381,7 +6381,7 @@ const ScheduleView = ({
                   className={cn(
                     "flex-1 py-2 px-4 rounded-full text-xs sm:text-sm whitespace-nowrap flex items-center justify-center cursor-pointer transition-colors",
                     isSelected
-                      ? "bg-[#0BA70B] text-white font-bold shadow-xs"
+                      ? "bg-[#129D44] text-white font-bold shadow-xs"
                       : "bg-transparent text-gray-400 hover:text-gray-600 dark:text-slate-400 font-semibold"
                   )}
                   title={isSelected ? "Toca para ocultar columna" : "Toca para comparar columna"}
@@ -6769,7 +6769,7 @@ const ScheduleView = ({
         }}
         aria-label="Crear Nueva Reserva"
         title="Crear Nueva Reserva"
-        className="fixed bottom-20 right-4 sm:right-6 lg:bottom-8 lg:right-8 z-30 w-13 h-13 sm:w-14 sm:h-14 bg-[#0BA70B] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
+        className="fixed bottom-20 right-4 sm:right-6 lg:bottom-8 lg:right-8 z-30 w-13 h-13 sm:w-14 sm:h-14 bg-[#129D44] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
       >
         <CalendarPlus size={26} strokeWidth={2.4} />
       </button>
@@ -6949,7 +6949,7 @@ const UsersView = ({
   const getSinJugarBadge = (days: number | null) => {
     if (days === null) return null;
     // Verde Jogo si <= 15 días
-    let bgClass = 'bg-[#0BA70B] text-white';
+    let bgClass = 'bg-[#129D44] text-white';
     if (days >= 16 && days <= 30) {
       // Amarillo si 16 a 30 días
       bgClass = 'bg-[#F2B90F] text-slate-900 font-bold';
@@ -7093,7 +7093,7 @@ const UsersView = ({
                               target="_blank"
                               rel="noopener noreferrer"
                               onClick={(e) => e.stopPropagation()}
-                              className="text-[#0BA70B] dark:text-[#0BA70B] text-[10.5px] sm:text-xs font-normal hover:underline truncate block mt-0.5 cursor-pointer leading-tight"
+                              className="text-[#129D44] dark:text-[#129D44] text-[10.5px] sm:text-xs font-normal hover:underline truncate block mt-0.5 cursor-pointer leading-tight"
                               title={`Abrir WhatsApp con ${user.name}`}
                             >
                               {user.phone}
@@ -7162,7 +7162,7 @@ const UsersView = ({
         onClick={() => setShowNewUserModal(true)} 
         aria-label="Registrar nuevo usuario"
         title="Registrar nuevo usuario"
-        className="fixed bottom-20 right-4 sm:right-6 lg:bottom-8 lg:right-8 z-30 w-13 h-13 sm:w-14 sm:h-14 bg-[#0BA70B] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
+        className="fixed bottom-20 right-4 sm:right-6 lg:bottom-8 lg:right-8 z-30 w-13 h-13 sm:w-14 sm:h-14 bg-[#129D44] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
       >
         <UserPlus size={26} strokeWidth={2.4} />
       </button>
@@ -9007,7 +9007,7 @@ const FinanceView = ({
 
         let icon = <ShoppingBasket size={20} className="text-[#1d63b8]" />;
         if (display.kind === 'booking') {
-          icon = <Calendar size={20} className="text-[#0BA70B]" />;
+          icon = <Calendar size={20} className="text-[#129D44]" />;
         } else if (display.kind === 'purchase') {
           icon = <Package size={20} className="text-purple-600" />;
         } else if (display.kind === 'expense') {
@@ -9049,7 +9049,7 @@ const FinanceView = ({
 
         let icon = <ShoppingBasket size={20} className="text-[#1d63b8]" />;
         if (display.kind === 'booking') {
-          icon = <Calendar size={20} className="text-[#0BA70B]" />;
+          icon = <Calendar size={20} className="text-[#129D44]" />;
         } else if (display.kind === 'purchase') {
           icon = <Package size={20} className="text-purple-600" />;
         } else if (display.kind === 'expense') {
@@ -9102,7 +9102,7 @@ const FinanceView = ({
                 <span className={cn(
                   "rounded-full px-1 py-0.2 text-[8px] sm:text-[8.5px] font-bold inline-flex items-center gap-0.5 shrink-0",
                   incomeTrend.isUp
-                    ? "bg-emerald-100 text-[#0BA70B] dark:bg-emerald-950/60 dark:text-emerald-400"
+                    ? "bg-emerald-100 text-[#129D44] dark:bg-emerald-950/60 dark:text-emerald-400"
                     : "bg-red-100 text-red-600 dark:bg-red-950/60 dark:text-red-400"
                 )}>
                   {incomeTrend.pct} {incomeTrend.isUp ? '↑' : '↓'}
@@ -9137,7 +9137,7 @@ const FinanceView = ({
           {/* 2.2. Columna Derecha: Ampliada a col-span-8 para formato apaisado */}
           <div className="col-span-8 flex flex-col justify-between space-y-2.5">
             {/* Arriba: Sub-tarjeta Verde de Caja (Rectángulo acostado / apaisado con $) */}
-            <div className="bg-[#0BA70B] text-white rounded-2xl py-2 px-3 sm:py-2.5 sm:px-3.5 shadow-sm flex items-center justify-between gap-2">
+            <div className="bg-[#129D44] text-white rounded-2xl py-2 px-3 sm:py-2.5 sm:px-3.5 shadow-sm flex items-center justify-between gap-2">
               {/* Izquierda: Caja */}
               <div className="min-w-0">
                 <div className="text-[10px] font-normal text-white/90">
@@ -9150,7 +9150,7 @@ const FinanceView = ({
                   <span className={cn(
                     "rounded-full px-1 py-0.2 text-[8px] sm:text-[8.5px] font-bold inline-flex items-center shrink-0",
                     cashTrend.isUp
-                      ? "bg-emerald-100 text-[#0BA70B]"
+                      ? "bg-emerald-100 text-[#129D44]"
                       : "bg-red-100 text-red-600"
                   )}>
                     {cashTrend.pct} {cashTrend.isUp ? '↑' : '↓'}
@@ -9209,7 +9209,7 @@ const FinanceView = ({
 
               {/* Fila Agenda */}
               <div className="flex items-center gap-2.5 px-0.5">
-                <div className="w-8 h-8 rounded-xl bg-[#0BA70B] text-white flex items-center justify-center shrink-0">
+                <div className="w-8 h-8 rounded-xl bg-[#129D44] text-white flex items-center justify-center shrink-0">
                   <Calendar size={16} />
                 </div>
                 <div className="flex-1 min-w-0">
@@ -9439,12 +9439,12 @@ const FinanceView = ({
       </div>
 
       {/* =================================================================== */}
-      {/* 4. BOTÓN FLOTANTE (FAB): EJE, TAMAÑO Y COLOR VERDE (#0BA70B)       */}
+      {/* 4. BOTÓN FLOTANTE (FAB): EJE, TAMAÑO Y COLOR VERDE (#129D44)       */}
       {/* =================================================================== */}
       <button 
         type="button" 
         onClick={() => setIsPOSModalOpen(true)}
-        className="fixed bottom-20 right-4 sm:right-6 lg:bottom-8 lg:right-8 z-30 w-13 h-13 sm:w-14 sm:h-14 bg-[#0BA70B] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
+        className="fixed bottom-20 right-4 sm:right-6 lg:bottom-8 lg:right-8 z-30 w-13 h-13 sm:w-14 sm:h-14 bg-[#129D44] hover:bg-[#099309] active:scale-95 text-white rounded-2xl shadow-lg shadow-emerald-950/20 flex items-center justify-center transition-all cursor-pointer"
         title="Abrir Mostrador (POS)"
         aria-label="Abrir Mostrador (POS)"
       >
@@ -10276,7 +10276,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
             <span className="text-[11px] font-medium text-slate-400 block">Alias</span>
             <div 
               onClick={handleCopyAlias}
-              className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 truncate mt-0.5 cursor-pointer hover:text-[#0BA70B] transition-colors"
+              className="text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-200 truncate mt-0.5 cursor-pointer hover:text-[#129D44] transition-colors"
               title="Tocar para copiar alias"
             >
               {aliasCopied ? '¡Copiado!' : (profile.alias || 'Cololocoo')}
@@ -10352,7 +10352,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 } as any);
                 setEditSection('court');
               }}
-              className="text-xs sm:text-sm font-bold text-[#0BA70B] hover:text-emerald-700 transition-colors cursor-pointer mt-0.5"
+              className="text-xs sm:text-sm font-bold text-[#129D44] hover:text-emerald-700 transition-colors cursor-pointer mt-0.5"
             >
               + nueva cancha
             </button>
@@ -10380,7 +10380,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                   });
                   setEditSection('court');
                 }}
-                className="rounded-full border border-gray-200 dark:border-slate-700 px-4 py-2.5 flex items-center justify-between gap-3 hover:border-[#0BA70B]/50 transition-all cursor-pointer bg-white dark:bg-slate-800/60"
+                className="rounded-full border border-gray-200 dark:border-slate-700 px-4 py-2.5 flex items-center justify-between gap-3 hover:border-[#129D44]/50 transition-all cursor-pointer bg-white dark:bg-slate-800/60"
               >
                 {/* Lado izquierdo: Ícono + Nombre + Superficie */}
                 <div className="flex items-center gap-3 min-w-0">
@@ -10409,7 +10409,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                   <span className="text-xs font-bold text-slate-800 dark:text-slate-100">
                     ${priceNum.toLocaleString('es-AR')}<span className="font-normal text-slate-700 dark:text-slate-300">h</span>
                   </span>
-                  <span className="px-2.5 py-0.5 rounded-full bg-[#0BA70B] text-white text-[10px] font-bold text-center mt-0.5">
+                  <span className="px-2.5 py-0.5 rounded-full bg-[#129D44] text-white text-[10px] font-bold text-center mt-0.5">
                     {sportBadgeText}
                   </span>
                 </div>
@@ -10478,7 +10478,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 <input 
                   value={profile.name || ''} 
                   onChange={e => setProfile({...profile, name: e.target.value})}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: Complejo Jogo"
                 />
               </div>
@@ -10487,7 +10487,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 <input 
                   value={profile.address || ''} 
                   onChange={e => setProfile({...profile, address: e.target.value})}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: Av. San Martín 1234"
                 />
               </div>
@@ -10496,7 +10496,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 <input 
                   value={profile.alias || ''} 
                   onChange={e => setProfile({...profile, alias: e.target.value})}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: complejo.canchas.mp"
                 />
               </div>
@@ -10505,7 +10505,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 <input 
                   value={profile.phone || ''} 
                   onChange={e => setProfile({...profile, phone: e.target.value})}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: +54 9 11 1234-5678"
                 />
               </div>
@@ -10514,7 +10514,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 <input 
                   value={profile.instagram || ''} 
                   onChange={e => setProfile({...profile, instagram: e.target.value})}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: @complejojogo"
                 />
               </div>
@@ -10524,7 +10524,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                   type="email"
                   value={profile.email || ''} 
                   onChange={e => setProfile({...profile, email: e.target.value})}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: contacto@complejo.com"
                 />
               </div>
@@ -10533,7 +10533,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 <textarea 
                   value={profile.description || ''} 
                   onChange={e => setProfile({...profile, description: e.target.value})}
-                  className="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  className="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   rows={2}
                   placeholder="Descripción del complejo y sus instalaciones..."
                 />
@@ -10544,7 +10544,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                   type="button" 
                   onClick={handleSaveProfile} 
                   disabled={isSaving} 
-                  className="w-full bg-[#0BA70B] hover:bg-emerald-700 text-white py-3 rounded-xl font-bold transition-colors cursor-pointer disabled:opacity-50"
+                  className="w-full bg-[#129D44] hover:bg-emerald-700 text-white py-3 rounded-xl font-bold transition-colors cursor-pointer disabled:opacity-50"
                 >
                   {isSaving ? 'Guardando...' : 'Guardar'}
                 </button>
@@ -10601,7 +10601,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                         }}
                         className={cn(
                           "w-4.5 h-4.5 rounded-full cursor-pointer transition-transform active:scale-90 shadow-2xs",
-                          isOpen ? "bg-[#0BA70B]" : "bg-[#e41e26]"
+                          isOpen ? "bg-[#129D44]" : "bg-[#e41e26]"
                         )}
                         title={isOpen ? "Abierto (tocar para cerrar)" : "Cerrado (tocar para abrir)"}
                       />
@@ -10650,7 +10650,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 type="button"
                 onClick={handleSaveProfile}
                 disabled={isSaving}
-                className="w-full py-3 rounded-xl bg-[#0BA70B] hover:bg-emerald-700 text-white font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+                className="w-full py-3 rounded-xl bg-[#129D44] hover:bg-emerald-700 text-white font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
               >
                 {isSaving ? 'Guardando...' : 'Guardar'}
               </button>
@@ -10699,7 +10699,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                 <input 
                   value={editingCourt.name || ''} 
                   onChange={e => setEditingCourt({...editingCourt, name: e.target.value})}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   placeholder="Ej: Cancha 1"
                 />
               </div>
@@ -10718,7 +10718,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                         type: newSport === 'Fútbol' ? 'fútbol 5' : newSport
                       });
                     }}
-                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   >
                     <option value="Fútbol">Fútbol</option>
                     <option value="Pádel">Pádel</option>
@@ -10739,7 +10739,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                     <select 
                       value={editingCourt.type || 'fútbol 5'} 
                       onChange={e => setEditingCourt({...editingCourt, type: e.target.value})}
-                      className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                      className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                     >
                       <option value="fútbol 5">fútbol 5</option>
                       <option value="fútbol 6">fútbol 6</option>
@@ -10779,7 +10779,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                           price_per_hour: (val === '' ? '' : Number(val)) as any
                         });
                       }}
-                      className="w-full pl-8 pr-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                      className="w-full pl-8 pr-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                     />
                   </div>
                 </div>
@@ -10789,7 +10789,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                   <select 
                     value={editingCourt.status === 'inactiva' ? 'inactiva' : 'activa'} 
                     onChange={e => setEditingCourt({...editingCourt, status: e.target.value})}
-                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
                   >
                     <option value="activa">activa</option>
                     <option value="inactiva">inactiva</option>
@@ -10805,7 +10805,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                     id="is_roofed_checkbox"
                     checked={Boolean((editingCourt as any).is_roofed)} 
                     onChange={e => setEditingCourt({...editingCourt, is_roofed: e.target.checked})}
-                    className="w-4.5 h-4.5 text-[#0BA70B] rounded focus:ring-[#0BA70B] cursor-pointer"
+                    className="w-4.5 h-4.5 text-[#129D44] rounded focus:ring-[#129D44] cursor-pointer"
                   />
                   <label htmlFor="is_roofed_checkbox" className="font-semibold text-slate-700 dark:text-slate-300 text-xs sm:text-sm cursor-pointer select-none">
                     ¿Es techada?
@@ -10817,7 +10817,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                   <select 
                     value={editingCourt.surface || 'sintético'} 
                     onChange={e => setEditingCourt({...editingCourt, surface: e.target.value})}
-                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#0BA70B] text-sm text-slate-800 dark:text-white capitalize"
+                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white capitalize"
                   >
                     <option value="sintético">sintético</option>
                     <option value="cemento">cemento</option>
@@ -10832,7 +10832,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
               {/* Fila 5: Canchas Superpuestas (Bloqueo Mutuo) */}
               <div className="bg-slate-50 dark:bg-slate-800/60 border border-gray-200 dark:border-slate-700 p-3.5 rounded-2xl space-y-2.5">
                 <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-[#0BA70B]" />
+                  <ShieldCheck size={16} className="text-[#129D44]" />
                   <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">Canchas Superpuestas (Bloqueo Mutuo)</label>
                 </div>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
@@ -10878,7 +10878,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                   type="button"
                   onClick={() => handleSaveCourt(editingCourt)} 
                   disabled={isSaving || !editingCourt.name || (editingCourt as any).price_per_hour === ''} 
-                  className="w-full bg-[#0BA70B] hover:bg-emerald-700 text-white py-3 rounded-xl font-bold shadow-md transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer"
+                  className="w-full bg-[#129D44] hover:bg-emerald-700 text-white py-3 rounded-xl font-bold shadow-md transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer"
                 >
                   {isSaving ? 'Guardando en complejo...' : 'Guardar Cancha'}
                 </button>
@@ -10936,16 +10936,16 @@ const BottomNav = ({ active, onNavigate }: { active: NavTabId | string, onNaviga
             className={cn(
               "flex-1 flex flex-col items-center justify-center gap-0.5 py-1 px-2 rounded-xl transition-all cursor-pointer select-none touch-manipulation",
               isCurrent 
-                ? "text-[#0BA70B] dark:text-[#0BA70B] font-bold" 
+                ? "text-[#129D44] dark:text-[#129D44] font-bold" 
                 : "text-gray-400 dark:text-slate-400 hover:text-gray-600 dark:hover:text-slate-200 active:scale-95"
             )}
           >
             <div className="p-1 transition-all duration-200">
-              <item.icon size={22} strokeWidth={isCurrent ? 2.5 : 1.8} className={isCurrent ? "text-[#0BA70B] dark:text-[#0BA70B]" : "text-gray-400 dark:text-slate-400"} />
+              <item.icon size={22} strokeWidth={isCurrent ? 2.5 : 1.8} className={isCurrent ? "text-[#129D44] dark:text-[#129D44]" : "text-gray-400 dark:text-slate-400"} />
             </div>
             <span className={cn(
               "text-[11px] leading-tight tracking-tight transition-colors",
-              isCurrent ? "font-bold text-[#0BA70B] dark:text-[#0BA70B]" : "font-medium text-gray-400 dark:text-slate-400"
+              isCurrent ? "font-bold text-[#129D44] dark:text-[#129D44]" : "font-medium text-gray-400 dark:text-slate-400"
             )}>
               {displayLabel}
             </span>
@@ -11176,7 +11176,7 @@ function PersonalInfoModal({
                 value={ownerName}
                 onChange={e => setOwnerName(e.target.value)}
                 placeholder="Nombre del dueño"
-                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
               />
             </div>
             <div>
@@ -11186,7 +11186,7 @@ function PersonalInfoModal({
                 value={ownerPhone}
                 onChange={e => setOwnerPhone(e.target.value)}
                 placeholder="+54 11 ..."
-                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
               />
             </div>
             <div>
@@ -11196,7 +11196,7 @@ function PersonalInfoModal({
                 value={ownerEmail}
                 onChange={e => setOwnerEmail(e.target.value)}
                 placeholder="dueno@complejo.com"
-                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
               />
             </div>
           </div>
@@ -11211,7 +11211,7 @@ function PersonalInfoModal({
                 value={managerName}
                 onChange={e => setManagerName(e.target.value)}
                 placeholder="Nombre del encargado"
-                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
               />
             </div>
             <div>
@@ -11221,7 +11221,7 @@ function PersonalInfoModal({
                 value={managerPhone}
                 onChange={e => setManagerPhone(e.target.value)}
                 placeholder="+54 11 ..."
-                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
               />
             </div>
             <div>
@@ -11231,7 +11231,7 @@ function PersonalInfoModal({
                 value={managerEmail}
                 onChange={e => setManagerEmail(e.target.value)}
                 placeholder="encargado@complejo.com"
-                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/80 rounded-xl border border-gray-200 dark:border-slate-700 text-sm font-medium text-slate-800 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
               />
             </div>
           </div>
@@ -11242,7 +11242,7 @@ function PersonalInfoModal({
             type="button"
             onClick={handleSave}
             disabled={isSaving}
-            className="w-full py-3 rounded-xl bg-[#0BA70B] hover:bg-emerald-700 text-white font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
+            className="w-full py-3 rounded-xl bg-[#129D44] hover:bg-emerald-700 text-white font-bold text-sm shadow-md transition-all active:scale-[0.98] cursor-pointer disabled:opacity-50"
           >
             {isSaving ? 'Guardando...' : 'Guardar'}
           </button>
@@ -11720,7 +11720,7 @@ export default function App() {
   // 1. Pantalla de carga mientras se verifica el estado de autenticación de Firebase
   if (loading) {
     return (
-      <div className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#0BA70B] flex flex-col items-center justify-center select-none">
+      <div className="fixed inset-0 z-[100] w-full h-[100dvh] bg-[#129D44] flex flex-col items-center justify-center select-none">
         <div className="w-8 h-8 border-3 border-white/25 border-t-white rounded-full animate-spin" />
       </div>
     );
@@ -11831,7 +11831,7 @@ export default function App() {
           "h-16 md:h-20 flex items-center justify-between px-4 md:px-6 z-20 relative transition-colors",
           (activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance' || activeTab === 'profile')
             ? "bg-[#f4f5f7] dark:bg-slate-900 text-slate-700 dark:text-slate-100 border-b border-transparent"
-            : "bg-[#0BA70B] dark:bg-[#0BA70B] text-white"
+            : "bg-[#129D44] dark:bg-[#129D44] text-white"
         )}>
           <div className="flex items-center gap-3 sm:gap-4">
             <button 
@@ -11963,7 +11963,7 @@ export default function App() {
 
                 <button type="button" onClick={() => setNotificationsOpen(true)} className="text-white hover:bg-white/20 p-2 rounded-full transition-colors relative cursor-pointer" aria-label="Notificaciones">
                   <Bell size={24} />
-                  <div className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#0BA70B]"></div>
+                  <div className="absolute top-1 right-1 w-2.5 h-2.5 bg-red-500 rounded-full border-2 border-[#129D44]"></div>
                 </button>
               </>
             )}
@@ -11985,7 +11985,7 @@ export default function App() {
           {activationSuccessBanner && (
             <div className="mt-3 p-4 bg-emerald-500/15 border border-emerald-500/40 rounded-2xl flex items-center justify-between text-emerald-950 dark:text-emerald-200">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-xl bg-[#0BA70B] text-white flex items-center justify-center font-bold shadow-md shadow-emerald-900/20 shrink-0">
+                <div className="w-8 h-8 rounded-xl bg-[#129D44] text-white flex items-center justify-center font-bold shadow-md shadow-emerald-900/20 shrink-0">
                   ✓
                 </div>
                 <div>

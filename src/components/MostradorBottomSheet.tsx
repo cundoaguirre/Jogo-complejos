@@ -1907,7 +1907,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                             </h4>
                             <span className={cn(
                               "text-xs font-bold shrink-0",
-                              prod.stock > 0 ? "text-[#0BA70B]" : "text-rose-500"
+                              prod.stock > 0 ? "text-[#129D44]" : "text-rose-500"
                             )}>
                               {prod.stock}u
                             </span>
@@ -2024,7 +2024,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                           <button
                             type="button"
                             onClick={handleOpenCreateConcept}
-                            className="mt-3 text-xs font-bold text-[#0BA70B] hover:underline cursor-pointer"
+                            className="mt-3 text-xs font-bold text-[#129D44] hover:underline cursor-pointer"
                           >
                             + Crear primer concepto
                           </button>
@@ -2043,7 +2043,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                 </h4>
                                 <span className={cn(
                                   "text-[11px] font-semibold shrink-0",
-                                  concept.status === 'inactivo' ? "text-slate-400" : "text-[#0BA70B]"
+                                  concept.status === 'inactivo' ? "text-slate-400" : "text-[#129D44]"
                                 )}>
                                   {concept.status === 'inactivo' ? 'Inactivo' : 'Activo'}
                                 </span>
@@ -2119,7 +2119,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       onClick={(e) => e.stopPropagation()}
-                                      className="text-[#0BA70B] font-semibold hover:underline truncate block"
+                                      className="text-[#129D44] font-semibold hover:underline truncate block"
                                       title="Abrir WhatsApp"
                                     >
                                       {phoneClean}
@@ -2171,7 +2171,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                 <button
                   type="button"
                   onClick={handleOpenCreateConcept}
-                  className="w-14 h-14 rounded-2xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white shadow-xl shadow-green-950/20 flex items-center justify-center cursor-pointer transition-transform"
+                  className="w-14 h-14 rounded-2xl bg-[#129D44] hover:bg-[#099609] active:scale-95 text-white shadow-xl shadow-green-950/20 flex items-center justify-center cursor-pointer transition-transform"
                   title="Nuevo concepto de gasto"
                 >
                   <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -2185,7 +2185,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                 <button
                   type="button"
                   onClick={handleOpenCreateEntity}
-                  className="w-14 h-14 rounded-2xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white shadow-xl shadow-green-950/20 flex items-center justify-center cursor-pointer transition-transform"
+                  className="w-14 h-14 rounded-2xl bg-[#129D44] hover:bg-[#099609] active:scale-95 text-white shadow-xl shadow-green-950/20 flex items-center justify-center cursor-pointer transition-transform"
                   title="Nueva entidad"
                 >
                   <div className="relative flex items-center justify-center">
@@ -2206,7 +2206,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                     handleOpenCreateProduct(selectedCategory || undefined);
                   }
                 }}
-                className="w-14 h-14 rounded-2xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white shadow-xl shadow-green-950/20 flex items-center justify-center cursor-pointer transition-transform"
+                className="w-14 h-14 rounded-2xl bg-[#129D44] hover:bg-[#099609] active:scale-95 text-white shadow-xl shadow-green-950/20 flex items-center justify-center cursor-pointer transition-transform"
                 title={
                   activeTab === 'categories' && !selectedCategory
                     ? 'Nueva categoría de productos'
@@ -2697,7 +2697,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                 {/* Renglón 1: Círculo numerado + Orden en gris oscuro + Unidades en gris oscuro */}
                                 <div className="flex items-center justify-between">
                                   <div className="flex items-center gap-2">
-                                    <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-[#0BA70B] dark:text-emerald-400 text-xs font-bold flex items-center justify-center shrink-0">
+                                    <span className="w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-[#129D44] dark:text-emerald-400 text-xs font-bold flex items-center justify-center shrink-0">
                                       {bIdx + 1}
                                     </span>
                                     <span className="font-bold text-xs sm:text-sm text-slate-600 dark:text-slate-300">
@@ -2724,7 +2724,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                     Costo unitario <span className="text-rose-500 font-semibold ml-1">${unitCost.toLocaleString('es-AR')}</span>
                                   </span>
                                   <span className="text-gray-400 dark:text-slate-400">
-                                    Ganancia <span className="text-[#0BA70B] font-semibold ml-1">${unitGrossProfit.toLocaleString('es-AR')}</span>
+                                    Ganancia <span className="text-[#129D44] font-semibold ml-1">${unitGrossProfit.toLocaleString('es-AR')}</span>
                                   </span>
                                   <span className="text-gray-400 dark:text-slate-400">
                                     Márgen <span className="text-slate-600 dark:text-slate-300 font-bold ml-1">%{Math.round(marginPercent)}</span>
@@ -2840,7 +2840,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                   </div>
 
                                   <div className="text-right shrink-0">
-                                    <div className={cn("font-bold text-xs", isPositive ? "text-[#0BA70B]" : "text-rose-500")}>
+                                    <div className={cn("font-bold text-xs", isPositive ? "text-[#129D44]" : "text-rose-500")}>
                                       {isPositive ? `+${mov.quantity}u` : `${mov.quantity}u`}
                                     </div>
                                     {mov.resultingStock !== undefined && (
@@ -3490,7 +3490,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                                     {ent.type}
                                                   </span>
                                                 </div>
-                                                <span className="text-[11px] text-[#0BA70B]">
+                                                <span className="text-[11px] text-[#129D44]">
                                                   {ent.phone || ent.cuit || '-'}
                                                 </span>
                                               </div>
@@ -3512,7 +3512,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                         {selectedPurchaseEntity.type}
                                       </span>
                                     </div>
-                                    <p className="text-xs font-mono text-[#0BA70B]">
+                                    <p className="text-xs font-mono text-[#129D44]">
                                       {selectedPurchaseEntity.phone || selectedPurchaseEntity.cuit || '-'}
                                     </p>
                                   </div>
@@ -3969,7 +3969,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                       className={cn(
                         "h-7 text-xs font-bold rounded-lg transition-all cursor-pointer flex items-center justify-center",
                         entityForm.status === 'activo'
-                          ? "bg-white dark:bg-slate-900 text-[#0BA70B] shadow-2xs"
+                          ? "bg-white dark:bg-slate-900 text-[#129D44] shadow-2xs"
                           : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
                       )}
                     >
@@ -4001,7 +4001,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                     <button
                       type="submit"
                       disabled={isSavingEntity}
-                      className="h-9 flex-1 rounded-xl text-xs font-bold bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white shadow-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
+                      className="h-9 flex-1 rounded-xl text-xs font-bold bg-[#129D44] hover:bg-[#099609] active:scale-95 text-white shadow-xs transition-all cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
                     >
                       {isSavingEntity ? 'Guardando...' : (entityModalMode === 'create' ? 'Crear Entidad' : 'Guardar Cambios')}
                     </button>
@@ -4178,7 +4178,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                     <button
                       type="submit"
                       disabled={isSavingConcept}
-                      className="flex-1 py-2.5 rounded-xl bg-[#0BA70B] hover:bg-[#099609] active:scale-95 text-white text-xs font-bold shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                      className="flex-1 py-2.5 rounded-xl bg-[#129D44] hover:bg-[#099609] active:scale-95 text-white text-xs font-bold shadow-md transition-all cursor-pointer flex items-center justify-center gap-1.5"
                     >
                       {isSavingConcept ? 'Guardando...' : (conceptModalMode === 'create' ? 'Crear' : 'Guardar')}
                     </button>

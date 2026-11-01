@@ -1124,7 +1124,7 @@ export function downloadWeeklyBillingPdf(
   const dueStr = formatDDMMYYYY(obligation.dueDateStr);
 
   // 1. Encabezado institucional Jogo SaaS
-  doc.setFillColor(11, 167, 11); // #0BA70B Verde Jogo
+  doc.setFillColor(11, 167, 11); // #129D44 Verde Jogo
   doc.rect(0, 0, 210, 28, 'F');
 
   doc.setTextColor(255, 255, 255);

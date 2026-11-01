@@ -216,12 +216,12 @@ export const ActivationView: React.FC<ActivationViewProps> = ({
   return (
     <div className="min-h-screen w-full flex flex-col items-center justify-center p-4 md:p-8 bg-[#0a101d] text-white relative overflow-hidden select-none">
       {/* Background glow ambiance */}
-      <div className="absolute top-1/4 -left-32 w-96 h-96 bg-[#0BA70B]/15 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute top-1/4 -left-32 w-96 h-96 bg-[#129D44]/15 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute bottom-1/4 -right-32 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
 
       {/* Brand Header */}
       <div className="mb-6 flex items-center gap-3 z-10">
-        <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#0BA70B] to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-900/30">
+        <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#129D44] to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-900/30">
           <Sparkles className="w-5 h-5 text-white" />
         </div>
         <h1 className="text-2xl font-black tracking-tight text-white flex items-center gap-1.5">
@@ -272,7 +272,7 @@ export const ActivationView: React.FC<ActivationViewProps> = ({
                   value={inputCode}
                   onChange={(e) => setInputCode(e.target.value.toUpperCase())}
                   placeholder="Ej: JOGO-YDT50-846"
-                  className="w-full px-4 py-3.5 bg-slate-950/80 border border-slate-700/80 rounded-2xl text-center text-lg font-mono font-bold tracking-wider text-emerald-300 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#0BA70B] focus:border-transparent transition-all"
+                  className="w-full px-4 py-3.5 bg-slate-950/80 border border-slate-700/80 rounded-2xl text-center text-lg font-mono font-bold tracking-wider text-emerald-300 placeholder:text-slate-600 focus:outline-none focus:ring-2 focus:ring-[#129D44] focus:border-transparent transition-all"
                   autoFocus
                 />
               </div>
@@ -287,7 +287,7 @@ export const ActivationView: React.FC<ActivationViewProps> = ({
               <button
                 type="submit"
                 disabled={!inputCode.trim()}
-                className="w-full py-3.5 px-6 rounded-2xl bg-[#0BA70B] hover:bg-emerald-600 active:scale-[0.99] disabled:opacity-40 disabled:pointer-events-none text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50 transition-all cursor-pointer"
+                className="w-full py-3.5 px-6 rounded-2xl bg-[#129D44] hover:bg-emerald-600 active:scale-[0.99] disabled:opacity-40 disabled:pointer-events-none text-white font-bold text-sm flex items-center justify-center gap-2 shadow-lg shadow-emerald-950/50 transition-all cursor-pointer"
               >
                 <span>Validar Código</span>
                 <ArrowRight className="w-4 h-4" />
@@ -375,7 +375,7 @@ export const ActivationView: React.FC<ActivationViewProps> = ({
               <button
                 type="button"
                 onClick={onNavigateHome}
-                className="w-full py-3.5 px-6 rounded-2xl bg-[#0BA70B] hover:bg-emerald-600 text-white font-bold text-sm shadow-lg shadow-emerald-950/50 transition-all cursor-pointer flex items-center justify-center gap-2"
+                className="w-full py-3.5 px-6 rounded-2xl bg-[#129D44] hover:bg-emerald-600 text-white font-bold text-sm shadow-lg shadow-emerald-950/50 transition-all cursor-pointer flex items-center justify-center gap-2"
               >
                 <span>Ir al Panel de Jogo</span>
                 <ArrowRight className="w-4 h-4" />

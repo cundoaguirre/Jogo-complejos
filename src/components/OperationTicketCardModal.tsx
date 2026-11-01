@@ -189,8 +189,8 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
   );
 
   // Block color & hex
-  // Mostrador: #1d63b8 | Gastos/Compras: #7c12e8 | Reservas: #0BA70B
-  const blockBgClass = isBooking ? 'bg-[#0BA70B]' : isExpenseOrPurchase ? 'bg-[#7c12e8]' : 'bg-[#1d63b8]';
+  // Mostrador: #1d63b8 | Gastos/Compras: #7c12e8 | Reservas: #129D44
+  const blockBgClass = isBooking ? 'bg-[#129D44]' : isExpenseOrPurchase ? 'bg-[#7c12e8]' : 'bg-[#1d63b8]';
 
   // Resolved client / entity name
   const resolvedName = useMemo(() => {
@@ -881,7 +881,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                                 <UserIcon size={16} />
                               </div>
                               <div className="min-w-0 flex items-center flex-wrap">
-                                <span className="font-bold text-sm text-slate-700 truncate group-hover:text-[#0BA70B] transition-colors">
+                                <span className="font-bold text-sm text-slate-700 truncate group-hover:text-[#129D44] transition-colors">
                                   {player.name}
                                 </span>
                                 {player.isHost && (
@@ -927,7 +927,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                                       isHost: player.isHost
                                     });
                                   }}
-                                  className="text-sm font-bold text-[#0BA70B] underline cursor-pointer px-1 transition-transform active:scale-95"
+                                  className="text-sm font-bold text-[#129D44] underline cursor-pointer px-1 transition-transform active:scale-95"
                                   title={`Cobrar a ${player.name}`}
                                 >
                                   ${(player.amountPaid || 0).toLocaleString('es-AR')}
@@ -941,7 +941,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   onClick={(e) => e.stopPropagation()}
-                                  className="p-1 text-[#0BA70B] hover:text-[#088308] bg-transparent cursor-pointer transition-colors"
+                                  className="p-1 text-[#129D44] hover:text-[#088308] bg-transparent cursor-pointer transition-colors"
                                   title={`Enviar WhatsApp a ${player.name}`}
                                   aria-label={`Enviar WhatsApp a ${player.name}`}
                                 >
@@ -1051,7 +1051,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                     onChange={(e) => setPlayerSearchQuery(e.target.value)}
                     onKeyDown={(e) => e.stopPropagation()}
                     onPointerDown={(e) => e.stopPropagation()}
-                    className="w-full pl-9 pr-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-[#0BA70B]"
+                    className="w-full pl-9 pr-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-[#129D44]"
                     autoFocus
                   />
                 </div>
@@ -1081,7 +1081,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                             <div className="text-[10px] text-gray-400 font-mono">{u.phone}</div>
                           ) : null}
                         </div>
-                        <span className="text-[#0BA70B] font-bold text-xs">+ Agregar</span>
+                        <span className="text-[#129D44] font-bold text-xs">+ Agregar</span>
                       </div>
                     ))
                   )}

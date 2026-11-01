@@ -533,7 +533,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
   const amountSubtitle = isExpenseOrPurchase ? 'total a pagar' : 'total a cobrar';
 
   // Action button title and color
-  // Mostrador: #1d63b8 | Gastos: #7c12e8 | Compras: #7c12e8 | Reservas: #0BA70B
+  // Mostrador: #1d63b8 | Gastos: #7c12e8 | Compras: #7c12e8 | Reservas: #129D44
   const actionButtonText = isBooking
     ? 'Cobrar reserva'
     : isExpense
@@ -543,7 +543,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
     : 'Finalizar venta';
 
   const actionButtonColor = isBooking 
-    ? 'bg-[#0BA70B] hover:bg-[#099609]' 
+    ? 'bg-[#129D44] hover:bg-[#099609]' 
     : isExpenseOrPurchase 
     ? 'bg-[#7c12e8] hover:bg-[#680ec9]' 
     : 'bg-[#1d63b8] hover:bg-[#18549e]';
@@ -554,7 +554,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
     : isExpenseOrPurchase
     ? 'bg-[#f1e8fc] text-[#7c12e8]'
     : isBooking
-    ? 'bg-emerald-100 text-[#0BA70B]'
+    ? 'bg-emerald-100 text-[#129D44]'
     : 'bg-[#e8f0fe] text-[#1d63b8]';
 
   // Search results for Clients (users) or Entities (expenseEntities)

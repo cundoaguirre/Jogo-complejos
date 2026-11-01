@@ -330,7 +330,7 @@ export const TicketModal: React.FC<TicketModalProps> = ({
               {/* Tarjeta cuadrada izquierda */}
               {isBooking ? (
                 <div className="w-14 h-14 rounded-2xl bg-[#ecfdf5] flex items-center justify-center shrink-0">
-                  <Calendar size={28} strokeWidth={2} className="text-[#0BA70B]" />
+                  <Calendar size={28} strokeWidth={2} className="text-[#129D44]" />
                 </div>
               ) : isPurchase ? (
                 <div className="w-14 h-14 rounded-2xl bg-[#f5f3ff] flex items-center justify-center shrink-0">
