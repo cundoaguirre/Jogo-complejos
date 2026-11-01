@@ -48,7 +48,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
   const [loading, setLoading] = useState(true);
   const [validation, setValidation] = useState<InvitationValidationResult | null>(null);
-  const [complexName, setComplexName] = useState<string>('El Colo Loco');
+  const [complexName, setComplexName] = useState<string>('');
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isClaiming, setIsClaiming] = useState(false);
   const [claimError, setClaimError] = useState<string | null>(null);
@@ -172,7 +172,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
   };
 
   const invalidInfo = isInvalidToken ? getInvalidReasonMessage() : null;
-  const displayComplexName = validation?.complexName || complexName || 'El Colo Loco';
+  const displayComplexName = validation?.complexName || complexName || '';
 
   return (
     <div className="relative w-full min-h-[100dvh] overflow-hidden select-none">
@@ -207,7 +207,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
           <ArrowLeft size={24} strokeWidth={2.2} className="text-white" />
         </button>
 
-        {/* Zona superior: Logo oficial de Jogo en blanco (76px, centrado) */}
+        {/* Zona superior: Logo oficial de Jogo en blanco (125px, centrado) */}
         <div className="pt-[56px] pb-[18px] flex justify-center items-center w-full">
           <img
             src="/assets/aistudio/Photoroom-20261027_123311_8fbc6431.png"
@@ -220,24 +220,24 @@ export const InviteView: React.FC<InviteViewProps> = ({
               }
             }}
             alt="Jogo"
-            className="w-[76px] h-auto object-contain mx-auto select-none pointer-events-none drop-shadow-xs"
+            className="w-[125px] h-auto object-contain mx-auto select-none pointer-events-none drop-shadow-xs"
           />
         </div>
 
-        {/* Bloque Central de Textos (con mb-8 sm:mb-10 para separación limpia de la tarjeta inferior) */}
-        <div className="my-auto mb-8 sm:mb-10 px-[32px] sm:px-[36px] flex flex-col items-start text-left gap-[16px] max-w-[460px] mx-auto w-full">
-          {/* Bloque 1: Cápsula Link de invitación */}
+        {/* Bloque Central de Textos (gap uniforme de 18px entre elementos y mayor separación con la tarjeta inferior) */}
+        <div className="my-auto mb-6 sm:mb-7 px-[32px] sm:px-[36px] flex flex-col items-start text-left gap-[18px] max-w-[460px] mx-auto w-full">
+          {/* Bloque 1: Cápsula Link de invitación (22px de alto total, círculo de 22px de alto total) */}
           <div 
-            className="h-[28px] rounded-full !bg-[#EAFBEA] pl-[3px] pr-[12px] flex items-center gap-[7px] w-fit shadow-xs"
+            className="h-[22px] rounded-full !bg-[#EAFBEA] pl-0 pr-[10px] flex items-center gap-[6px] w-fit shadow-xs"
             style={{ backgroundColor: '#EAFBEA' }}
           >
             <span 
               className="w-[22px] h-[22px] rounded-full !bg-[#0BA70B] flex items-center justify-center shrink-0"
               style={{ backgroundColor: '#0BA70B' }}
             >
-              <Link2 size={12} strokeWidth={2.5} className="!text-[#EAFBEA] -rotate-45" />
+              <Link2 size={11} strokeWidth={2.5} className="!text-[#EAFBEA] -rotate-45" />
             </span>
-            <span className="text-[12px] sm:text-[12.5px] font-bold !text-[#0BA70B] leading-none tracking-[-0.01em]">
+            <span className="text-[10.5px] sm:text-[11px] font-bold !text-[#0BA70B] leading-none tracking-[-0.01em]">
               Link de invitación
             </span>
           </div>
@@ -248,9 +248,12 @@ export const InviteView: React.FC<InviteViewProps> = ({
             por este gran paso!
           </h1>
 
-          {/* Bloque 3: Línea de bienvenida con nombre del complejo */}
+          {/* Bloque 3: Línea de bienvenida con nombre dinámico del complejo (sin Colo Loco por defecto) */}
           <p className="text-[19px] sm:text-[20px] leading-[1.2] tracking-[-0.015em] font-normal text-white">
-            <span>Bienvenido a Jogo, </span><span className="font-extrabold text-white">{displayComplexName}.</span>
+            <span>Bienvenido a Jogo{displayComplexName ? ', ' : '.'}</span>
+            {displayComplexName && (
+              <span className="font-extrabold text-white">{displayComplexName}.</span>
+            )}
           </p>
 
           {/* Bloque 4: Párrafo explicativo */}
@@ -261,9 +264,9 @@ export const InviteView: React.FC<InviteViewProps> = ({
           </p>
         </div>
 
-        {/* Tarjeta Inferior Blanca */}
+        {/* Tarjeta Inferior Blanca (con pb-[34px] sm:pb-[40px] para franja blanca inferior holgada) */}
         <div 
-          className="rounded-t-[34px] !bg-[#FFFFFF] w-full pt-[22px] pb-[18px] px-[32px] sm:px-[36px] max-w-[460px] mx-auto relative z-20 shadow-none text-left"
+          className="rounded-t-[34px] !bg-[#FFFFFF] w-full pt-[22px] pb-[34px] sm:pb-[40px] px-[32px] sm:px-[36px] max-w-[460px] mx-auto relative z-20 shadow-none text-left"
           style={{ backgroundColor: '#FFFFFF' }}
         >
           {/* Cabecera de la tarjeta */}
@@ -339,7 +342,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
                       <>
                         <GoogleIcon />
                         <span className="text-[14.5px] sm:text-[15px] font-normal !text-[#1A1A1A]">
-                          Inicia sesión con <span className="font-bold !text-[#1A1A1A]">Google</span>
+                          <span>Inicia sesión con </span><span className="font-bold !text-[#1A1A1A]">Google</span>
                         </span>
                       </>
                     )}
@@ -364,15 +367,17 @@ export const InviteView: React.FC<InviteViewProps> = ({
             </>
           )}
 
-          {/* Bloque Legal Inferior */}
+          {/* Bloque Legal Inferior: Color original #249F87 y franja blanca inferior holgada */}
           <div className="mt-[14px] text-center text-[10.5px] sm:text-[11px] leading-[1.35] !text-[#A0A0A0]">
             <p>
               <span>Al continuar, tu cuenta de Google quedará</span><br />
-              <span>vinculada con </span><span className="font-bold !text-[#888888]">{displayComplexName}</span><span> y aceptas nuestros</span><br />
+              <span>vinculada con </span>
+              <span className="font-bold !text-[#888888]">{displayComplexName || 'tu complejo'}</span>
+              <span> y aceptas nuestros</span><br />
               <button 
                 type="button" 
                 onClick={() => setLegalModal('terms')} 
-                className="font-bold italic !text-[#0BA70B] cursor-pointer bg-transparent border-0 p-0 inline hover:underline"
+                className="font-bold italic !text-[#249F87] cursor-pointer bg-transparent border-0 p-0 inline hover:underline"
               >
                 Términos y Condiciones
               </button>
@@ -380,7 +385,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
               <button 
                 type="button" 
                 onClick={() => setLegalModal('privacy')} 
-                className="font-bold italic !text-[#0BA70B] cursor-pointer bg-transparent border-0 p-0 inline hover:underline"
+                className="font-bold italic !text-[#249F87] cursor-pointer bg-transparent border-0 p-0 inline hover:underline"
               >
                 Políticas de Privacidad
               </button>
@@ -410,8 +415,8 @@ export const InviteView: React.FC<InviteViewProps> = ({
             <div className="text-sm text-gray-600 leading-relaxed space-y-3">
               <p>
                 {legalModal === 'terms'
-                  ? 'Al utilizar la plataforma Jogo para complejos deportivos, usted acepta cumplir con los términos de servicio, confidencialidad y condiciones de administración del complejo.'
-                  : 'Jogo se compromete a proteger la privacidad y seguridad de sus datos y los de su complejo deportivo, utilizándolos exclusivamente para la gestión operativa y administrativa.'}
+                  ? 'La aplicación se está actualizando constantemente...'
+                  : 'Seguimos trabajando, la aplicación se está actualizando constantemente...'}
               </p>
             </div>
           </div>
