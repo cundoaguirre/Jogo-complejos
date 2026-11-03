@@ -9081,12 +9081,14 @@ const FinanceView = ({
   }, [activeSection, filteredCombinedMovements, filteredCombinedOperations, bookingsMap, operationsMap, effectiveCourts, users]);
 
   return (
-    <div className="w-full max-w-4xl mx-auto flex-1 flex flex-col space-y-3.5 relative pb-0">
+    <div className="w-full max-w-4xl lg:max-w-7xl mx-auto flex-1 flex flex-col space-y-3.5 lg:space-y-0 lg:grid lg:grid-cols-12 lg:gap-5 lg:items-start relative pb-0">
       
       {/* =================================================================== */}
-      {/* 1. TARJETA GRANDE 1: LAYOUT DE 2 COLUMNAS (MÉTRICAS CONSOLIDADAS)   */}
+      {/* COLUMNA IZQUIERDA (Desktop: col-span-5, sticky): MÉTRICAS           */}
       {/* =================================================================== */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-gray-100 dark:border-slate-800 p-3.5 sm:p-5 shrink-0">
+      <div className="lg:col-span-5 lg:sticky lg:top-4 space-y-3.5">
+        {/* 1. TARJETA GRANDE 1: LAYOUT DE 2 COLUMNAS (MÉTRICAS CONSOLIDADAS)   */}
+        <div className="bg-white dark:bg-slate-900 rounded-3xl shadow-sm border border-gray-100 dark:border-slate-800 p-3.5 sm:p-5 shrink-0">
         <div className="grid grid-cols-12 gap-2.5 sm:gap-3.5 items-stretch">
           
           {/* 2.1. Columna Izquierda: Reducida a col-span-4 para no quitar espacio */}
@@ -9233,11 +9235,13 @@ const FinanceView = ({
 
         </div>
       </div>
+      </div>
 
       {/* =================================================================== */}
-      {/* 2. TARJETA GRANDE 2: MOVIMIENTOS & OPERACIONES, FILTRO Y TIMELINE   */}
+      {/* COLUMNA DERECHA (Desktop: col-span-7): MOVIMIENTOS & OPERACIONES   */}
       {/* =================================================================== */}
-      <div className="bg-white dark:bg-slate-900 rounded-t-3xl rounded-b-none border-t border-x border-b-0 border-gray-100 dark:border-slate-800 p-4 sm:p-5 pb-36 shadow-sm flex-1 flex flex-col space-y-4">
+      <div className="lg:col-span-7">
+        <div className="bg-white dark:bg-slate-900 rounded-t-3xl rounded-b-none lg:rounded-3xl lg:border-b border-t border-x border-b-0 border-gray-100 dark:border-slate-800 p-4 sm:p-5 pb-36 shadow-sm flex flex-col space-y-4">
         
         {/* Fila Superior: Selector de sección y Filtro desplegable a la derecha */}
         <div className="flex items-center justify-between">
@@ -9437,6 +9441,7 @@ const FinanceView = ({
           </div>
         )}
 
+        </div>
       </div>
 
       {/* =================================================================== */}
