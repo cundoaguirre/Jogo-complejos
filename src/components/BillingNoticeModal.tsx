@@ -9,6 +9,7 @@ import {
   markDailyNoticeDismissed,
   markSessionNoticeDismissed
 } from '../lib/weeklyBilling';
+import { downloadUnifiedWeeklyReportPdf } from '../lib/weeklyReportPdfGenerator';
 
 interface BillingNoticeModalProps {
   isOpen: boolean;
@@ -22,6 +23,10 @@ interface BillingNoticeModalProps {
   complexId: string;
   complexName: string;
   onOpenPayModal: () => void;
+  bookings?: any[];
+  operations?: any[];
+  financialMovements?: any[];
+  venueProfile?: any;
 }
 
 export const BillingNoticeModal: React.FC<BillingNoticeModalProps> = ({
@@ -35,8 +40,13 @@ export const BillingNoticeModal: React.FC<BillingNoticeModalProps> = ({
   billingConfig,
   complexId,
   complexName,
-  onOpenPayModal
+  onOpenPayModal,
+  bookings,
+  operations,
+  financialMovements,
+  venueProfile
 }) => {
+  const [isDownloading, setIsDownloading] = React.useState(false);
   if (!isOpen || !noticeType) return null;
 
   const handleDismiss = () => {
@@ -50,9 +60,26 @@ export const BillingNoticeModal: React.FC<BillingNoticeModalProps> = ({
     onClose();
   };
 
-  const handleDownloadPdf = () => {
+  const handleDownloadPdf = async () => {
     if (obligation) {
-      downloadWeeklyBillingPdf(obligation, complexName);
+      try {
+        setIsDownloading(true);
+        await downloadUnifiedWeeklyReportPdf({
+          complexId,
+          complexName,
+          startDateStr: obligation.startDateStr,
+          endDateStr: obligation.endDateStr,
+          bookings: (bookings && bookings.length > 0) ? bookings : undefined,
+          operations,
+          financialMovements,
+          venueProfile
+        });
+      } catch (err) {
+        console.error('Error generando reporte semanal:', err);
+        downloadWeeklyBillingPdf(obligation, complexName);
+      } finally {
+        setIsDownloading(false);
+      }
     }
   };
 

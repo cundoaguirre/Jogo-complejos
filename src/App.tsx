@@ -7,14 +7,12 @@ import {
   Car, Utensils, Wifi, Coffee, Shirt, Camera, Edit3, Trash2, ShoppingBag, ShoppingBasket, Flame, Moon, Sun, Eye, EyeOff, User as UserIcon, UserCheck, UserPlus, BarChart2, MoreVertical, MoreHorizontal, FileText, Download,
   MessageSquare, MessageCircle, Send, Bug, Lightbulb, Headphones, MousePointer, Activity, Target, Trophy, Wrench, Package, Zap, LogOut, LogIn, AlertCircle, AlertTriangle,
   Coins, Receipt, CheckCircle2, Mail, Copy, Building2, CreditCard, Info, Pencil, Footprints, Share2,
-  Landmark, CircleDollarSign, History, GripVertical
+  Landmark, CircleDollarSign, History, GripVertical, Loader2, FileDown
 } from 'lucide-react';
 import { format, differenceInDays, isSameDay, isSameWeek, isSameMonth, parseISO, startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear } from 'date-fns';
 import { es } from 'date-fns/locale';
 import { cn } from './lib/utils';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, PieChart, Pie, Cell, AreaChart, Area } from 'recharts';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
 import type { User, Match, Transaction, DashboardStats, Court } from './types';
 import { logCrashReport } from './logger';
 import { ContactSupportModal } from './components/ContactSupportModal';
@@ -78,6 +76,7 @@ import { PendingSettleModal } from './components/PendingSettleModal';
 import { OperationTicketCardModal } from './components/OperationTicketCardModal';
 import { CancelBookingModal } from './components/CancelBookingModal';
 import { DeleteBookingModal } from './components/DeleteBookingModal';
+import { downloadUnifiedWeeklyReportPdf } from './lib/weeklyReportPdfGenerator';
 
 // --- Components ---
 
@@ -277,7 +276,17 @@ const Sidebar = ({
         isOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
       )}>
         <div className="p-6 border-b border-slate-800 flex justify-between items-center">
-          <h1 className="text-2xl font-bold tracking-tight text-emerald-400">JOGO <span className="text-slate-400 text-sm font-normal">Manager</span></h1>
+          <img
+            src="/assets/jogo-logo-white.png"
+            onError={(e) => {
+              const target = e.currentTarget;
+              if (!target.src.includes('logo-white.png')) {
+                target.src = '/logo-white.png';
+              }
+            }}
+            alt="Jogo"
+            className="h-7 w-auto object-contain select-none pointer-events-none"
+          />
           <button 
             type="button" 
             onClick={(e) => {
@@ -293,18 +302,6 @@ const Sidebar = ({
         </div>
         
         <div className="p-4 flex-1 overflow-y-auto space-y-6">
-          {activeComplex && (
-            <div className="p-3 bg-emerald-950/40 border border-emerald-500/30 rounded-2xl flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
-                <Store size={18} />
-              </div>
-              <div className="truncate">
-                <p className="text-[10px] uppercase font-bold text-emerald-400 tracking-wider">Complejo Activo</p>
-                <p className="text-xs font-bold text-white truncate">{activeComplex.name || 'Mi Complejo'}</p>
-              </div>
-            </div>
-          )}
-
           {menuItems.length > 0 && (
             <div>
               <div className="text-xs font-bold text-slate-500 tracking-wider mb-3 px-2">
@@ -333,20 +330,6 @@ const Sidebar = ({
               </nav>
             </div>
           )}
-
-          <div className="pt-2">
-            <button
-              type="button"
-              onClick={() => {
-                if (onOpenActivation) onOpenActivation();
-                onClose();
-              }}
-              className="w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl bg-slate-800/80 hover:bg-slate-800 text-slate-300 hover:text-emerald-400 border border-slate-700/50 text-xs font-semibold cursor-pointer transition-all active:scale-[0.98]"
-            >
-              <ShieldCheck size={16} className="text-emerald-400" />
-              <span>Activar / Canjear Complejo</span>
-            </button>
-          </div>
         </div>
 
         <div className="mt-auto p-4 border-t border-slate-800 space-y-3">
@@ -11125,71 +11108,114 @@ const BottomNav = ({ active, onNavigate }: { active: NavTabId | string, onNaviga
 
 // --- Main Layout ---
 
-const ReportsModal = ({ isOpen, onClose, complexId = 'complejo_central' }: { isOpen: boolean, onClose: () => void, complexId?: string }) => {
-  const months = [];
-  const currentDate = new Date();
-  for (let i = 0; i < 6; i++) {
-    const d = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
-    months.push({
-      id: safeFormatDate(d, 'yyyy-MM'),
-      label: safeFormatDate(d, 'MMMM yyyy', { locale: es }),
-      date: d
-    });
-  }
+const ReportsModal = ({ 
+  isOpen, 
+  onClose, 
+  complexId = 'complejo_central',
+  complexName = 'Mi Complejo'
+}: { 
+  isOpen: boolean; 
+  onClose: () => void; 
+  complexId?: string;
+  complexName?: string;
+}) => {
+  const [activeTab, setActiveTab] = useState<'weekly' | 'monthly'>('weekly');
+  const [downloadingWeek, setDownloadingWeek] = useState<string | null>(null);
+  const [downloadingMonth, setDownloadingMonth] = useState<string | null>(null);
 
-  const handleDownload = async (monthId: string, monthLabel: string) => {
+  // Generate last 8 weeks (Monday to Sunday)
+  const weeks = useMemo(() => {
+    const list = [];
+    const now = new Date();
+    // Monday of current week
+    const currentMonday = startOfWeek(now, { weekStartsOn: 1 });
+    for (let i = 0; i < 8; i++) {
+      const mon = new Date(currentMonday.getTime() - i * 7 * 86400000);
+      const sun = new Date(mon.getTime() + 6 * 86400000);
+      const startStr = format(mon, 'yyyy-MM-dd');
+      const endStr = format(sun, 'yyyy-MM-dd');
+      const key = `${startStr}_${endStr}`;
+      
+      let badgeLabel = '';
+      let badgeColor = 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
+      if (i === 0) {
+        badgeLabel = 'Esta semana (En curso)';
+        badgeColor = 'bg-[#129D44]/15 text-[#129D44] font-bold border border-[#129D44]/30';
+      } else if (i === 1) {
+        badgeLabel = 'Semana anterior';
+        badgeColor = 'bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 font-semibold';
+      } else {
+        badgeLabel = `Semana ${format(mon, 'dd/MM')}`;
+      }
+
+      list.push({
+        key,
+        startStr,
+        endStr,
+        label: `${format(mon, 'dd/MM')} al ${format(sun, 'dd/MM/yyyy')}`,
+        badgeLabel,
+        badgeColor,
+        isCurrent: i === 0
+      });
+    }
+    return list;
+  }, []);
+
+  // Generate last 6 months
+  const months = useMemo(() => {
+    const list = [];
+    const currentDate = new Date();
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+      list.push({
+        id: format(d, 'yyyy-MM'),
+        label: format(d, 'MMMM yyyy', { locale: es }),
+        date: d
+      });
+    }
+    return list;
+  }, []);
+
+  const handleDownloadWeeklyReport = async (w: { startStr: string; endStr: string; key: string }) => {
+    if (downloadingWeek) return;
     try {
+      setDownloadingWeek(w.key);
+      await downloadUnifiedWeeklyReportPdf({
+        complexId: (!complexId || complexId === 'complejo_central') ? 'B' : complexId,
+        complexName: complexName || 'Mi Complejo',
+        startDateStr: w.startStr,
+        endDateStr: w.endStr
+      });
+    } catch (err) {
+      console.error('Error generating unified weekly PDF:', err);
+    } finally {
+      setDownloadingWeek(null);
+    }
+  };
+
+  const handleDownloadMonthly = async (monthId: string, monthLabel: string) => {
+    if (downloadingMonth) return;
+    try {
+      setDownloadingMonth(monthId);
       const targetComplexId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
-      const colRef = collection(db, 'bookings');
-      const q = query(colRef, where('complejoId', '==', targetComplexId));
-      const snap = await getDocs(q);
-      const allBookings = snap.docs.map(d => formatBookingToMatch({ id: d.id, ...d.data() }));
+      
+      const [year, month] = monthId.split('-').map(Number);
+      const startDateStr = `${monthId}-01`;
+      const lastDay = new Date(year, month, 0).getDate();
+      const endDateStr = `${monthId}-${String(lastDay).padStart(2, '0')}`;
 
-      const monthBookings = allBookings.filter(b => {
-        if (b.status === 'cancelled') return false;
-        const bDate = b.date || (b.start_time ? String(b.start_time).split('T')[0] : '');
-        return bDate && bDate.startsWith(monthId);
+      await downloadUnifiedWeeklyReportPdf({
+        complexId: targetComplexId,
+        complexName: complexName || 'Mi Complejo',
+        periodType: 'monthly',
+        startDateStr,
+        endDateStr,
+        periodLabel: monthLabel
       });
-
-      let incomeTotal = 0;
-      const txRows: any[] = [];
-
-      monthBookings.forEach(b => {
-        const price = Number(b.price || b.price_total || 0);
-        const paid = b.payment_status === 'paid' ? price : Number(b.amount_paid || b.deposit || 0);
-        const amount = paid > 0 ? paid : price;
-        incomeTotal += amount;
-        txRows.push([
-          b.date || `${monthId}-01`,
-          'Ingreso',
-          `Alquiler (${b.courtName || 'Cancha'})`,
-          `$${amount.toLocaleString()}`
-        ]);
-      });
-
-      const expenseTotal = 0;
-      const balance = incomeTotal - expenseTotal;
-      
-      const doc = new jsPDF();
-      doc.setFontSize(20);
-      doc.text(`Resumen Financiero - ${monthLabel}`, 14, 22);
-      
-      doc.setFontSize(12);
-      doc.text(`Ingresos Totales: $${incomeTotal.toLocaleString()}`, 14, 35);
-      doc.text(`Egresos Totales: $${expenseTotal.toLocaleString()}`, 14, 42);
-      doc.text(`Balance Neto: $${balance.toLocaleString()}`, 14, 49);
-      
-      autoTable(doc, {
-        startY: 55,
-        head: [['Fecha', 'Tipo', 'Categoría', 'Monto']],
-        body: txRows.length > 0 ? txRows : [['-', 'Sin movimientos en este período', '-', '$0']],
-        theme: 'striped',
-        headStyles: { fillColor: [11, 167, 11] }, // Emerald/Green theme matching App
-      });
-      
-      doc.save(`Resumen_${monthId}.pdf`);
-    } catch(e) {
-      console.error("Error generating PDF", e);
+    } catch (e) {
+      console.error("Error generating unified monthly PDF:", e);
+    } finally {
+      setDownloadingMonth(null);
     }
   };
 
@@ -11208,10 +11234,21 @@ const ReportsModal = ({ isOpen, onClose, complexId = 'complejo_central' }: { isO
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         onClick={(e) => e.stopPropagation()}
-        className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden"
+        className="bg-white dark:bg-slate-900 rounded-3xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-100 dark:border-slate-800"
       >
-        <div className="flex justify-between items-center p-6 border-b border-gray-100">
-          <h2 className="text-xl font-bold text-gray-900">Resúmenes Mensuales</h2>
+        {/* Header */}
+        <div className="flex justify-between items-start p-5 border-b border-gray-100 dark:border-slate-800">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
+              <span>Reportes de Gestión</span>
+              <span className="text-[10px] font-black tracking-wider uppercase px-2 py-0.5 rounded-full bg-[#129D44]/15 text-[#129D44]">
+                PDF Oficial
+              </span>
+            </h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Descargá resúmenes ejecutivos con finanzas, ocupación y métricas
+            </p>
+          </div>
           <button 
             type="button" 
             onClick={(e) => {
@@ -11219,32 +11256,133 @@ const ReportsModal = ({ isOpen, onClose, complexId = 'complejo_central' }: { isO
               e.stopPropagation();
               onClose();
             }} 
-            className="p-2 bg-gray-100 text-gray-500 rounded-full hover:bg-gray-200 cursor-pointer"
+            className="p-2 bg-gray-100 dark:bg-slate-800 text-gray-500 rounded-full hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
           >
-            <X size={20} />
+            <X size={18} />
           </button>
         </div>
-        <div className="p-4 space-y-2 max-h-[60vh] overflow-y-auto">
-           {months.map((m, mIdx) => (
-             <button type="button"
-               key={`report-month-${m.id || mIdx}-${mIdx}`}
-               onClick={() => handleDownload(m.id, m.label)}
-               className="w-full flex items-center justify-between p-4 bg-gray-50 hover:bg-emerald-50 rounded-2xl border border-gray-100 hover:border-emerald-200 transition-colors"
-             >
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-white rounded-xl text-emerald-600 shadow-sm">
-                     <FileText size={20} />
-                  </div>
-                  <span className="font-bold text-gray-700 capitalize">{m.label}</span>
-                </div>
-                <Download size={20} className="text-gray-400" />
-             </button>
-           ))}
+
+        {/* Tab Selector */}
+        <div className="px-5 pt-3">
+          <div className="grid grid-cols-2 p-1 bg-gray-100 dark:bg-slate-800 rounded-xl">
+            <button
+              type="button"
+              onClick={() => setActiveTab('weekly')}
+              className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                activeTab === 'weekly'
+                  ? 'bg-white dark:bg-slate-900 text-[#129D44] shadow-sm'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-800'
+              }`}
+            >
+              Reporte Semanal (Ejecutivo)
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab('monthly')}
+              className={`py-2 text-xs font-bold rounded-lg transition-all ${
+                activeTab === 'monthly'
+                  ? 'bg-white dark:bg-slate-900 text-[#129D44] shadow-sm'
+                  : 'text-gray-500 dark:text-gray-400 hover:text-gray-800'
+              }`}
+            >
+              Resúmenes Mensuales
+            </button>
+          </div>
+        </div>
+
+        {/* Body content */}
+        <div className="p-5 space-y-2 max-h-[60vh] overflow-y-auto">
+          {activeTab === 'weekly' ? (
+            <div className="space-y-2">
+              <div className="text-[11px] font-medium text-gray-400 px-1 mb-2">
+                Semanas de Lunes a Domingo (con desglose financiero, ocupación y Jogo):
+              </div>
+              {weeks.map((w) => {
+                const isLoading = downloadingWeek === w.key;
+                return (
+                  <button
+                    type="button"
+                    key={`report-week-${w.key}`}
+                    onClick={() => handleDownloadWeeklyReport(w)}
+                    disabled={Boolean(downloadingWeek)}
+                    className="w-full flex items-center justify-between p-3.5 bg-gray-50 dark:bg-slate-800/60 hover:bg-[#129D44]/5 hover:border-[#129D44]/30 rounded-2xl border border-gray-100 dark:border-slate-800 transition-all text-left group disabled:opacity-60 cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-white dark:bg-slate-800 rounded-xl text-[#129D44] shadow-sm border border-gray-100 dark:border-slate-700 group-hover:bg-[#129D44] group-hover:text-white transition-colors">
+                        <FileText size={18} />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-gray-800 dark:text-slate-100 text-sm">
+                            {w.label}
+                          </span>
+                        </div>
+                        <span className={`inline-block text-[10px] px-2 py-0.5 rounded-full mt-1 ${w.badgeColor}`}>
+                          {w.badgeLabel}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 pl-2">
+                      {isLoading ? (
+                        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#129D44]/10 text-[#129D44] text-xs font-semibold">
+                          <Loader2 size={16} className="animate-spin" />
+                          <span>Generando...</span>
+                        </div>
+                      ) : (
+                        <div className="p-2 rounded-xl text-gray-400 group-hover:text-[#129D44] group-hover:bg-[#129D44]/10 transition-colors">
+                          <Download size={18} />
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="text-[11px] font-medium text-gray-400 px-1 mb-2">
+                Resúmenes mensuales consolidados de ingresos y egresos:
+              </div>
+              {months.map((m, mIdx) => {
+                const isLoading = downloadingMonth === m.id;
+                return (
+                  <button 
+                    type="button"
+                    key={`report-month-${m.id || mIdx}-${mIdx}`}
+                    onClick={() => handleDownloadMonthly(m.id, m.label)}
+                    disabled={Boolean(downloadingMonth)}
+                    className="w-full flex items-center justify-between p-3.5 bg-gray-50 dark:bg-slate-800/60 hover:bg-[#129D44]/5 hover:border-[#129D44]/30 rounded-2xl border border-gray-100 dark:border-slate-800 transition-all text-left group disabled:opacity-60 cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2.5 bg-white dark:bg-slate-800 rounded-xl text-[#129D44] shadow-sm border border-gray-100 dark:border-slate-700 group-hover:bg-[#129D44] group-hover:text-white transition-colors">
+                        <FileText size={18} />
+                      </div>
+                      <span className="font-bold text-gray-800 dark:text-slate-100 text-sm capitalize">
+                        {m.label}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 pl-2">
+                      {isLoading ? (
+                        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#129D44]/10 text-[#129D44] text-xs font-semibold">
+                          <Loader2 size={16} className="animate-spin" />
+                          <span>Generando...</span>
+                        </div>
+                      ) : (
+                        <div className="p-2 rounded-xl text-gray-400 group-hover:text-[#129D44] group-hover:bg-[#129D44]/10 transition-colors">
+                          <Download size={18} />
+                        </div>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </motion.div>
     </div>
   );
-}
+};
 
 /**
  * Modal de Información Personal (Dueño y Encargado del complejo)
@@ -12582,7 +12720,7 @@ export default function App() {
         {showDemandStats && <DemandStats key="modal-demand-stats" onClose={() => setShowDemandStats(false)} complexId={activeComplexId} />}
         {showRetentionStats && <RetentionStats key="modal-retention-stats" onClose={() => setShowRetentionStats(false)} complexId={activeComplexId} />}
         {showFinanceChart && <FinanceChartModal key="modal-finance-chart" isOpen={showFinanceChart} onClose={() => setShowFinanceChart(false)} complexId={activeComplexId} />}
-        {showReportsModal && <ReportsModal key="modal-reports" isOpen={showReportsModal} onClose={() => setShowReportsModal(false)} complexId={activeComplexId} />}
+        {showReportsModal && <ReportsModal key="modal-reports" isOpen={showReportsModal} onClose={() => setShowReportsModal(false)} complexId={activeComplexId} complexName={activeComplejoName} />}
         {showGlobalSupportModal && (
           <ContactSupportModal
             key="modal-global-support"
