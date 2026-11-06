@@ -71,6 +71,10 @@ export const POSCartProvider: React.FC<{
 
   const addToCart = (product: Product) => {
     setItems((prev) => {
+      const currentInCart = prev.find((it) => it.product.id === product.id)?.quantity || 0;
+      if (currentInCart >= Number(product.stock || 0)) {
+        return prev; // Impedir agregar más unidades que las disponibles
+      }
       const existing = prev.find((it) => it.product.id === product.id);
       if (existing) {
         return prev.map((it) =>
@@ -82,8 +86,12 @@ export const POSCartProvider: React.FC<{
   };
 
   const updateQuantity = (productId: string, delta: number) => {
-    setItems((prev) =>
-      prev
+    setItems((prev) => {
+      const item = prev.find((it) => it.product.id === productId);
+      if (item && delta > 0 && item.quantity >= Number(item.product.stock || 0)) {
+        return prev;
+      }
+      return prev
         .map((it) => {
           if (it.product.id === productId) {
             const newQty = it.quantity + delta;
@@ -91,8 +99,8 @@ export const POSCartProvider: React.FC<{
           }
           return it;
         })
-        .filter(Boolean) as CartItem[]
-    );
+        .filter(Boolean) as CartItem[];
+    });
   };
 
   const removeItem = (productId: string) => {

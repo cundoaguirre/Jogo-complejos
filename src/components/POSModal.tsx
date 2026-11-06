@@ -35,6 +35,7 @@ import {
 import { usePOSCart } from './POSCartContext';
 import { playAddToCartSound, playCashRegisterSound } from '../lib/posAudio';
 import { auth } from '../lib/firebase';
+import { cn } from '../lib/utils';
 
 const DEFAULT_PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
 const EXPENSE_PAYMENT_METHODS = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
@@ -436,6 +437,10 @@ export const POSModal: React.FC<POSModalProps> = ({
 
   // Handle clicking (+) on product in Step 1
   const handleProductAdd = (product: Product) => {
+    const currentInCart = cartItems.find((it) => it.product.id === product.id)?.quantity || 0;
+    if (currentInCart >= Number(product.stock || 0)) {
+      return;
+    }
     addToCart(product);
     playAddToCartSound();
   };
@@ -1538,7 +1543,9 @@ export const POSModal: React.FC<POSModalProps> = ({
                 <div className="grid grid-cols-2 gap-3">
                   {displayedProducts.map((product) => {
                     const cartMatch = cartItems.find((it) => it.product.id === product.id);
-                    const isOutOfStock = product.stock <= 0;
+                    const inCartQty = cartMatch?.quantity || 0;
+                    const availableStock = Math.max(0, Number(product.stock || 0) - inCartQty);
+                    const isOutOfStock = availableStock <= 0;
 
                     return (
                       <div
@@ -1546,22 +1553,31 @@ export const POSModal: React.FC<POSModalProps> = ({
                         onClick={() => {
                           if (!isOutOfStock) handleProductAdd(product);
                         }}
-                        className={`bg-white dark:bg-slate-800 rounded-2xl p-3.5 shadow-2xs border transition-all relative flex flex-col justify-between min-h-[105px] cursor-pointer ${
+                        className={cn(
+                          "bg-white dark:bg-slate-800 rounded-2xl p-3.5 shadow-2xs border transition-all relative flex flex-col justify-between min-h-[105px]",
                           isOutOfStock
-                            ? 'opacity-50 border-gray-200 bg-gray-50 dark:bg-slate-800/40 cursor-not-allowed'
-                            : 'border-gray-100 dark:border-slate-700/60 hover:border-gray-300'
-                        }`}
+                            ? "opacity-50 border-gray-200 bg-gray-50 dark:bg-slate-800/40 cursor-not-allowed"
+                            : "border-gray-100 dark:border-slate-700/60 hover:border-gray-300 cursor-pointer"
+                        )}
                       >
                         <div>
                           <div className="flex items-center justify-between gap-1">
                             <span className="text-[11px] font-medium text-gray-400 dark:text-slate-500 truncate">
                               {product.categoryId}
                             </span>
-                            {cartMatch && (
-                              <div className="w-6 h-6 rounded-full bg-[#1d63b8]/15 text-[#1d63b8] text-xs font-black flex items-center justify-center shrink-0">
-                                {cartMatch.quantity}
-                              </div>
-                            )}
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              {cartMatch && (
+                                <div className="w-5 h-5 rounded-full bg-[#1d63b8]/15 text-[#1d63b8] text-[11px] font-black flex items-center justify-center">
+                                  {cartMatch.quantity}
+                                </div>
+                              )}
+                              <span className={cn(
+                                "text-xs font-black",
+                                availableStock > 10 ? "text-[#129D44]" : availableStock >= 6 ? "text-[#f59e0b]" : "text-[#f43f5e]"
+                              )}>
+                                {availableStock}u
+                              </span>
+                            </div>
                           </div>
                           <p className="font-bold text-sm text-gray-900 dark:text-white line-clamp-2 mt-1 mb-2">
                             {product.name}
@@ -1579,7 +1595,7 @@ export const POSModal: React.FC<POSModalProps> = ({
                               e.stopPropagation();
                               if (!isOutOfStock) handleProductAdd(product);
                             }}
-                            className="w-8 h-8 rounded-full bg-[#1d63b8] text-white flex items-center justify-center shadow-xs active:scale-95 transition-transform cursor-pointer shrink-0 disabled:opacity-40"
+                            className="w-8 h-8 rounded-full bg-[#1d63b8] text-white flex items-center justify-center shadow-xs active:scale-95 transition-transform cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                           >
                             <Plus size={16} strokeWidth={2.5} />
                           </button>
@@ -1636,8 +1652,9 @@ export const POSModal: React.FC<POSModalProps> = ({
                                 </span>
                                 <button
                                   type="button"
+                                  disabled={item.quantity >= Number(item.product.stock || 0)}
                                   onClick={() => updateQuantity(item.product.id, 1)}
-                                  className="w-5 h-5 flex items-center justify-center text-gray-600 dark:text-gray-300 hover:bg-gray-100 rounded cursor-pointer"
+                                  className="w-5 h-5 flex items-center justify-center text-gray-600 dark:text-gray-300 hover:bg-gray-100 rounded cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
                                 >
                                   <Plus size={11} />
                                 </button>

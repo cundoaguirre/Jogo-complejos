@@ -587,7 +587,7 @@ export function buildCrmActivityIndex(
       historicalIds: p.historicalIds,
       originComplejoId: normComplexId,
       acquisitionDate: bookingDate || systemDate.toISOString().split('T')[0],
-      acquisitionChannel: 'reserva',
+      acquisitionChannel: 'Jogo',
       isDerived: true,
       isActivated: true
     };

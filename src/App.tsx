@@ -1206,6 +1206,9 @@ const UserDetailModal = ({
       amountPending: number;
       isPending: boolean;
       originalDoc: OperationDocument;
+      isCancelled?: boolean;
+      status?: string;
+      paymentStatus?: string;
     }> = [];
 
     const processedOpIds = new Set<string>();
@@ -1289,6 +1292,9 @@ const UserDetailModal = ({
         totalCollected: collected,
         amountPending: pending,
         isPending,
+        isCancelled: isCancelledOp,
+        status: isCancelledOp ? 'cancelado' : (op.status || 'completed'),
+        paymentStatus: op.paymentStatus,
         originalDoc: {
           ...op,
           contractualAmount: contractual,
@@ -1391,6 +1397,9 @@ const UserDetailModal = ({
         totalCollected: collected,
         amountPending: pending,
         isPending,
+        isCancelled: isCancelledTx,
+        status: isCancelledTx ? 'cancelado' : 'completed',
+        paymentStatus: status,
         originalDoc: virtualOp
       });
     });
@@ -1469,6 +1478,9 @@ const UserDetailModal = ({
         totalCollected: paid,
         amountPending: pending,
         isPending,
+        isCancelled: isCancelledBooking,
+        status: isCancelledBooking ? 'cancelado' : 'completed',
+        paymentStatus: status,
         originalDoc: virtualBookingOp
       });
     });
@@ -2044,31 +2056,49 @@ const UserDetailModal = ({
                           Sin actividad registrada en este complejo
                         </div>
                       ) : (
-                        playerCommercialOperations.map((item) => (
-                          <div 
-                            key={`recent-${item.id}`}
-                            onClick={() => handleOpenOperationCard(item.originalDoc)}
-                            className="relative z-10 flex items-center justify-between gap-3 group cursor-pointer hover:bg-gray-50/80 p-1.5 -ml-1.5 rounded-xl transition-colors"
-                          >
-                            <div className="flex items-center gap-3 min-w-0">
-                              {/* Circle icon on the timeline: Green if fully paid, Red if pending balance */}
-                              <div className={cn(
-                                "w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-2xs transition-colors",
-                                item.isPending
-                                  ? "bg-red-50 border border-red-200 text-red-600"
-                                  : "bg-white border border-gray-200 text-[#129D44]"
-                              )}>
-                                {item.iconType === 'booking' ? (
-                                  <Calendar size={18} />
-                                ) : (
-                                  <ShoppingBasket size={18} />
-                                )}
+                        playerCommercialOperations.map((item) => {
+                          const isCancelled = Boolean(
+                            item.isCancelled || 
+                            item.status === 'cancelado' || 
+                            item.status === 'cancelled' || 
+                            String(item.paymentStatus || '').toLowerCase().includes('cancel') || 
+                            item.originalDoc?.status === 'cancelado' || 
+                            item.originalDoc?.status === 'cancelled' || 
+                            String(item.originalDoc?.paymentStatus || '').toLowerCase().includes('cancel')
+                          );
+
+                          return (
+                            <div 
+                              key={`recent-${item.id}`}
+                              onClick={() => handleOpenOperationCard(item.originalDoc)}
+                              className="relative z-10 flex items-center justify-between gap-3 group cursor-pointer hover:bg-gray-50/80 p-1.5 -ml-1.5 rounded-xl transition-colors"
+                            >
+                              <div className="flex items-center gap-3 min-w-0">
+                                {/* Circle icon on the timeline: Green if fully paid, Red if pending balance */}
+                                <div className={cn(
+                                  "w-10 h-10 rounded-full flex items-center justify-center shrink-0 shadow-2xs transition-colors",
+                                  item.isPending
+                                    ? "bg-red-50 border border-red-200 text-red-600"
+                                    : "bg-white border border-gray-200 text-[#129D44]"
+                                )}>
+                                  {item.iconType === 'booking' ? (
+                                    <Calendar size={18} />
+                                  ) : (
+                                    <ShoppingBasket size={18} />
+                                  )}
+                                </div>
+                                <div className="min-w-0">
+                                  {isCancelled ? (
+                                    <div className="font-bold text-gray-800 text-sm truncate flex items-center gap-1.5">
+                                      <span>{item.title}</span>
+                                      <span className="font-normal text-xs text-slate-400 dark:text-slate-500">cancelado</span>
+                                    </div>
+                                  ) : (
+                                    <div className="font-bold text-gray-800 text-sm truncate">{item.title}</div>
+                                  )}
+                                  <div className="text-xs text-gray-400 mt-0.5">{item.formattedDate}</div>
+                                </div>
                               </div>
-                              <div className="min-w-0">
-                                <div className="font-bold text-gray-800 text-sm truncate">{item.title}</div>
-                                <div className="text-xs text-gray-400 mt-0.5">{item.formattedDate}</div>
-                              </div>
-                            </div>
                             <div className="flex items-center gap-2 shrink-0">
                               <span className="font-bold text-gray-800 text-sm sm:text-base">
                                 ${formatCurrencyAmount(item.contractualAmount)}
@@ -2086,7 +2116,8 @@ const UserDetailModal = ({
                               </button>
                             </div>
                           </div>
-                        ))
+                        );
+                      })
                       )}
                     </div>
                   )}
@@ -5845,11 +5876,6 @@ const MatchListCard = ({
         <div className="flex items-center gap-1.5 text-gray-500 dark:text-slate-400 text-xs sm:text-sm lg:text-base font-medium truncate">
           <Clock size={13} className="text-gray-400 shrink-0" />
           <span className="truncate">{formatListCardDateTime(matchDate, matchTime)}</span>
-          {match.createdSource === 'jogo' && (
-            <span className="px-1.5 py-0.5 text-[9px] font-extrabold bg-[#129D44] text-white rounded-full shrink-0">
-              Jogo
-            </span>
-          )}
         </div>
         <div className="shrink-0">
           {category === 'en_juego' && (
@@ -6667,11 +6693,6 @@ const ScheduleView = ({
                                                 <span className="truncate text-[10px] sm:text-[11px] font-medium">
                                                   {getMatchHostDisplayName(match)}
                                                 </span>
-                                                {match.createdSource === 'jogo' && (
-                                                  <span className="px-1 py-0.2 text-[8px] font-extrabold bg-[#129D44] text-white rounded-full shrink-0">
-                                                    Jogo
-                                                  </span>
-                                                )}
                                               </div>
                                               <div className="text-[10px] font-bold pl-3.5 whitespace-nowrap">
                                                 ${paidAmount.toLocaleString('es-AR')}
@@ -6684,11 +6705,6 @@ const ScheduleView = ({
                                                 <span className="truncate font-medium text-xs sm:text-sm">
                                                   {getMatchHostDisplayName(match)}
                                                 </span>
-                                                {match.createdSource === 'jogo' && (
-                                                  <span className="px-1.5 py-0.5 text-[9px] font-extrabold bg-[#129D44] text-white rounded-full shrink-0">
-                                                    Jogo
-                                                  </span>
-                                                )}
                                               </div>
                                               <span className="font-semibold text-xs sm:text-sm shrink-0 whitespace-nowrap">
                                                 ${paidAmount.toLocaleString('es-AR')}
