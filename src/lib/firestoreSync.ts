@@ -29,7 +29,7 @@ import type {
   CreateOperationParams, RegisterOperationPaymentParams,
   RegisterHistoricalDebtPaymentParams, CancelOperationParams,
   OperationResult, PaymentRegistrationResult, HistoricalDebtPaymentResult,
-  ExpenseEntity, ExpenseEntityType
+  ExpenseEntity, ExpenseEntityType, BookingCreatedSource
 } from '../types';
 import {
   calculateFinancialBalances,
@@ -346,6 +346,9 @@ export function formatBookingToMatch(b: any, users?: User[]): Match {
   const rawUserId = b.userId || b.host_id || b.user_id || b.clientId || '';
   const resolvedUserId = (rawUserId && String(rawUserId) !== '0') ? String(rawUserId) : undefined;
 
+  const resolvedSource: BookingCreatedSource = 
+    (b.createdSource === 'complejo' || b.createdSource === 'saas') ? 'complejo' : 'jogo';
+
   return {
     id: b.id,
     court_id: b.courtId || b.court_id || (b.courtName ? b.courtName : '1'),
@@ -381,6 +384,9 @@ export function formatBookingToMatch(b: any, users?: User[]): Match {
     notes: b.notes || '',
     ownerId: b.ownerId || '',
     adminId: b.adminId || '',
+    createdSource: resolvedSource,
+    retainedAmount: Number(b.retainedAmount ?? 0),
+    totalRefunded: Number(b.totalRefunded ?? 0),
     canonicalId: b.canonicalId || b.canonicalUserId || b.personId || b.erpUserId || undefined,
     canonicalUserId: b.canonicalUserId || b.canonicalId || b.personId || b.erpUserId || undefined,
     canonicalName: b.canonicalName || undefined,
@@ -1018,6 +1024,9 @@ export async function createBookingInFirestore(data: {
     userEmail: (data.userEmail || data.clientEmail || '').trim(),
     clientEmail: (data.userEmail || data.clientEmail || '').trim(),
     notes: data.notes || '',
+    createdSource: data.createdSource === 'jogo' ? 'jogo' : 'complejo',
+    retainedAmount: Number(data.retainedAmount ?? 0),
+    totalRefunded: Number(data.totalRefunded ?? 0),
     ...(validCanonId ? { canonicalId: validCanonId, canonicalUserId: validCanonId } : {}),
     ...(validCanonName ? { canonicalName: validCanonName } : {}),
     ...(validHistId ? { historicalId: validHistId } : {}),
@@ -4981,6 +4990,8 @@ export async function cancelOperationWithSettlement(
         status: 'cancelado',
         paymentStatus: balances.paymentStatus,
         payment_status: balances.paymentStatus,
+        retainedAmount: balances.retainedAmount,
+        totalRefunded: balances.totalRefunded,
         updatedAt: serverTimestamp()
       });
     }

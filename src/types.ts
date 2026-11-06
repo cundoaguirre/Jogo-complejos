@@ -21,6 +21,8 @@ export interface Court {
   blockedCourts?: (number | string)[];
 }
 
+export type BookingCreatedSource = 'jogo' | 'complejo';
+
 export interface CanonicalBooking {
   complejoId: string;
   complejoName: string;
@@ -40,6 +42,9 @@ export interface CanonicalBooking {
   notes: string;
   ownerId: string;
   adminId: string;
+  createdSource?: BookingCreatedSource;
+  retainedAmount?: number;
+  totalRefunded?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -83,6 +88,9 @@ export interface Match {
   notes?: string;
   ownerId?: string;
   adminId?: string;
+  createdSource?: BookingCreatedSource;
+  retainedAmount?: number;
+  totalRefunded?: number;
   canonicalId?: string;
   canonicalUserId?: string;
   canonicalName?: string;
@@ -93,6 +101,8 @@ export interface Match {
   player_count: number;
   players: any[];
 }
+
+export type Booking = Match;
 
 export interface CanonicalUser {
   id: string;
@@ -442,6 +452,7 @@ export interface OperationDocument {
   amountPending: number;              // Saldo pendiente contractual / por pagar (0 si cancelada o saldada)
 
   paymentStatus: OperationPaymentStatus;
+  status?: string;
 
   // Cuenta Corriente ("Fiado")
   currentAccountAssigned: boolean;    // true ÚNICAMENTE si se asignó explícitamente a CC con userId

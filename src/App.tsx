@@ -445,6 +445,21 @@ const StatCard = ({ title, value, trend, icon: Icon, color }: any) => (
   </div>
 );
 
+export function resolveGenderDisplay(gender?: string): 'Masculino' | 'Femenino' | '—' {
+  if (!gender) return '—';
+  const g = String(gender).toLowerCase().trim();
+  if (g === 'hombre' || g === 'masculino') return 'Masculino';
+  if (g === 'mujer' || g === 'femenino') return 'Femenino';
+  return '—';
+}
+
+export function toCanonicalGender(gender?: string): 'masculino' | 'femenino' {
+  if (!gender) return 'masculino';
+  const g = String(gender).toLowerCase().trim();
+  if (g === 'mujer' || g === 'femenino') return 'femenino';
+  return 'masculino';
+}
+
 interface NewUserModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -465,13 +480,19 @@ const NewUserModal = ({
   existingUsers = [] 
 }: NewUserModalProps) => {
   const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const isFromJogoInitial = Boolean(
+    initialData?.acquisitionChannel === 'Jogo' || 
+    initialData?.acquisitionChannel?.toLowerCase() === 'jogo' || 
+    (initialData as any)?.createdSource === 'jogo' ||
+    (initialData as any)?.originSource === 'jogo'
+  );
   const [formData, setFormData] = useState({
     name: '',
     phone: '',
     email: '',
     address: '',
-    gender: initialData?.gender || 'hombre',
-    acquisitionChannel: '',
+    gender: toCanonicalGender(initialData?.gender),
+    acquisitionChannel: isFromJogoInitial ? 'Jogo' : '',
     category: initialData?.category || 'jugador',
     birthDate: ''
   });
@@ -481,13 +502,19 @@ const NewUserModal = ({
 
   useEffect(() => {
     if (isOpen) {
+      const isJogo = Boolean(
+        initialData?.acquisitionChannel === 'Jogo' ||
+        initialData?.acquisitionChannel?.toLowerCase() === 'jogo' || 
+        (initialData as any)?.createdSource === 'jogo' ||
+        (initialData as any)?.originSource === 'jogo'
+      );
       setFormData({
         name: initialData?.name || '',
         phone: initialData?.phone || '',
         email: initialData?.email || '',
         address: initialData?.address || initialData?.city || '',
-        gender: initialData?.gender || 'hombre',
-        acquisitionChannel: initialData?.acquisitionChannel || '',
+        gender: toCanonicalGender(initialData?.gender),
+        acquisitionChannel: isJogo ? 'Jogo' : (initialData?.acquisitionChannel || ''),
         category: initialData?.category || 'jugador',
         birthDate: initialData?.birthDate || ''
       });
@@ -502,6 +529,8 @@ const NewUserModal = ({
       }
     }
   }, [isOpen, initialData, isEdit]);
+
+  const isAcquiredByJogo = (formData.acquisitionChannel === 'Jogo') || (initialData?.acquisitionChannel === 'Jogo') || ((initialData as any)?.createdSource === 'jogo');
 
   if (!isOpen) return null;
 
@@ -552,8 +581,8 @@ const NewUserModal = ({
         email: formData.email.trim(),
         address: formData.address.trim(),
         city: formData.address.trim(), // Compatibilidad hacia atrás
-        gender: formData.gender || 'hombre',
-        acquisitionChannel: formData.acquisitionChannel || 'WhatsApp',
+        gender: formData.gender === 'femenino' ? 'femenino' : 'masculino',
+        acquisitionChannel: isAcquiredByJogo ? 'Jogo' : (formData.acquisitionChannel || 'WhatsApp'),
         category: formData.category || 'jugador',
         preferredFoot: '',
         birthDate: formData.birthDate || '',
@@ -585,8 +614,8 @@ const NewUserModal = ({
     }
   };
 
-  const isHombre = (formData.gender || 'hombre').toLowerCase() === 'hombre' || (formData.gender || '').toLowerCase() === 'masculino';
-  const isMujer = (formData.gender || '').toLowerCase() === 'mujer' || (formData.gender || '').toLowerCase() === 'femenino';
+  const isMasculino = formData.gender === 'masculino';
+  const isFemenino = formData.gender === 'femenino';
   const isCapitan = (formData.category || '').toLowerCase() === 'capitán' || (formData.category || '').toLowerCase() === 'capitan';
   const isJugador = !isCapitan;
 
@@ -651,14 +680,21 @@ const NewUserModal = ({
             <div className="relative flex items-center">
               <Share2 size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
               <select 
-                value={formData.acquisitionChannel}
-                onChange={e => setFormData({ ...formData, acquisitionChannel: e.target.value })}
+                value={isAcquiredByJogo ? 'Jogo' : formData.acquisitionChannel}
+                disabled={isAcquiredByJogo}
+                onChange={e => {
+                  if (isAcquiredByJogo) return;
+                  setFormData({ ...formData, acquisitionChannel: e.target.value });
+                }}
                 className={cn(
-                  "w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50 dark:bg-slate-800 text-xs font-medium focus:ring-2 focus:ring-[#129D44] outline-none",
-                  !formData.acquisitionChannel ? "text-gray-400" : "text-gray-900 dark:text-white"
+                  "w-full h-9 pl-8 pr-2.5 rounded-xl border border-gray-200 dark:border-slate-700 text-xs font-medium focus:ring-2 focus:ring-[#129D44] outline-none",
+                  isAcquiredByJogo
+                    ? "opacity-60 bg-gray-100 dark:bg-slate-800 cursor-not-allowed text-emerald-700 dark:text-emerald-400 font-bold"
+                    : !formData.acquisitionChannel ? "bg-gray-50 dark:bg-slate-800 text-gray-400" : "bg-gray-50 dark:bg-slate-800 text-gray-900 dark:text-white"
                 )}
               >
                 <option value="" className="text-gray-400">Canal de adquisición</option>
+                <option value="Jogo" className="text-gray-900 dark:text-white">Jogo</option>
                 <option value="WhatsApp" className="text-gray-900 dark:text-white">WhatsApp</option>
                 <option value="Referido" className="text-gray-900 dark:text-white">Referido</option>
                 <option value="Instagram (Ig)" className="text-gray-900 dark:text-white">Instagram (Ig)</option>
@@ -699,27 +735,27 @@ const NewUserModal = ({
             <div className="grid grid-cols-2 gap-1 p-0.5 bg-gray-100 dark:bg-slate-800 rounded-xl h-9 items-center">
               <button
                 type="button"
-                onClick={() => setFormData(prev => ({ ...prev, gender: 'hombre' }))}
+                onClick={() => setFormData(prev => ({ ...prev, gender: 'masculino' }))}
                 className={cn(
                   "h-full rounded-lg text-xs transition-all flex items-center justify-center cursor-pointer",
-                  isHombre
+                  isMasculino
                     ? "bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-xs font-bold"
                     : "text-gray-500 hover:text-gray-700 dark:text-gray-400 font-medium"
                 )}
               >
-                Hombre
+                Masculino
               </button>
               <button
                 type="button"
-                onClick={() => setFormData(prev => ({ ...prev, gender: 'mujer' }))}
+                onClick={() => setFormData(prev => ({ ...prev, gender: 'femenino' }))}
                 className={cn(
                   "h-full rounded-lg text-xs transition-all flex items-center justify-center cursor-pointer",
-                  isMujer
+                  isFemenino
                     ? "bg-white dark:bg-slate-700 text-gray-900 dark:text-white shadow-xs font-bold"
                     : "text-gray-500 hover:text-gray-700 dark:text-gray-400 font-medium"
                 )}
               >
-                Mujer
+                Femenino
               </button>
             </div>
 
@@ -974,6 +1010,54 @@ const UserDetailModal = ({
 
   useEffect(() => {
     setCurrentUser(user);
+    if (!user) return;
+
+    // Resolve and preserve canonical record from /users/{userId} if personal fields can be populated
+    const candidateLookupIds = [
+      user.id,
+      user.canonicalId,
+      (user as any).userId,
+      (user as any).personId,
+      (user as any).erpUserId,
+    ].filter(id => id && !String(id).startsWith('derived_'));
+
+    if (candidateLookupIds.length > 0) {
+      let isMounted = true;
+      (async () => {
+        try {
+          for (const rawId of candidateLookupIds) {
+            const docId = String(rawId);
+            const userSnap = await getDoc(doc(db, 'users', docId));
+            if (userSnap.exists() && isMounted) {
+              const uData = userSnap.data();
+              setCurrentUser(prev => {
+                if (!prev) return prev;
+                return {
+                  ...prev,
+                  gender: toCanonicalGender(prev.gender || uData.gender || uData.sexo),
+                  birthDate: prev.birthDate || uData.birthDate || uData.birthdate || uData.fechaNacimiento || '',
+                  address: prev.address || uData.address || uData.direccion || '',
+                  city: prev.city || uData.city || uData.ciudad || '',
+                  preferredFoot: prev.preferredFoot || uData.preferredFoot || uData.pieHabil || uData.piernaHabil || '',
+                  phone: prev.phone || uData.phone || '',
+                  email: (prev.email && !prev.email.includes('@sin-correo.com')) ? prev.email : (uData.email || prev.email || ''),
+                  acquisitionChannel: (prev.acquisitionChannel === 'Jogo' || uData.acquisitionChannel === 'Jogo' || uData.createdSource === 'jogo' || (prev as any)?.createdSource === 'jogo')
+                    ? 'Jogo'
+                    : (prev.acquisitionChannel && prev.acquisitionChannel !== 'Reserva' ? prev.acquisitionChannel : (uData.acquisitionChannel && uData.acquisitionChannel !== 'Reserva' ? uData.acquisitionChannel : prev.acquisitionChannel)),
+                  acquisitionDate: prev.acquisitionDate || uData.acquisitionDate || uData.createdAt || prev.acquisitionDate,
+                };
+              });
+              break;
+            }
+          }
+        } catch (e) {
+          console.warn('[UserDetailModal] Canonical user profile lookup:', e);
+        }
+      })();
+      return () => {
+        isMounted = false;
+      };
+    }
   }, [user]);
 
   // Real-time subscriptions strictly scoped to active complex
@@ -1154,11 +1238,28 @@ const UserDetailModal = ({
       if (op.bookingId) processedBookingIds.add(String(op.bookingId));
       if (op.id.endsWith('-booking')) processedBookingIds.add(op.id.replace('-booking', ''));
 
-      const contractual = Number(op.contractualAmount ?? (op as any).total ?? (op as any).amount ?? (op as any).price ?? 0);
-      const collected = Number(op.totalCollected ?? (op as any).amount_paid ?? (op as any).collected ?? (op as any).paid ?? 0);
-      const pending = Number(op.amountPending ?? (op as any).pending ?? (op as any).debt ?? (op.paymentStatus !== 'paid' ? Math.max(0, contractual - collected) : 0));
-
       const isBooking = op.operationType === 'court_booking' || op.operationType === 'booking' || Boolean(op.bookingId);
+
+      let contractual = Number(op.contractualAmount ?? (op as any).total ?? (op as any).amount ?? (op as any).price ?? 0);
+      let collected = Number(op.totalCollected ?? (op as any).amount_paid ?? (op as any).collected ?? (op as any).paid ?? 0);
+      let pending = Number(op.amountPending ?? (op as any).pending ?? (op as any).debt ?? (op.paymentStatus !== 'paid' ? Math.max(0, contractual - collected) : 0));
+
+      const isCancelledOp = op.status === 'cancelado' || op.status === 'cancelled' || String(op.paymentStatus || '').toLowerCase().includes('cancel');
+      if (isCancelledOp) {
+        // En canceladas, contractualAmount visible debe reflejar estrictamente el ingreso real cobrado por la reserva
+        const associatedBooking = isBooking ? bookings.find(bk => String(bk.id) === String(op.bookingId || op.id.replace('-booking', ''))) : null;
+        const cancelledIncome = Number(
+          op.totalCollected ?? 
+          (op as any).amount_paid ?? 
+          (op as any).deposit ?? 
+          (associatedBooking as any)?.amount_paid ?? 
+          (associatedBooking as any)?.deposit ?? 
+          0
+        );
+        contractual = cancelledIncome;
+        collected = cancelledIncome;
+        pending = 0;
+      }
       
       let title = isBooking ? 'Alquiler de Cancha' : 'Mostrador';
       if (isBooking) {
@@ -1215,7 +1316,7 @@ const UserDetailModal = ({
       const isGasto = t.type === 'expense' || t.type === 'gasto' || t.type === 'egreso';
       if (isGasto) return;
 
-      const tot = Number(t.total ?? t.amount ?? 0);
+      let tot = Number(t.total ?? t.amount ?? 0);
       let collected = tot;
       let pending = 0;
       let status = 'paid';
@@ -1227,6 +1328,23 @@ const UserDetailModal = ({
         pending = fiadoAmt;
         collected = Math.max(0, tot - pending);
         status = collected >= tot && tot > 0 ? 'paid' : (collected > 0 ? 'partial' : 'unpaid');
+      }
+
+      const isCancelledTx = t.status === 'cancelled' || t.status === 'cancelado' || String(t.paymentStatus || '').toLowerCase().includes('cancel');
+      if (isCancelledTx) {
+        const associatedBooking = t.bookingId ? bookings.find(bk => String(bk.id) === String(t.bookingId)) : null;
+        const cancelledIncome = Number(
+          t.totalCollected ?? 
+          (t as any).amount_paid ?? 
+          (t as any).deposit ?? 
+          (associatedBooking as any)?.amount_paid ?? 
+          (associatedBooking as any)?.deposit ?? 
+          0
+        );
+        tot = cancelledIncome;
+        collected = cancelledIncome;
+        pending = 0;
+        status = 'cancelled';
       }
 
       const isBooking = Boolean(t.bookingId);
@@ -1250,9 +1368,10 @@ const UserDetailModal = ({
         totalCollected: collected,
         totalRefunded: 0,
         netCollected: collected,
-        retainedAmount: 0,
+        retainedAmount: Number(t.retainedAmount ?? 0),
         amountPending: pending,
         paymentStatus: status as any,
+        status: isCancelledTx ? 'cancelado' : 'completed',
         currentAccountAssigned: pending > 0,
         currentAccountDebtAmount: pending,
         notes: title,
@@ -1283,19 +1402,28 @@ const UserDetailModal = ({
       if (c && !targetComplexIds.includes(c)) return;
 
       if (processedBookingIds.has(String(b.id))) return;
-      const bStatus = String(b.status || '').toLowerCase();
-      if (bStatus === 'cancelado' || bStatus === 'cancelled') return;
-
       if (!matchesPlayer(b)) return;
 
       processedBookingIds.add(String(b.id));
 
-      const tot = Number(b.price || b.price_total || 0);
+      const bStatus = String(b.status || '').toLowerCase();
+      const isCancelledBooking = bStatus === 'cancelado' || bStatus === 'cancelled' || String(b.payment_status || b.paymentStatus || '').toLowerCase().includes('cancel');
+
+      let tot = Number(b.price || b.price_total || 0);
       const isPaid = b.payment_status === 'paid' || b.paymentStatus === 'paid' || b.payment_status === 'pagado';
       const rawPaid = Number(b.amount_paid ?? b.deposit ?? 0);
-      const paid = isPaid ? (rawPaid > 0 ? Math.max(rawPaid, tot) : tot) : rawPaid;
-      const pending = Math.max(0, tot - paid);
-      const status = paid >= tot && tot > 0 ? 'paid' : (paid > 0 ? 'partial' : 'unpaid');
+      let paid = isPaid ? (rawPaid > 0 ? Math.max(rawPaid, tot) : tot) : rawPaid;
+      let pending = Math.max(0, tot - paid);
+      let status = paid >= tot && tot > 0 ? 'paid' : (paid > 0 ? 'partial' : 'unpaid');
+
+      if (isCancelledBooking) {
+        // En canceladas, contractualAmount visible debe reflejar estrictamente el ingreso real cobrado por la reserva
+        const cancelledIncome = Number(b.amount_paid ?? b.deposit ?? 0);
+        tot = cancelledIncome;
+        paid = cancelledIncome;
+        pending = 0;
+        status = 'cancelled';
+      }
 
       const rawDate = b.startTime || b.start_time || b.date;
       const courtTitle = `Reserva (${b.courtName || b.court_name || 'Cancha 1'})`;
@@ -1316,11 +1444,12 @@ const UserDetailModal = ({
         clientPhone: currentUser.phone || '',
         contractualAmount: tot,
         totalCollected: paid,
-        totalRefunded: 0,
+        totalRefunded: Number(b.totalRefunded ?? 0),
         netCollected: paid,
-        retainedAmount: 0,
+        retainedAmount: Number(b.retainedAmount ?? 0),
         amountPending: pending,
         paymentStatus: status as any,
+        status: isCancelledBooking ? 'cancelado' : 'completed',
         currentAccountAssigned: pending > 0,
         currentAccountDebtAmount: pending,
         notes: courtTitle,
@@ -1378,14 +1507,12 @@ const UserDetailModal = ({
     const rawAdq = currentUser?.acquisitionDate || currentUser?.created_at || currentUser?.createdAt;
     const adqYMD = parseYMD(rawAdq) || todayYMD;
 
-    // Reservas y Cancelaciones cuentan ÚNICAMENTE cuando el usuario es host/organizador
-    const hostActiveBookings = userBookings.filter(b => {
-      const st = String(b.status || '').toLowerCase();
-      return st !== 'cancelled' && st !== 'cancelado';
-    });
+    // Reservas históricas organizadas: cuenta TODAS las reservas organizadas sin restar ni excluir canceladas
+    const reservasCount = userBookings.length;
     const cancelledCount = userBookings.filter(b => {
       const st = String(b.status || '').toLowerCase();
-      return st === 'cancelled' || st === 'cancelado';
+      const paySt = String((b as any).paymentStatus || (b as any).payment_status || '').toLowerCase();
+      return st === 'cancelled' || st === 'cancelado' || paySt.includes('cancel');
     }).length;
 
     // Partidos jugados, último partido, días sin jugar y time-to-value cuentan host + invitados en match.players
@@ -1433,7 +1560,7 @@ const UserDetailModal = ({
 
     return {
       canalAdquisicion: currentUser?.acquisitionChannel || 'WhatsApp',
-      reservasCount: hostActiveBookings.length,
+      reservasCount,
       juegosCount: played.length,
       cancelacionesCount: cancelledCount,
       ultimoJuegoFormatted: lastMatchYMD ? formatSpanishDate(lastMatchYMD) : '—',
@@ -1974,7 +2101,7 @@ const UserDetailModal = ({
                 <div className="flex items-center gap-3.5 py-1">
                   <UserCheck size={18} className="text-gray-400 shrink-0" />
                   <span className="text-gray-500 font-medium text-sm">
-                    {currentUser.gender || '—'}
+                    {resolveGenderDisplay(currentUser.gender)}
                   </span>
                 </div>
 
@@ -5715,29 +5842,34 @@ const MatchListCard = ({
 
       {/* Fila 1 (Superior): Fecha y hora legible (izq.) <---> Badge de Estado (der.) */}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 text-gray-500 dark:text-slate-400 text-xs sm:text-sm font-medium truncate">
+        <div className="flex items-center gap-1.5 text-gray-500 dark:text-slate-400 text-xs sm:text-sm lg:text-base font-medium truncate">
           <Clock size={13} className="text-gray-400 shrink-0" />
           <span className="truncate">{formatListCardDateTime(matchDate, matchTime)}</span>
+          {match.createdSource === 'jogo' && (
+            <span className="px-1.5 py-0.5 text-[9px] font-extrabold bg-[#129D44] text-white rounded-full shrink-0">
+              Jogo
+            </span>
+          )}
         </div>
         <div className="shrink-0">
           {category === 'en_juego' && (
-            <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-semibold text-xs animate-pulse">
+            <div className="flex items-center gap-1.5 text-red-600 dark:text-red-400 font-bold text-xs lg:text-sm lg:px-2.5 lg:py-0.5 rounded-full animate-pulse">
               <span className="w-2 h-2 rounded-full bg-red-500" />
               <span>En juego</span>
             </div>
           )}
           {category === 'proximos' && (
-            <span className="text-blue-600 dark:text-blue-400 font-semibold text-xs">
+            <span className="text-blue-600 dark:text-blue-400 font-bold text-xs lg:text-sm lg:px-2.5 lg:py-0.5 rounded-full">
               Próximo
             </span>
           )}
           {category === 'jugados' && (
-            <span className="text-emerald-600 dark:text-emerald-400 font-semibold text-xs">
+            <span className="text-emerald-600 dark:text-emerald-400 font-bold text-xs lg:text-sm lg:px-2.5 lg:py-0.5 rounded-full">
               Jugado
             </span>
           )}
           {category === 'cancelados' && (
-            <span className="text-gray-500 dark:text-slate-400 font-semibold text-xs">
+            <span className="text-gray-500 dark:text-slate-400 font-bold text-xs lg:text-sm lg:px-2.5 lg:py-0.5 rounded-full">
               Cancelado
             </span>
           )}
@@ -5746,20 +5878,20 @@ const MatchListCard = ({
 
       {/* Fila 2 (Media): Nombre del cliente en negrita (izq.) <---> Monto total del turno (der.) */}
       <div className="flex items-center justify-between gap-2">
-        <span className="font-bold text-gray-900 dark:text-white text-sm sm:text-base truncate">
+        <span className="font-extrabold text-gray-900 dark:text-white text-sm sm:text-base lg:text-lg truncate">
           {clientName}
         </span>
-        <span className="font-bold text-gray-900 dark:text-white text-sm sm:text-base font-mono shrink-0">
+        <span className="font-extrabold text-gray-900 dark:text-white text-sm sm:text-base lg:text-lg font-mono shrink-0">
           ${totalPrice.toLocaleString()}
         </span>
       </div>
 
       {/* Fila 3 (Inferior): Nombre de la cancha (izq., visible solo si hay >1 cancha registrada) <---> Seña abonada (der.) */}
       <div className="flex items-center justify-between gap-2 min-h-[1.25rem]">
-        <div className="text-xs text-gray-500 dark:text-slate-400 font-medium truncate">
+        <div className="text-xs lg:text-sm text-gray-500 dark:text-slate-400 font-semibold truncate">
           {showCourt ? courtName : ''}
         </div>
-        <div className="text-xs font-medium shrink-0">
+        <div className="text-xs lg:text-sm font-semibold shrink-0">
           {deposit > 0 ? (
             <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
               Seña: ${deposit.toLocaleString()}
@@ -6212,9 +6344,9 @@ const ScheduleView = ({
   }, [matches, currentTime]);
 
   return (
-    <div className="w-full max-w-4xl mx-auto flex-1 flex flex-col space-y-3.5 relative pb-0">
+    <div className="w-full max-w-4xl lg:max-w-7xl mx-auto flex-1 flex flex-col space-y-3.5 relative pb-0">
       {/* 1.2. Selector de Vista: Montado directamente sobre el fondo general, alineado a la izquierda */}
-      <div className="flex items-center justify-between px-1 relative">
+      <div className="flex items-center justify-between px-1 relative lg:hidden">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -6288,13 +6420,15 @@ const ScheduleView = ({
             </button>
           )}
         </div>
-      ) : viewMode === 'calendar' ? (
-        /* =================================================================== */
-        /* 3. VISTA CALENDARIO: 3 TARJETAS CON ESPACIADO VERTICAL UNIFORME    */
-        /* =================================================================== */
-        <div className="flex-1 flex flex-col space-y-3.5 pb-0">
-          {/* 1. Tarjeta de Calendario Semanal */}
-          <div className="shrink-0 bg-white dark:bg-slate-900 p-4 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm space-y-3">
+      ) : (
+      <div className="lg:grid lg:grid-cols-12 lg:gap-5 lg:items-start flex-1">
+        
+        {/* =================================================================== */}
+        {/* COLUMNA IZQUIERDA: CALENDARIO (Mobile: si viewMode==='calendar' | PC: siempre visible col-span-7) */}
+        {/* =================================================================== */}
+        <div className={cn("space-y-3.5 lg:col-span-7", viewMode === 'calendar' ? "flex flex-col flex-1" : "hidden lg:flex lg:flex-col")}>
+          {/* Tarjeta de Calendario Semanal */}
+          <div className="shrink-0 bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm space-y-3">
             <div className="flex items-center justify-between px-1">
               <button
                 type="button"
@@ -6307,10 +6441,10 @@ const ScheduleView = ({
               </button>
 
               <div className="text-center">
-                <h3 className="font-bold text-base sm:text-lg text-gray-700 dark:text-white capitalize">
+                <h3 className="font-bold text-base sm:text-lg lg:text-xl text-gray-700 dark:text-white capitalize">
                   {formatMonthYearHeading(selectedDateStr)}
                 </h3>
-                <p className="text-xs text-gray-500 dark:text-slate-400">
+                <p className="text-xs lg:text-sm text-gray-500 dark:text-slate-400 mt-0.5">
                   {dayBookingsCount === 0 
                     ? 'Sin reservas confirmadas' 
                     : `${dayBookingsCount} ${dayBookingsCount === 1 ? 'reserva confirmada' : 'reservas confirmadas'}`}
@@ -6338,31 +6472,31 @@ const ScheduleView = ({
                     key={`weekday-${day.dateStr}`}
                     onClick={() => setSelectedDateStr(day.dateStr)}
                     className={cn(
-                      "flex flex-col items-center justify-center rounded-2xl transition-all cursor-pointer relative py-2",
+                      "flex flex-col items-center justify-center rounded-2xl transition-all cursor-pointer relative py-2 lg:py-3",
                       isSelected
                         ? "bg-[#129D44] text-white shadow-sm"
                         : "hover:bg-gray-50 dark:hover:bg-slate-800/80"
                     )}
                   >
                     <span className={cn(
-                      "text-xs font-medium mb-0.5",
+                      "text-xs lg:text-sm font-medium mb-0.5",
                       isSelected ? "text-white" : "text-gray-400 dark:text-slate-400"
                     )}>
                       {day.dayLabel}
                     </span>
                     <span className={cn(
-                      "text-xl sm:text-2xl font-semibold leading-tight",
+                      "text-xl sm:text-2xl lg:text-3xl font-semibold leading-tight",
                       isSelected ? "text-white font-bold" : "text-gray-300 dark:text-slate-500"
                     )}>
                       {day.dayNumber}
                     </span>
                     {day.isToday ? (
                       <span className={cn(
-                        "w-1.5 h-1.5 rounded-full mt-1 animate-pulse",
+                        "w-1.5 h-1.5 lg:w-2 lg:h-2 rounded-full mt-1 animate-pulse",
                         isSelected ? "bg-white" : "bg-[#129D44]"
                       )} />
                     ) : (
-                      <span className="w-1.5 h-1.5 mt-1" />
+                      <span className="w-1.5 h-1.5 lg:w-2 lg:h-2 mt-1" />
                     )}
                   </button>
                 );
@@ -6370,7 +6504,7 @@ const ScheduleView = ({
             </div>
           </div>
 
-          {/* 2. Barra de Canchas en Calendario tipo cápsula (sin viñetas decorativas) */}
+          {/* Barra de Canchas con tipografía expandida en desktop */}
           <div className="shrink-0 bg-white dark:bg-slate-900 rounded-full border border-gray-100 dark:border-slate-800 shadow-sm p-1.5 flex items-center gap-1.5 overflow-x-auto no-scrollbar">
             {courts.map((court, cIdx) => {
               const isSelected = selectedCourtIds.some(id => String(id) === String(court.id));
@@ -6380,7 +6514,7 @@ const ScheduleView = ({
                   key={`sched-court-tab-${court.id || cIdx}-${cIdx}`}
                   onClick={() => toggleCourtSelection(court.id)}
                   className={cn(
-                    "flex-1 py-2 px-4 rounded-full text-xs sm:text-sm whitespace-nowrap flex items-center justify-center cursor-pointer transition-colors",
+                    "flex-1 py-2 px-4 lg:py-2.5 lg:px-5 rounded-full text-xs sm:text-sm lg:text-base whitespace-nowrap flex items-center justify-center cursor-pointer transition-colors",
                     isSelected
                       ? "bg-[#129D44] text-white font-bold shadow-xs"
                       : "bg-transparent text-gray-400 hover:text-gray-600 dark:text-slate-400 font-semibold"
@@ -6393,7 +6527,7 @@ const ScheduleView = ({
             })}
           </div>
 
-          {/* 3. Grilla Horaria Proyectada en Paralelo con Multiselección, Degradado Sutil y Expansión Vertical */}
+          {/* Grilla Horaria */}
           <div
             id="reservations-grid-viewport"
             ref={viewportRef}
@@ -6401,7 +6535,7 @@ const ScheduleView = ({
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
             style={{ touchAction: 'pan-x pan-y' }}
-            className="flex-1 bg-white dark:bg-slate-900 rounded-t-3xl rounded-b-none border-t border-x border-b-0 border-gray-100 dark:border-slate-800 shadow-sm p-3 sm:p-4 pb-36 sm:pb-40 overflow-hidden select-none relative flex flex-col"
+            className="flex-1 bg-white dark:bg-slate-900 rounded-3xl border border-gray-100 dark:border-slate-800 shadow-sm p-3 sm:p-4 lg:p-5 pb-36 overflow-hidden select-none relative flex flex-col"
           >
             {/* Bordes con degradado sutil difuminado */}
             <div className="pointer-events-none absolute top-0 left-0 right-0 h-4 bg-gradient-to-b from-white dark:from-slate-900 to-transparent z-10 opacity-70" />
@@ -6526,13 +6660,18 @@ const ScheduleView = ({
                                               : "bg-red-50/70 dark:bg-red-950/30 border border-red-100 dark:border-red-900/40 text-red-800 dark:text-red-300"
                                           )}
                                         >
-                                          {isNarrowLayout ? (
+                                           {isNarrowLayout ? (
                                             <div className="flex flex-col justify-center items-start px-2 py-1 h-full w-full rounded-2xl leading-tight min-w-0">
                                               <div className="flex items-center gap-1 w-full min-w-0">
                                                 <UserIcon size={11} className="shrink-0 opacity-80" />
                                                 <span className="truncate text-[10px] sm:text-[11px] font-medium">
                                                   {getMatchHostDisplayName(match)}
                                                 </span>
+                                                {match.createdSource === 'jogo' && (
+                                                  <span className="px-1 py-0.2 text-[8px] font-extrabold bg-[#129D44] text-white rounded-full shrink-0">
+                                                    Jogo
+                                                  </span>
+                                                )}
                                               </div>
                                               <div className="text-[10px] font-bold pl-3.5 whitespace-nowrap">
                                                 ${paidAmount.toLocaleString('es-AR')}
@@ -6545,6 +6684,11 @@ const ScheduleView = ({
                                                 <span className="truncate font-medium text-xs sm:text-sm">
                                                   {getMatchHostDisplayName(match)}
                                                 </span>
+                                                {match.createdSource === 'jogo' && (
+                                                  <span className="px-1.5 py-0.5 text-[9px] font-extrabold bg-[#129D44] text-white rounded-full shrink-0">
+                                                    Jogo
+                                                  </span>
+                                                )}
                                               </div>
                                               <span className="font-semibold text-xs sm:text-sm shrink-0 whitespace-nowrap">
                                                 ${paidAmount.toLocaleString('es-AR')}
@@ -6596,11 +6740,11 @@ const ScheduleView = ({
             )}
           </div>
         </div>
-      ) : (
-        /* =================================================================== */
-        /* 2. VISTA LISTA: CONSOLA UNIFICADA DE PARTIDOS EN 4 BLOQUES         */
-        /* =================================================================== */
-        <div className="space-y-4 pb-28">
+
+        {/* =================================================================== */}
+        {/* COLUMNA DERECHA: LISTA DE PARTIDOS (Mobile: si viewMode==='list' | PC: siempre visible col-span-5) */}
+        {/* =================================================================== */}
+        <div className={cn("space-y-4 pb-28 lg:pb-0 lg:col-span-5", viewMode === 'list' ? "block" : "hidden lg:block")}>
           {/* 2.2. Sección 1: En juego - Título plano sin pastillas ni punto titilante */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-gray-100 dark:border-slate-800 shadow-sm overflow-hidden">
             <button
@@ -6753,6 +6897,7 @@ const ScheduleView = ({
             )}
           </div>
         </div>
+      </div>
       )}
 
       {/* 3. Botón Flotante de Acción (FAB +) - Coordenadas y diseño homologados idénticos con Usuarios */}
@@ -9095,10 +9240,10 @@ const FinanceView = ({
           <div className="col-span-4 border border-gray-200 dark:border-slate-700 rounded-2xl p-2.5 sm:p-3.5 flex flex-col justify-between space-y-2">
             {/* 1. Ingresos */}
             <div>
-              <div className="text-[10.5px] font-normal text-gray-500 dark:text-slate-400">
+              <div className="text-[10.5px] lg:text-xs font-semibold text-gray-500 dark:text-slate-400">
                 Ingresos
               </div>
-              <div className="text-[14px] sm:text-[16px] font-bold text-gray-700 dark:text-slate-100 leading-tight">
+              <div className="text-[14px] sm:text-[16px] lg:text-xl font-black text-gray-700 dark:text-slate-100 leading-tight">
                 ${financialSummary.economicIncome.toLocaleString('es-AR')}
               </div>
               <div className="mt-0.5 flex items-center whitespace-nowrap gap-1 overflow-hidden">
@@ -9118,20 +9263,20 @@ const FinanceView = ({
 
             {/* 2. Gastos */}
             <div>
-              <div className="text-[10.5px] font-normal text-gray-500 dark:text-slate-400">
+              <div className="text-[10.5px] lg:text-xs font-semibold text-gray-500 dark:text-slate-400">
                 Gastos
               </div>
-              <div className="text-[14px] sm:text-[16px] font-bold text-gray-700 dark:text-slate-100 leading-tight">
+              <div className="text-[14px] sm:text-[16px] lg:text-xl font-black text-gray-700 dark:text-slate-100 leading-tight">
                 ${financialSummary.economicExpense.toLocaleString('es-AR')}
               </div>
             </div>
 
             {/* 3. Neto */}
             <div>
-              <div className="text-[10.5px] font-normal text-gray-500 dark:text-slate-400">
+              <div className="text-[10.5px] lg:text-xs font-semibold text-gray-500 dark:text-slate-400">
                 Neto
               </div>
-              <div className="text-[14px] sm:text-[16px] font-bold text-gray-700 dark:text-slate-100 leading-tight">
+              <div className="text-[14px] sm:text-[16px] lg:text-xl font-black text-gray-700 dark:text-slate-100 leading-tight">
                 ${financialSummary.netResult.toLocaleString('es-AR')}
               </div>
             </div>
@@ -9146,7 +9291,7 @@ const FinanceView = ({
                 <div className="text-[10px] font-normal text-white/90">
                   Caja
                 </div>
-                <div className="text-[18px] sm:text-[20px] font-extrabold text-white leading-tight my-0.5 whitespace-nowrap">
+                <div className="text-[18px] sm:text-[20px] lg:text-2xl font-black text-white leading-tight my-0.5 whitespace-nowrap">
                   ${financialSummary.cashAvailable.toLocaleString('es-AR')}
                 </div>
                 <div className="flex items-center gap-1 whitespace-nowrap text-[8px] sm:text-[8.5px] text-white/90 overflow-hidden">
@@ -9169,9 +9314,9 @@ const FinanceView = ({
                 <div>
                   <div className="flex items-center justify-end gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 shrink-0" />
-                    <span className="text-[9.5px] font-bold text-white">Por cobrar ({porCobrarPct}%)</span>
+                    <span className="text-[9.5px] lg:text-xs font-bold text-white">Por cobrar ({porCobrarPct}%)</span>
                   </div>
-                  <div className="text-[9.5px] font-normal text-white">
+                  <div className="text-[9.5px] lg:text-xs font-bold text-white">
                     ${financialSummary.pendingToCollect.toLocaleString('es-AR')}
                   </div>
                 </div>
@@ -9179,9 +9324,9 @@ const FinanceView = ({
                 <div>
                   <div className="flex items-center justify-end gap-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-red-400 shrink-0" />
-                    <span className="text-[9.5px] font-bold text-white">Por pagar ({porPagarPct}%)</span>
+                    <span className="text-[9.5px] lg:text-xs font-bold text-white">Por pagar ({porPagarPct}%)</span>
                   </div>
-                  <div className="text-[9.5px] font-normal text-white">
+                  <div className="text-[9.5px] lg:text-xs font-bold text-white">
                     ${financialSummary.pendingToPay.toLocaleString('es-AR')}
                   </div>
                 </div>
@@ -9197,14 +9342,14 @@ const FinanceView = ({
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between leading-tight">
-                    <span className="text-xs sm:text-[13px] font-bold text-gray-700 dark:text-slate-200">
+                    <span className="text-xs sm:text-[13px] lg:text-base font-bold text-gray-700 dark:text-slate-200">
                       Mostrador
                     </span>
-                    <span className="text-xs sm:text-[13px] font-bold text-gray-700 dark:text-slate-200">
+                    <span className="text-xs sm:text-[13px] lg:text-base font-bold text-gray-700 dark:text-slate-200">
                       ${financialSummary.mostradorIncome.toLocaleString('es-AR')}
                     </span>
                   </div>
-                  <div className="text-[10px] text-gray-400 mt-0.5">
+                  <div className="text-[10px] lg:text-xs text-gray-400 mt-0.5">
                     {mostradorSalesCount} {mostradorSalesCount === 1 ? 'venta' : 'ventas'}
                   </div>
                 </div>
@@ -9217,14 +9362,14 @@ const FinanceView = ({
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between leading-tight">
-                    <span className="text-xs sm:text-[13px] font-bold text-gray-700 dark:text-slate-200">
+                    <span className="text-xs sm:text-[13px] lg:text-base font-bold text-gray-700 dark:text-slate-200">
                       Agenda
                     </span>
-                    <span className="text-xs sm:text-[13px] font-bold text-gray-700 dark:text-slate-200">
+                    <span className="text-xs sm:text-[13px] lg:text-base font-bold text-gray-700 dark:text-slate-200">
                       ${financialSummary.reservasIncome.toLocaleString('es-AR')}
                     </span>
                   </div>
-                  <div className="text-[10px] text-gray-400 mt-0.5">
+                  <div className="text-[10px] lg:text-xs text-gray-400 mt-0.5">
                     {periodBookingsCount} {periodBookingsCount === 1 ? 'reserva' : 'reservas'}
                   </div>
                 </div>
@@ -11621,6 +11766,12 @@ export default function App() {
     const rawPhone = candidateObj?.phone || candidateObj?.userPhone || candidateObj?.clientPhone || candidateObj?.host_phone || (strId.startsWith('phone_') ? strId.slice(6) : strId);
     const rawEmail = candidateObj?.email || candidateObj?.userEmail || candidateObj?.clientEmail;
     const normPhone = normalizePhoneNumber(rawPhone);
+    const rawName = candidateObj?.name || candidateObj?.userName || candidateObj?.clientName || candidateObj?.host_name || (isGenericPlaceholderName(strId) ? '' : strId);
+    const validName = (rawName && typeof rawName === 'string' && !isGenericPlaceholderName(rawName))
+      ? rawName.trim()
+      : (normPhone ? `Cliente (${rawPhone})` : 'Jugador');
+    const validPhone = rawPhone && typeof rawPhone === 'string' && rawPhone !== validName && !rawPhone.startsWith('player_') ? rawPhone.trim() : '';
+    const validEmail = rawEmail || '';
 
     // 2. Prioridad absoluta: resolver contra la ficha local de la sede activa mediante findMatchingLocalUser
     // (Local UID -> Canonical ERP ID -> Historical IDs -> Normalized Phone -> Clean Email)
@@ -11633,18 +11784,40 @@ export default function App() {
       email: rawEmail,
     });
 
+    const isFromJogoBooking = Boolean(
+      candidateObj?.createdSource === 'jogo' ||
+      candidateObj?.originSource === 'jogo' ||
+      candidateObj?.acquisitionChannel === 'Jogo' ||
+      (candidateObj as any)?.isExternalBooking ||
+      (candidateObj as any)?.externalBooking ||
+      (candidateObj as any)?.source === 'jogo'
+    );
+
+    const resolveAcquisitionChannel = (base?: string, cand?: string): string | undefined => {
+      if (isFromJogoBooking) return 'Jogo';
+      if (base === 'Jogo' || cand === 'Jogo') return 'Jogo';
+      if (base && base !== 'Reserva') return base;
+      if (cand && cand !== 'Reserva') return cand;
+      return undefined;
+    };
+
     if (matchedLocal) {
-      setSelectedUser(matchedLocal);
+      const mergedUser: User = {
+        ...matchedLocal,
+        gender: toCanonicalGender(matchedLocal.gender || candidateObj?.gender || candidateObj?.sexo),
+        birthDate: matchedLocal.birthDate || candidateObj?.birthDate || candidateObj?.birthdate || candidateObj?.fechaNacimiento || '',
+        address: matchedLocal.address || candidateObj?.address || candidateObj?.direccion || '',
+        city: matchedLocal.city || candidateObj?.city || candidateObj?.ciudad || '',
+        preferredFoot: matchedLocal.preferredFoot || candidateObj?.preferredFoot || candidateObj?.pieHabil || candidateObj?.piernaHabil || '',
+        phone: matchedLocal.phone || validPhone || '',
+        email: matchedLocal.email || validEmail || '',
+        acquisitionChannel: resolveAcquisitionChannel(matchedLocal.acquisitionChannel, candidateObj?.acquisitionChannel),
+      };
+      setSelectedUser(mergedUser);
       return;
     }
 
     // 3. Si no existe ficha en el padrón, construir ficha derivada en memoria usando únicamente los datos disponibles
-    const rawName = candidateObj?.name || candidateObj?.userName || candidateObj?.clientName || candidateObj?.host_name || (isGenericPlaceholderName(strId) ? '' : strId);
-    const validName = (rawName && typeof rawName === 'string' && !isGenericPlaceholderName(rawName))
-      ? rawName.trim()
-      : (normPhone ? `Cliente (${rawPhone})` : 'Jugador');
-    const validPhone = rawPhone && typeof rawPhone === 'string' && rawPhone !== validName && !rawPhone.startsWith('player_') ? rawPhone.trim() : '';
-    const validEmail = rawEmail || '';
 
     // ID estable para la ficha derivada en memoria
     const derivedId = normPhone
@@ -11662,13 +11835,48 @@ export default function App() {
       category: candidateObj?.category || 'invitado',
       skill_level: candidateObj?.skill_level || 'Amateur',
       notes: 'Participante registrado en reservas del complejo',
-      canonicalId: candidateObj?.canonicalId || candidateObj?.canonicalUserId || candidateObj?.personId || candidateObj?.erpUserId,
+      canonicalId: candidateObj?.canonicalId || candidateObj?.canonicalUserId || candidateObj?.personId || candidateObj?.erpUserId || (candidateObj?.userId ? String(candidateObj.userId) : undefined),
       canonicalName: candidateObj?.canonicalName,
       historicalId: candidateObj?.historicalId,
       historicalIds: candidateObj?.historicalIds,
+      gender: toCanonicalGender(candidateObj?.gender || candidateObj?.sexo),
+      birthDate: candidateObj?.birthDate || candidateObj?.birthdate || candidateObj?.fechaNacimiento || '',
+      address: candidateObj?.address || candidateObj?.direccion || '',
+      city: candidateObj?.city || candidateObj?.ciudad || '',
+      preferredFoot: candidateObj?.preferredFoot || candidateObj?.pieHabil || candidateObj?.piernaHabil || '',
+      acquisitionChannel: isFromJogoBooking ? 'Jogo' : ((candidateObj?.acquisitionChannel && candidateObj.acquisitionChannel !== 'Reserva') ? candidateObj.acquisitionChannel : undefined),
+      acquisitionDate: candidateObj?.acquisitionDate || candidateObj?.createdAt || candidateObj?.date,
     };
 
     setSelectedUser(derivedUser);
+
+    const lookupDocId = candidateObj?.userId || candidateObj?.canonicalId || (strId && !strId.startsWith('phone_') && !strId.startsWith('derived_') ? strId : null);
+    if (lookupDocId) {
+      getDoc(doc(db, 'users', String(lookupDocId))).then(snap => {
+        if (snap.exists()) {
+          const u = snap.data();
+          setSelectedUser(prev => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              gender: toCanonicalGender(prev.gender || u.gender || u.sexo),
+              birthDate: prev.birthDate || u.birthDate || u.birthdate || u.fechaNacimiento || '',
+              address: prev.address || u.address || u.direccion || '',
+              city: prev.city || u.city || u.ciudad || '',
+              preferredFoot: prev.preferredFoot || u.preferredFoot || u.pieHabil || u.piernaHabil || '',
+              phone: prev.phone || u.phone || '',
+              email: (prev.email && !prev.email.includes('@sin-correo.com')) ? prev.email : (u.email || prev.email || ''),
+              acquisitionChannel: (isFromJogoBooking || prev.acquisitionChannel === 'Jogo' || u.acquisitionChannel === 'Jogo' || u.createdSource === 'jogo')
+                ? 'Jogo'
+                : (prev.acquisitionChannel && prev.acquisitionChannel !== 'Reserva' 
+                    ? prev.acquisitionChannel 
+                    : (u.acquisitionChannel && u.acquisitionChannel !== 'Reserva' ? u.acquisitionChannel : prev.acquisitionChannel)),
+              acquisitionDate: prev.acquisitionDate || u.acquisitionDate || u.createdAt || prev.acquisitionDate,
+            };
+          });
+        }
+      }).catch(err => console.warn('[handleUserClick] Canonical user lookup error:', err));
+    }
   };
 
   const handleDeleteUser = async (id: number | string) => {

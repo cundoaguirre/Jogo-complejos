@@ -21,7 +21,8 @@ export interface UserLifecycleMetrics {
   activacionFormatted: string;  // DD/MM/YY o "-"
   ttvFormatted: string;         // ej. "2d", "14d", "0d" o "-"
   semanaActFormatted: string;   // ej. "W0", "W1", "W2" o "-"
-  reservas: number;             // Total de reservas activas (no canceladas)
+  reservas: number;             // Total de reservas históricas (sin excluir canceladas)
+  cancelaciones?: number;        // Reservas canceladas
   juegos: number;               // Entero puro (partidos ya finalizados)
   frecuencia: number;           // Entero (ej. 1, 0)
   ultimoJuegoFormatted: string; // DD/MM/YY o "-"
@@ -214,15 +215,17 @@ export function calculateUserLifecycleMetrics(
     ? organizedBookings
     : associatedBookings.filter(b => (b as any).isOrganizer !== false);
 
-  const allValidBookings = targetOrganized.filter(b => {
-    if (!b || (!b.date && !b.startTime && !b.start_time)) return false;
+  // Total histórico de reservas organizadas (sin restar ni excluir canceladas)
+  const reservas = targetOrganized.length;
+
+  // Total de cancelaciones
+  const cancelaciones = targetOrganized.filter(b => {
     const st = String(b.status || '').toLowerCase().trim();
     const paySt = String((b as any).paymentStatus || (b as any).payment_status || '').toLowerCase().trim();
-    return st !== 'cancelled' && st !== 'cancelado' && !paySt.includes('cancel');
-  });
-  const reservas = allValidBookings.length;
+    return st === 'cancelled' || st === 'cancelado' || paySt.includes('cancel');
+  }).length;
 
-  // Filtrar reservas no canceladas
+  // Filtrar reservas no canceladas para cálculo de juegos y actividad
   const activeBookings = associatedBookings.filter(b => {
     const st = String(b.status || '').toLowerCase().trim();
     const paySt = String((b as any).paymentStatus || (b as any).payment_status || '').toLowerCase().trim();
@@ -234,7 +237,7 @@ export function calculateUserLifecycleMetrics(
   const juegos = playedBookings.length;
 
   // A. Adquisición (T_adq)
-  const rawAdq = user.acquisitionDate || user.acquisition_date || user.created_at || user.createdAt;
+  const rawAdq = user.acquisitionDate || user.acquisition_date || user.createdAt || user.created_at || user.registrationDate || user.registration_date;
   let adqYMD = parseYMD(rawAdq);
 
   // Si no hay partidos jugados, inicializar métricas según especificación
@@ -250,6 +253,7 @@ export function calculateUserLifecycleMetrics(
       ttvFormatted: '-',
       semanaActFormatted: '-',
       reservas,
+      cancelaciones,
       juegos: 0,
       frecuencia: 0,
       ultimoJuegoFormatted: '-',
@@ -333,6 +337,7 @@ export function calculateUserLifecycleMetrics(
     ttvFormatted,
     semanaActFormatted,
     reservas,
+    cancelaciones,
     juegos,
     frecuencia,
     ultimoJuegoFormatted,
