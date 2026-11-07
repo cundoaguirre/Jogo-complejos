@@ -13,11 +13,18 @@ firebase.initializeApp({
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
-  const notificationTitle = payload.notification?.title || payload.data?.title || 'Jogo';
+  // Si payload.notification ya existe, el navegador muestra la notificación automáticamente.
+  // NO ejecutar showNotification para evitar duplicados.
+  if (payload.notification) {
+    return;
+  }
+
+  // Notificación manual para data-messages con el logo verde oficial de Jogo
+  const notificationTitle = payload.data?.title || 'Jogo';
   const notificationOptions = {
-    body: payload.notification?.body || payload.data?.body || 'Nueva actualización en tu complejo',
-    icon: '/logo-white.png',
-    badge: '/logo-white.png',
+    body: payload.data?.body || 'Nueva actualización en tu complejo',
+    icon: '/Logo-jogo-verde.jpg',
+    badge: '/Logo-jogo-verde.jpg',
     data: payload.data || {}
   };
 
@@ -26,15 +33,26 @@ messaging.onBackgroundMessage((payload) => {
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
+
+  // Obtener enlace destino provisto en payload.data o fcmOptions
+  const targetUrl = event.notification?.data?.url ||
+                    event.notification?.data?.link ||
+                    event.notification?.data?.click_action ||
+                    event.notification?.data?.fcmOptions?.link ||
+                    '/';
+
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
       for (let client of windowClients) {
-        if (client.url && 'focus' in client) {
+        if ('focus' in client) {
+          if (client.url && targetUrl !== '/' && !client.url.includes(targetUrl) && 'navigate' in client) {
+            client.navigate(targetUrl);
+          }
           return client.focus();
         }
       }
       if (clients.openWindow) {
-        return clients.openWindow('/');
+        return clients.openWindow(targetUrl);
       }
     })
   );
