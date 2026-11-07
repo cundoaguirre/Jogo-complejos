@@ -3,7 +3,7 @@ import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-const app = initializeApp(firebaseConfig);
+export const app = initializeApp(firebaseConfig);
 
 // Explicitly target the shared Firestore database instance
 export const FIRESTORE_DATABASE_ID = "ai-studio-apidegestindecli-29cae824-e5de-47b3-b428-1f598e3f8424";

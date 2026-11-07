@@ -385,6 +385,9 @@ export function formatBookingToMatch(b: any, users?: User[]): Match {
     ownerId: b.ownerId || '',
     adminId: b.adminId || '',
     createdSource: resolvedSource,
+    cancelledSource: b.cancelledSource || (b.status === 'cancelado' && b.createdSource === 'complejo' ? 'complejo' : b.cancelledSource),
+    cancelledAt: b.cancelledAt || undefined,
+    cancellationReason: b.cancellationReason || undefined,
     retainedAmount: Number(b.retainedAmount ?? 0),
     totalRefunded: Number(b.totalRefunded ?? 0),
     canonicalId: b.canonicalId || b.canonicalUserId || b.personId || b.erpUserId || undefined,
@@ -1292,6 +1295,8 @@ export async function updateBookingInFirestore(
         transaction.update(docRef, cleanFirestoreDocument({
           ...patch,
           status: 'cancelado',
+          cancelledSource: 'complejo',
+          cancelledAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         }));
         return;
@@ -4988,10 +4993,12 @@ export async function cancelOperationWithSettlement(
     if (bookingRef && bookingSnap && bookingSnap.exists()) {
       t.update(bookingRef, {
         status: 'cancelado',
+        cancelledSource: 'complejo',
         paymentStatus: balances.paymentStatus,
         payment_status: balances.paymentStatus,
         retainedAmount: balances.retainedAmount,
         totalRefunded: balances.totalRefunded,
+        cancelledAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
     }
@@ -6034,6 +6041,7 @@ export async function cancelBookingWithPolicy(
     // 2.1 Actualizar documento en bookings
     t.update(bRef, {
       status: 'cancelado',
+      cancelledSource: 'complejo',
       paymentStatus: plan.finalPaymentStatus,
       payment_status: plan.finalPaymentStatus,
       amountPending: 0,

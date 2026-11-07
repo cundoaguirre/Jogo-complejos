@@ -1,11 +1,18 @@
 /**
  * Generador Unificado de Reportes Ejecutivos en PDF (Semanales y Mensuales)
  * Formato: A4 Portrait (210mm x 297mm) con estética ejecutiva Canva oficial de Jogo.
+ *
+ * Motor contable oficial: computeComplexFinancialSummary de ./financialMath
  */
 
 import jsPDF from 'jspdf';
 import { collection, getDocs, query, where, doc as firestoreDoc, getDoc } from 'firebase/firestore';
 import { db } from './firebase';
+import {
+  computeComplexFinancialSummary,
+  UnifiedFinancialOperationInput,
+  UnifiedFinancialMovementInput
+} from './financialMath';
 
 export interface UnifiedReportOptions {
   complexId: string;
@@ -75,6 +82,47 @@ async function loadLogoBase64(): Promise<LogoInfo | null> {
 }
 
 /**
+ * Parsea cualquier formato de fecha (Date, Firestore Timestamp, ISO string, YYYY-MM-DD) a objeto Date válido.
+ */
+function parseToDate(val: any): Date | null {
+  if (!val) return null;
+  if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
+  if (typeof val.toDate === 'function') return val.toDate();
+  if (typeof val === 'string') {
+    if (val.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
+      const [y, m, d] = val.split('-').map(Number);
+      return new Date(y, m - 1, d, 12, 0, 0);
+    }
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  if (typeof val === 'number') {
+    const d = new Date(val);
+    return isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
+
+/**
+ * Extrae la fecha normalizada YYYY-MM-DD para agrupaciones y gráficos.
+ */
+function getDateStr(val: any): string {
+  if (!val) return '';
+  if (typeof val === 'string') {
+    if (val.includes('T')) return val.split('T')[0];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
+    return val.slice(0, 10);
+  }
+  if (typeof val.toDate === 'function') {
+    return val.toDate().toISOString().split('T')[0];
+  }
+  if (val instanceof Date) {
+    return val.toISOString().split('T')[0];
+  }
+  return '';
+}
+
+/**
  * Formatea el rango de fechas para el subencabezado.
  * Ej: "14 de sep al 21 de sep, 2026" o "1 de oct al 31 de oct, 2026"
  */
@@ -109,25 +157,6 @@ function formatNumberARS(amount: number): string {
 }
 
 /**
- * Extrae la fecha normalizada YYYY-MM-DD.
- */
-function getDateStr(val: any): string {
-  if (!val) return '';
-  if (typeof val === 'string') {
-    if (val.includes('T')) return val.split('T')[0];
-    if (/^\d{4}-\d{2}-\d{2}$/.test(val)) return val;
-    return val.slice(0, 10);
-  }
-  if (typeof val.toDate === 'function') {
-    return val.toDate().toISOString().split('T')[0];
-  }
-  if (val instanceof Date) {
-    return val.toISOString().split('T')[0];
-  }
-  return '';
-}
-
-/**
  * Convierte strings HH:MM a horas decimales y calcula la duración con cruce de medianoche.
  */
 function parseHoursFromTimes(open: string, close: string): number {
@@ -159,23 +188,34 @@ function calculatePeriodCapacityHours(
 
   const count = Math.max(1, courtsCount);
   const dayNamesEs = ['domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado'];
+  const dayNamesWithAccents = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 
   let totalVenueHours = 0;
 
   if (venueProfile?.weeklySchedule && typeof venueProfile.weeklySchedule === 'object') {
     for (let i = 0; i < diffDays; i++) {
       const curDt = new Date(dtStart.getTime() + i * 86400000);
-      const dayName = dayNamesEs[curDt.getUTCDay()];
-      const dayData = venueProfile.weeklySchedule[dayName];
+      const dayIdx = curDt.getUTCDay();
+      const dayName = dayNamesEs[dayIdx];
+      const dayNameAccent = dayNamesWithAccents[dayIdx];
+      const dayData = venueProfile.weeklySchedule[dayName] || venueProfile.weeklySchedule[dayNameAccent];
       if (dayData && !dayData.isClosed && dayData.open && dayData.close) {
         totalVenueHours += parseHoursFromTimes(dayData.open, dayData.close);
+      }
+    }
+  } else if (Array.isArray(venueProfile?.hours) && venueProfile.hours.length > 0) {
+    for (const h of venueProfile.hours) {
+      if (h.open !== false && (h.start || h.openTime) && (h.end || h.closeTime)) {
+        const start = h.start || h.openTime;
+        const end = h.end || h.closeTime;
+        totalVenueHours += parseHoursFromTimes(start, end);
       }
     }
   }
 
   if (totalVenueHours <= 0) {
-    const open = venueProfile?.openTime || '14:00';
-    const close = venueProfile?.closeTime || '00:00';
+    const open = venueProfile?.openTime || venueProfile?.openingTime || '14:00';
+    const close = venueProfile?.closeTime || venueProfile?.closingTime || '00:00';
     const daily = parseHoursFromTimes(open, close) || 10;
     totalVenueHours = daily * diffDays;
   }
@@ -209,22 +249,34 @@ function getAverageCourtPrice(courts: any[] = [], activeBookings: any[] = [], de
 }
 
 /**
+ * Función oficial de cálculo de tendencia porcentual (idéntica a computeTrend de FinanceView).
+ */
+export function computeTrend(current: number, previous: number): { pct: string; isUp: boolean; rawPct: number } {
+  if (previous === 0) {
+    if (current > 0) return { pct: '+100%', isUp: true, rawPct: 100 };
+    return { pct: '+0%', isUp: true, rawPct: 0 };
+  }
+  const pctNum = Math.round(((current - previous) / previous) * 100);
+  if (pctNum >= 0) return { pct: `+${pctNum}%`, isUp: true, rawPct: pctNum };
+  return { pct: `${pctNum}%`, isUp: false, rawPct: pctNum };
+}
+
+/**
  * Dibuja una pastilla (pill badge) comparativa de variación porcentual.
  * REGLA ESTRICTA WinAnsi: NUNCA usar flechas Unicode (↑, ↓, ▲, ▼) para evitar caracteres corruptos.
- * Si pct >= 0: Fondo #DCFCE7, texto "+X% Sem ant" (o Mes ant) en #15803D.
- * Si pct < 0: Fondo #FEE2E2, texto "-X% Sem ant" (o Mes ant) en #B91C1C.
+ * Si trendPct >= 0: Fondo #DCFCE7, texto "+X% Sem ant" (o Mes ant) en #15803D.
+ * Si trendPct < 0: Fondo #FEE2E2, texto "-X% Sem ant" (o Mes ant) en #B91C1C.
  */
 function drawPillBadge(
   doc: jsPDF,
   x: number,
   y: number,
-  pct: number,
+  trendPct: string,
   labelSuffix: string,
   fontSize: number = 7
 ): number {
-  const isPositive = pct >= 0;
-  const sign = pct > 0 ? '+' : (pct < 0 ? '-' : '+');
-  const text = `${sign}${Math.abs(pct)}% ${labelSuffix}`;
+  const isPositive = !trendPct.startsWith('-');
+  const text = `${trendPct} ${labelSuffix}`;
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(fontSize);
@@ -246,136 +298,169 @@ function drawPillBadge(
   return pillW;
 }
 
+interface UnifiedOpItem extends UnifiedFinancialOperationInput {
+  date: Date;
+}
+
+interface UnifiedMovItem extends UnifiedFinancialMovementInput {
+  date: Date;
+}
+
 /**
- * Computa de forma unificada e idéntica a Finanzas los números contables de un período [pStart, pEnd].
+ * Unifica las operaciones registradas y las reservas en operaciones comerciales estandarizadas,
+ * replicando con total exactitud la lógica de combinedOperations de FinanceView en src/App.tsx.
  */
-function computeFinancialsForPeriod(
-  ops: any[],
-  movs: any[],
-  bkgs: any[],
-  pStart: string,
-  pEnd: string
-) {
-  const periodOps = ops.filter(op => {
-    const rawDate = op.date || op.createdAt;
-    const dStr = getDateStr(rawDate);
-    return dStr >= pStart && dStr <= pEnd;
-  });
+function buildUnifiedOperations(
+  operations: any[],
+  bookings: any[],
+  targetId: string,
+  targetIds: string[]
+): UnifiedOpItem[] {
+  const list: UnifiedOpItem[] = [];
+  const processedOpIds = new Set<string>();
 
-  const periodMovs = movs.filter(m => {
-    const rawDate = m.date || m.createdAt;
-    const dStr = getDateStr(rawDate);
-    return dStr >= pStart && dStr <= pEnd;
-  });
+  const CANCELLED_STATUSES = new Set([
+    'cancelled_unpaid',
+    'cancelled_retained',
+    'partial_refunded',
+    'fully_refunded',
+    'cancelled',
+    'cancelado'
+  ]);
 
-  let income = 0;
-  let reservasIncome = 0;
-  let mostradorIncome = 0;
-  let mostradorSalesCount = 0;
-  let pendingToCollect = 0;
-  let pendingToPay = 0;
+  // 1. Operaciones directas de la colección /operations
+  operations.forEach(op => {
+    const c = op.complexId || op.complejoId;
+    if (c && !targetIds.includes(String(c))) return;
 
-  for (const op of periodOps) {
-    const isExp = Boolean(op.isExpense || op.operationType === 'expense' || op.operationType === 'purchase');
-    const st = String(op.status || '').toLowerCase();
-    const paySt = String(op.paymentStatus || '').toLowerCase();
-    const isOpCancelled = st === 'cancelado' || st === 'cancelled' || paySt.includes('cancel');
+    processedOpIds.add(op.id);
 
-    const contractual = Math.max(0, Number(op.contractualAmount ?? op.total ?? op.amount ?? 0));
-    const collected = Math.max(0, Number(op.totalCollected ?? op.amount_paid ?? 0));
-    const pending = Math.max(0, Number(op.amountPending ?? 0));
+    const isBooking = op.operationType === 'court_booking' || op.operationType === 'booking' || Boolean(op.bookingId) || op.id.endsWith('-booking');
+    const matchedB = isBooking && op.bookingId ? bookings.find(b => String(b.id) === String(op.bookingId)) : null;
+    const bookingDateRaw = isBooking
+      ? (matchedB?.date ||
+         (matchedB?.startTime ? String(matchedB.startTime).split('T')[0] : null) ||
+         (op.bookingDate ? String(op.bookingDate).split('T')[0] : null) ||
+         (typeof op.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(op.date) ? op.date : null))
+      : null;
 
-    if (isExp) {
-      if (!isOpCancelled && pending > 0) {
-        pendingToPay += pending;
-      }
-    } else {
-      // Ingreso: si fue cancelado, conserva señas/cobros percibidos; si no, el contractual
-      const opRevenue = isOpCancelled ? collected : contractual;
-      income += opRevenue;
-      if (!isOpCancelled && pending > 0) {
-        pendingToCollect += pending;
-      }
+    const d = bookingDateRaw
+      ? (parseToDate(bookingDateRaw + 'T12:00:00') || parseToDate(bookingDateRaw) || new Date())
+      : (parseToDate(op.createdAt || op.date) || new Date());
 
-      const isReserva = op.operationType === 'court_booking' || 
-                        op.operationType === 'booking' || 
-                        Boolean(op.bookingId) || 
-                        String(op.id).endsWith('-booking');
+    const isExp = Boolean(op.isExpense || op.operationType === 'expense' || op.operationType === 'purchase' || op.metadata?.isExpense);
+    const isCancelledOp = CANCELLED_STATUSES.has(String(op.paymentStatus)) ||
+                          (op as any).status === 'cancelado' ||
+                          (op as any).status === 'cancelled';
 
-      if (isReserva) {
-        reservasIncome += opRevenue;
-      } else {
-        mostradorIncome += opRevenue;
-        mostradorSalesCount++;
-      }
+    let contractual = Number(op.contractualAmount ?? op.total ?? op.amount ?? op.price ?? 0);
+    const collected = Number(op.totalCollected ?? op.amount_paid ?? op.collected ?? op.paid ?? 0);
+    let pending = Number(op.amountPending ?? op.pending ?? op.debt ?? Math.max(0, contractual - collected));
+
+    if (isCancelledOp) {
+      contractual = collected;
+      pending = 0;
     }
-  }
 
-  // Fallback de reservas si no hay operaciones registradas en el período
-  if (income === 0 && bkgs.length > 0) {
-    const periodBkgs = bkgs.filter(b => {
-      const dStr = getDateStr(b.date || b.startTime || b.start_time);
-      return dStr >= pStart && dStr <= pEnd;
+    list.push({
+      id: op.id,
+      complexId: targetId,
+      complejoId: targetId,
+      contractualAmount: contractual,
+      totalCollected: collected,
+      amountPending: pending,
+      paymentStatus: String(op.paymentStatus || (isCancelledOp ? 'cancelled' : 'paid')),
+      isExpense: isExp,
+      operationType: op.operationType || (isExp ? 'expense' : 'pos_sale'),
+      bookingId: op.bookingId || null,
+      date: d
     });
-    for (const b of periodBkgs) {
-      const price = Number(b.price || b.price_total || 0);
-      const paid = Number(b.amount_paid ?? b.deposit ?? (b.payment_status === 'paid' ? price : 0));
-      const st = String(b.status || '').toLowerCase().trim();
-      const isCancelled = st === 'cancelado' || st === 'cancelled';
-      const rev = isCancelled ? paid : (paid > 0 ? paid : price);
-      reservasIncome += rev;
-      income += rev;
-    }
-  }
+  });
 
-  // Egresos (gastos + devoluciones/reintegros de cancelaciones)
-  const totalRefunds = periodMovs
+  // 2. Operaciones virtuales para reservas de /bookings que aún no tengan un documento en /operations
+  const existingBookingIds = new Set(
+    operations
+      .filter(o => o.bookingId || o.id.endsWith('-booking'))
+      .map(o => String(o.bookingId || o.id.replace('-booking', '')))
+  );
+
+  bookings.forEach(b => {
+    if (!b) return;
+    const c = b.complexId || b.complejoId;
+    if (c && !targetIds.includes(String(c))) return;
+
+    if (existingBookingIds.has(String(b.id))) return;
+
+    const bStatus = String(b.status || '').toLowerCase();
+    const bPayStatus = String(b.payment_status || b.paymentStatus || '').toLowerCase();
+    const isCancelled = bStatus === 'cancelado' || bStatus === 'cancelled' || bPayStatus.includes('cancel');
+
+    const d = parseToDate(b.date || b.startTime || b.start_time || b.createdAt) || new Date();
+    const rawPrice = Number(b.price || b.price_total || 0);
+    const isPaid = b.payment_status === 'paid' || b.paymentStatus === 'paid' || b.payment_status === 'pagado';
+    const rawPaid = Number(b.amount_paid ?? b.deposit ?? 0);
+    const paid = isPaid ? (rawPaid > 0 ? Math.max(rawPaid, rawPrice) : rawPrice) : rawPaid;
+
+    const contractual = isCancelled ? paid : rawPrice;
+    const pending = isCancelled ? 0 : Math.max(0, rawPrice - paid);
+    const paymentStatus = isCancelled
+      ? 'cancelled'
+      : (paid >= rawPrice && rawPrice > 0 ? 'paid' : (paid > 0 ? 'partial' : 'unpaid'));
+
+    list.push({
+      id: `${b.id}-booking`,
+      complexId: targetId,
+      complejoId: targetId,
+      operationType: 'court_booking',
+      bookingId: b.id,
+      contractualAmount: contractual,
+      totalCollected: paid,
+      amountPending: pending,
+      paymentStatus,
+      isExpense: false,
+      date: d
+    });
+  });
+
+  return list;
+}
+
+/**
+ * Mapea los movimientos financieros de Firestore a la estructura tipada para el motor contable.
+ */
+function buildUnifiedMovements(
+  movements: any[],
+  targetId: string,
+  targetIds: string[]
+): UnifiedMovItem[] {
+  return movements
     .filter(m => {
-      if (m.flow !== 'expense') return false;
-      const cat = String(m.category || '').toLowerCase();
-      const desc = String(m.description || '').toLowerCase();
-      return cat.includes('reintegro') || cat.includes('devoluc') || cat.includes('refund') ||
-             desc.includes('reintegro') || desc.includes('devoluc') || desc.includes('refund');
+      const c = m.complexId || m.complejoId;
+      if (c && !targetIds.includes(String(c))) return false;
+      return true;
     })
-    .reduce((sum, m) => sum + Math.max(0, Number(m.amount || 0)), 0);
-
-  const totalExpenses = periodOps
-    .filter(op => Boolean(op.isExpense || op.operationType === 'expense' || op.operationType === 'purchase') && op.status !== 'cancelado')
-    .reduce((sum, op) => sum + Math.max(0, Number(op.contractualAmount ?? op.total ?? op.amount ?? 0)), 0);
-
-  const totalEgresos = totalExpenses + totalRefunds;
-  const netResult = income - totalEgresos;
-
-  // Caja (efectivo en movimientos financieros)
-  let cashAvailable = 0;
-  for (const mov of periodMovs) {
-    const amt = Math.max(0, Number(mov.amount || 0));
-    const method = String(mov.paymentMethod || '').trim().toLowerCase();
-    const isCash = method === 'efectivo' || method === 'cash';
-    if (mov.flow === 'income') {
-      if (isCash) cashAvailable += amt;
-    } else if (mov.flow === 'expense') {
-      if (isCash) cashAvailable -= amt;
-    }
-  }
-
-  return {
-    income,
-    reservasIncome,
-    mostradorIncome,
-    mostradorSalesCount,
-    pendingToCollect,
-    pendingToPay,
-    totalExpenses,
-    totalRefunds,
-    totalEgresos,
-    netResult,
-    cashAvailable
-  };
+    .map(m => {
+      const d = parseToDate(m.date || m.createdAt) || new Date();
+      const rawFlow = String(m.flow || 'income').toLowerCase();
+      const flow: 'income' | 'expense' = rawFlow === 'expense' ? 'expense' : 'income';
+      return {
+        id: m.id,
+        complexId: targetId,
+        complejoId: targetId,
+        flow,
+        category: String(m.category || ''),
+        amount: Math.max(0, Number(m.amount) || 0),
+        operationId: m.operationId || null,
+        bookingId: m.bookingId || null,
+        status: m.status || 'completed',
+        date: d
+      };
+    });
 }
 
 /**
  * Función principal unificada de generación y descarga del reporte ejecutivo en PDF (Semanal o Mensual).
+ * Consume directamente computeComplexFinancialSummary de financialMath.ts.
  */
 export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOptions): Promise<void> {
   const {
@@ -394,6 +479,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
 
   const isMonthly = periodType === 'monthly';
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
   const complexName = (rawComplexName || 'Complejo Deportivo').trim();
 
   // ---------------------------------------------------------------------------
@@ -432,9 +518,18 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
 
   try {
     if (bookings.length === 0) {
-      const qB = query(collection(db, 'bookings'), where('complejoId', '==', targetId));
-      const snapB = await getDocs(qB);
-      bookings = snapB.docs.map(d => ({ id: d.id, ...d.data() }));
+      const allB: any[] = [];
+      for (const tId of targetIds) {
+        const qB1 = query(collection(db, 'bookings'), where('complejoId', '==', tId));
+        const snapB1 = await getDocs(qB1);
+        snapB1.docs.forEach(d => allB.push({ id: d.id, ...d.data() }));
+        const qB2 = query(collection(db, 'bookings'), where('complexId', '==', tId));
+        const snapB2 = await getDocs(qB2);
+        snapB2.docs.forEach(d => allB.push({ id: d.id, ...d.data() }));
+      }
+      const bMap = new Map<string, any>();
+      allB.forEach(b => bMap.set(b.id, b));
+      bookings = Array.from(bMap.values());
     }
   } catch (e) {
     console.warn('[ReportPDF] Error fetching bookings:', e);
@@ -442,9 +537,18 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
 
   try {
     if (operations.length === 0) {
-      const qO = query(collection(db, 'operations'), where('complexId', '==', targetId));
-      const snapO = await getDocs(qO);
-      operations = snapO.docs.map(d => ({ id: d.id, ...d.data() }));
+      const allO: any[] = [];
+      for (const tId of targetIds) {
+        const qO1 = query(collection(db, 'operations'), where('complexId', '==', tId));
+        const snapO1 = await getDocs(qO1);
+        snapO1.docs.forEach(d => allO.push({ id: d.id, ...d.data() }));
+        const qO2 = query(collection(db, 'operations'), where('complejoId', '==', tId));
+        const snapO2 = await getDocs(qO2);
+        snapO2.docs.forEach(d => allO.push({ id: d.id, ...d.data() }));
+      }
+      const oMap = new Map<string, any>();
+      allO.forEach(o => oMap.set(o.id, o));
+      operations = Array.from(oMap.values());
     }
   } catch (e) {
     console.warn('[ReportPDF] Error fetching operations:', e);
@@ -452,58 +556,126 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
 
   try {
     if (movements.length === 0) {
-      const qM = query(collection(db, 'financial_movements'), where('complexId', '==', targetId));
-      const snapM = await getDocs(qM);
-      movements = snapM.docs.map(d => ({ id: d.id, ...d.data() }));
+      const allM: any[] = [];
+      for (const tId of targetIds) {
+        const qM1 = query(collection(db, 'financial_movements'), where('complexId', '==', tId));
+        const snapM1 = await getDocs(qM1);
+        snapM1.docs.forEach(d => allM.push({ id: d.id, ...d.data() }));
+        const qM2 = query(collection(db, 'financial_movements'), where('complejoId', '==', tId));
+        const snapM2 = await getDocs(qM2);
+        snapM2.docs.forEach(d => allM.push({ id: d.id, ...d.data() }));
+      }
+      const mMap = new Map<string, any>();
+      allM.forEach(m => mMap.set(m.id, m));
+      movements = Array.from(mMap.values());
     }
   } catch (e) {
     console.warn('[ReportPDF] Error fetching financial_movements:', e);
   }
 
   // ---------------------------------------------------------------------------
-  // 2. Determinación de Ventana Previa y Cálculos Financieros Coincidentes
+  // 2. Unificación Integral de Operaciones y Movimientos (Identico a FinanceView)
   // ---------------------------------------------------------------------------
-  let prevStartStr = '';
-  let prevEndStr = '';
+  const unifiedOperations = buildUnifiedOperations(operations, bookings, targetId, targetIds);
+  const unifiedMovements = buildUnifiedMovements(movements, targetId, targetIds);
+
+  // ---------------------------------------------------------------------------
+  // 3. Delimitación Estricta de Períodos: Actual vs. Previo
+  // ---------------------------------------------------------------------------
+  const [sY, sM, sD] = startDateStr.split('-').map(Number);
+  const [eY, eM, eD] = endDateStr.split('-').map(Number);
+
+  // Período Actual: startDateStr 00:00:00.000 a endDateStr 23:59:59.999
+  const curStart = new Date(sY, sM - 1, sD, 0, 0, 0, 0);
+  const curEnd = new Date(eY, eM - 1, eD, 23, 59, 59, 999);
+
+  // Período Previo:
+  // - Semanal: exactamente (startDate - 7 días 00:00:00) a (startDate - 1 día 23:59:59.999)
+  // - Mensual: mes calendario anterior completo (ej. 2026-10-01 -> 2026-09-01 a 2026-09-30)
+  let prevStart: Date;
+  let prevEnd: Date;
 
   if (isMonthly) {
-    // Mes calendario anterior completo (ej. 2026-10-01 -> 2026-09-01 a 2026-09-30)
-    const [curY, curM] = startDateStr.split('-').map(Number);
-    const prevY = curM === 1 ? curY - 1 : curY;
-    const prevM = curM === 1 ? 12 : curM - 1;
-    const prevMStr = String(prevM).padStart(2, '0');
-    prevStartStr = `${prevY}-${prevMStr}-01`;
-    const prevLastDay = new Date(Date.UTC(prevY, prevM, 0)).getUTCDate();
-    prevEndStr = `${prevY}-${prevMStr}-${String(prevLastDay).padStart(2, '0')}`;
+    const prevY = sM === 1 ? sY - 1 : sY;
+    const prevM = sM === 1 ? 12 : sM - 1;
+    const prevLastDay = new Date(prevY, prevM, 0).getDate();
+    prevStart = new Date(prevY, prevM - 1, 1, 0, 0, 0, 0);
+    prevEnd = new Date(prevY, prevM - 1, prevLastDay, 23, 59, 59, 999);
   } else {
-    // Semana anterior exacta de 7 días (startDate - 7 días a startDate - 1 día)
-    const [sY, sM, sD] = startDateStr.split('-').map(Number);
-    const sUtc = new Date(Date.UTC(sY, sM - 1, sD));
-    const prevSUtc = new Date(sUtc.getTime() - 7 * 86400000);
-    const prevEUtc = new Date(sUtc.getTime() - 1 * 86400000);
-    prevStartStr = prevSUtc.toISOString().split('T')[0];
-    prevEndStr = prevEUtc.toISOString().split('T')[0];
+    const prevStartRef = new Date(curStart.getTime() - 7 * 86400000);
+    const prevEndRef = new Date(curStart.getTime() - 1 * 86400000);
+    prevStart = new Date(prevStartRef.getFullYear(), prevStartRef.getMonth(), prevStartRef.getDate(), 0, 0, 0, 0);
+    prevEnd = new Date(prevEndRef.getFullYear(), prevEndRef.getMonth(), prevEndRef.getDate(), 23, 59, 59, 999);
   }
 
-  const currentFin = computeFinancialsForPeriod(operations, movements, bookings, startDateStr, endDateStr);
-  const prevFin = computeFinancialsForPeriod(operations, movements, bookings, prevStartStr, prevEndStr);
+  const curStartMs = curStart.getTime();
+  const curEndMs = curEnd.getTime();
+  const prevStartMs = prevStart.getTime();
+  const prevEndMs = prevEnd.getTime();
 
-  const diffIncome = currentFin.income - prevFin.income;
-  const pctIncome = prevFin.income > 0 ? Math.round((diffIncome / prevFin.income) * 100) : 0;
+  // Filtrado de operaciones y movimientos por ventana temporal exacta
+  const currentOps = unifiedOperations.filter(op => {
+    const t = op.date.getTime();
+    return t >= curStartMs && t <= curEndMs;
+  });
+  const currentMovs = unifiedMovements.filter(m => {
+    const t = m.date.getTime();
+    return t >= curStartMs && t <= curEndMs;
+  });
 
-  const diffCash = currentFin.cashAvailable - prevFin.cashAvailable;
-  const pctCash = prevFin.cashAvailable > 0 ? Math.round((diffCash / prevFin.cashAvailable) * 100) : 0;
-
-  const pendingPct = currentFin.income > 0 ? Math.round((currentFin.pendingToCollect / currentFin.income) * 100) : 0;
-  const pendingPayPct = currentFin.totalEgresos > 0 ? Math.round((currentFin.pendingToPay / currentFin.totalEgresos) * 100) : 0;
+  const prevOps = unifiedOperations.filter(op => {
+    const t = op.date.getTime();
+    return t >= prevStartMs && t <= prevEndMs;
+  });
+  const prevMovs = unifiedMovements.filter(m => {
+    const t = m.date.getTime();
+    return t >= prevStartMs && t <= prevEndMs;
+  });
 
   // ---------------------------------------------------------------------------
-  // 3. Reglas Matemáticas de Reservas y Ocupación
+  // 4. Ejecución del Motor Contable Oficial (computeComplexFinancialSummary)
+  // ---------------------------------------------------------------------------
+  const currentSummary = computeComplexFinancialSummary({
+    targetComplexIds: [targetId],
+    operations: currentOps,
+    movements: currentMovs
+  });
+
+  const previousSummary = computeComplexFinancialSummary({
+    targetComplexIds: [targetId],
+    operations: prevOps,
+    movements: prevMovs
+  });
+
+  // Cálculo de tendencias porcentuales idéntico a FinanceView
+  const incomeTrend = computeTrend(currentSummary.economicIncome, previousSummary.economicIncome);
+  const cashTrend = computeTrend(currentSummary.cashAvailable, previousSummary.cashAvailable);
+
+  const pendingPct = currentSummary.economicIncome > 0
+    ? Math.round((currentSummary.pendingToCollect / currentSummary.economicIncome) * 100)
+    : (currentSummary.pendingToCollect > 0 ? 100 : 0);
+
+  const pendingPayPct = currentSummary.economicExpense > 0
+    ? Math.round((currentSummary.pendingToPay / currentSummary.economicExpense) * 100)
+    : (currentSummary.pendingToPay > 0 ? 100 : 0);
+
+  // Cantidad de ventas realizadas en mostrador en el período
+  const mostradorSalesCount = currentOps.filter(op => {
+    const isBooking = op.operationType === 'court_booking' ||
+                      op.operationType === 'booking' ||
+                      Boolean(op.bookingId) ||
+                      op.id.endsWith('-booking');
+    return !isBooking && !op.isExpense;
+  }).length;
+
+  // ---------------------------------------------------------------------------
+  // 5. Reservas, Horas y Ocupación Física del Período
   // ---------------------------------------------------------------------------
   const periodBookings = bookings.filter((b: any) => {
-    const rawDate = b.date || b.startTime || b.start_time || b.createdAt;
-    const dStr = getDateStr(rawDate);
-    return dStr >= startDateStr && dStr <= endDateStr;
+    const d = parseToDate(b.date || b.startTime || b.start_time || b.createdAt);
+    if (!d) return false;
+    const t = d.getTime();
+    return t >= curStartMs && t <= curEndMs;
   });
 
   // A. Horas Jugadas (Excluye cancelaciones de la ocupación física real)
@@ -544,7 +716,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   const cancelCount = cancelledBookings.length;
   const cancelRate = periodBookings.length > 0 ? Math.round((cancelCount / periodBookings.length) * 100) : 0;
 
-  // F. Atribución de Reservas (Complejo vs. Jogo) -> Todas las reservas creadas
+  // F. Atribución de Reservas (Complejo vs. Jogo)
   const totalCreatedBookings = periodBookings.length;
   const isJogo = (b: any) => {
     const src = String(b.createdSource || b.source || '').toLowerCase();
@@ -556,8 +728,6 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   const pctJogo = totalCreatedBookings > 0 ? Math.round((jogoCount / totalCreatedBookings) * 100) : 0;
 
   // G. Distribución de Reservas para el Gráfico Central
-  // Weekly: 7 días [Lun, Mar, Mie, Jue, Vie, Sab, Dom]
-  // Monthly: 5 hitos [Sem 1 (1-7), Sem 2 (8-14), Sem 3 (15-21), Sem 4 (22-28), Sem 5 (29-31)]
   let chartPointsCount: number[] = [];
   let chartLabels: string[] = [];
 
@@ -610,7 +780,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   }
 
   // ---------------------------------------------------------------------------
-  // 4. Renderizado Visual jsPDF (A4 Portrait 210mm x 297mm - Estética Canva)
+  // 6. Renderizado Visual jsPDF (A4 Portrait 210mm x 297mm - Estética Canva)
   // ---------------------------------------------------------------------------
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -718,10 +888,10 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(18);
   doc.setTextColor(55, 65, 81); // #374151
-  doc.text(formatARS(currentFin.income), 16, 54.5);
+  doc.text(formatARS(currentSummary.economicIncome), 16, 54.5);
 
   // Pastilla dinámica comparativa de Ingresos (limpia de caracteres Unicode)
-  drawPillBadge(doc, 16, 59.5, pctIncome, compSuffix, 7);
+  drawPillBadge(doc, 16, 59.5, incomeTrend.pct, compSuffix, 7);
 
   // B. EGRESOS (y = 70mm)
   doc.setFont('helvetica', 'normal');
@@ -732,7 +902,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(18);
   doc.setTextColor(55, 65, 81); // #374151
-  doc.text(formatARS(currentFin.totalEgresos), 16, 77);
+  doc.text(formatARS(currentSummary.economicExpense), 16, 77);
 
   // C. NETO (y = 92mm)
   doc.setFont('helvetica', 'normal');
@@ -743,7 +913,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(18);
   doc.setTextColor(55, 65, 81); // #374151
-  doc.text(formatARS(currentFin.netResult), 16, 99);
+  doc.text(formatARS(currentSummary.netResult), 16, 99);
 
   // Bloque Derecho (x = 80mm a 198mm, w = 118mm)
   // Tarjeta Caja (x = 80mm, y = 40mm, w = 118mm, h = 28mm)
@@ -761,10 +931,10 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(24);
   doc.setTextColor(17, 24, 39); // #111827
-  doc.text(formatNumberARS(currentFin.cashAvailable), 85, 56);
+  doc.text(formatNumberARS(currentSummary.cashAvailable), 85, 56);
 
   // Pastilla dinámica en Caja (limpia de caracteres Unicode)
-  drawPillBadge(doc, 85, 61, pctCash, cajaSuffix, 6.5);
+  drawPillBadge(doc, 85, 61, cashTrend.pct, cajaSuffix, 6.5);
 
   // Lado derecho Caja (dos filas)
   // Fila 1: Por cobrar
@@ -779,7 +949,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(55, 65, 81); // #374151
-  doc.text(formatARS(currentFin.pendingToCollect), 140, 52.5);
+  doc.text(formatARS(currentSummary.pendingToCollect), 140, 52.5);
 
   // Fila 2: Por pagar
   doc.setFillColor(239, 68, 68); // #EF4444
@@ -793,14 +963,13 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8.5);
   doc.setTextColor(55, 65, 81); // #374151
-  doc.text(formatARS(currentFin.pendingToPay), 140, 62.5);
+  doc.text(formatARS(currentSummary.pendingToPay), 140, 62.5);
 
   // ===========================================================================
   // FILAS Y BADGES DE MOSTRADOR Y AGENDA (y = 76mm a 108mm)
   // ===========================================================================
 
   // Fila Mostrador:
-  // Badge contenedor cuadrado con esquinas redondeadas (x = 80mm, y = 76mm, w = 11mm, h = 11mm, r = 2.5mm)
   doc.setFillColor(239, 246, 255); // #EFF6FF
   doc.setDrawColor(219, 234, 254); // #DBEAFE
   doc.setLineWidth(0.3);
@@ -833,13 +1002,13 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
   doc.setTextColor(107, 114, 128); // #6B7280
-  doc.text(`${currentFin.mostradorSalesCount} ${currentFin.mostradorSalesCount === 1 ? 'venta' : 'ventas'}`, 94, 85.5);
+  doc.text(`${mostradorSalesCount} ${mostradorSalesCount === 1 ? 'venta' : 'ventas'}`, 94, 85.5);
 
   // Monto a la derecha
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   doc.setTextColor(17, 24, 39); // #111827
-  doc.text(formatARS(currentFin.mostradorIncome), 196, 83, { align: 'right' });
+  doc.text(formatARS(currentSummary.mostradorIncome), 196, 83, { align: 'right' });
 
   // Divisor tenue en y = 91mm
   doc.setDrawColor(243, 244, 246); // #F3F4F6
@@ -847,7 +1016,6 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.line(80, 91, 196, 91);
 
   // Fila Agenda:
-  // Badge contenedor cuadrado con esquinas redondeadas (x = 80mm, y = 94mm, w = 11mm, h = 11mm, r = 2.5mm)
   doc.setFillColor(236, 253, 245); // #ECFDF5
   doc.setDrawColor(167, 243, 208); // #A7F3D0
   doc.setLineWidth(0.3);
@@ -885,7 +1053,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);
   doc.setTextColor(17, 24, 39); // #111827
-  doc.text(formatARS(currentFin.reservasIncome), 196, 101, { align: 'right' });
+  doc.text(formatARS(currentSummary.reservasIncome), 196, 101, { align: 'right' });
 
   // ===========================================================================
   // 4. LÍNEAS DE CUADRÍCULA DE LA MITAD INFERIOR
@@ -1070,7 +1238,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.line(152, 142, 152, 168);
 
   // Tres viñetas a la derecha del donut (x = 158mm)
-  // 1. Reservas (reloj verde)
+  // 1. Jugados (reloj verde)
   doc.setDrawColor(16, 185, 129); // #10B981
   doc.setLineWidth(0.4);
   doc.circle(160, 145, 1.4, 'S');
@@ -1080,7 +1248,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(75, 85, 99); // #4B5563
-  doc.text(`Reservas: ${totalPlayedHours}hs`, 164, 145.8);
+  doc.text(`Jugados: ${totalPlayedHours}hs`, 164, 145.8);
 
   // 2. Disponibles (reloj gris)
   doc.setDrawColor(156, 163, 175); // #9CA3AF

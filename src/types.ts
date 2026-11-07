@@ -22,6 +22,7 @@ export interface Court {
 }
 
 export type BookingCreatedSource = 'jogo' | 'complejo';
+export type BookingCancelledSource = 'jogo' | 'complejo';
 
 export interface CanonicalBooking {
   complejoId: string;
@@ -43,6 +44,9 @@ export interface CanonicalBooking {
   ownerId: string;
   adminId: string;
   createdSource?: BookingCreatedSource;
+  cancelledSource?: BookingCancelledSource;
+  cancelledAt?: any;
+  cancellationReason?: string;
   retainedAmount?: number;
   totalRefunded?: number;
   createdAt: string;
@@ -89,6 +93,9 @@ export interface Match {
   ownerId?: string;
   adminId?: string;
   createdSource?: BookingCreatedSource;
+  cancelledSource?: BookingCancelledSource;
+  cancelledAt?: any;
+  cancellationReason?: string;
   retainedAmount?: number;
   totalRefunded?: number;
   canonicalId?: string;

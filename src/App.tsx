@@ -77,6 +77,7 @@ import { OperationTicketCardModal } from './components/OperationTicketCardModal'
 import { CancelBookingModal } from './components/CancelBookingModal';
 import { DeleteBookingModal } from './components/DeleteBookingModal';
 import { downloadUnifiedWeeklyReportPdf } from './lib/weeklyReportPdfGenerator';
+import { requestNotificationPermissionAndGetToken, initForegroundNotificationListener } from './lib/notifications';
 
 // --- Components ---
 
@@ -8598,6 +8599,7 @@ const FinanceView = ({
       id: string;
       ticketCode: string;
       date: Date;
+      bookingDate?: string;
       concept: string;
       clientName: string;
       contractualAmount: number;
@@ -8619,9 +8621,19 @@ const FinanceView = ({
       processedOpIds.add(op.id);
       if (op.legacySaleId) processedLegacyIds.add(op.legacySaleId);
 
-      const d = op.createdAt?.toDate 
-        ? op.createdAt.toDate() 
-        : (op.createdAt ? new Date(op.createdAt) : new Date());
+      const linkedDoc = (op.bookingId ? bookingsMap.get(String(op.bookingId)) : null) ||
+                        bookingsMap.get(op.id.replace('-booking', ''));
+      const isBooking = op.operationType === 'court_booking' || op.operationType === 'booking' || Boolean(op.bookingId) || op.id.endsWith('-booking') || Boolean(linkedDoc);
+      const bookingDateRaw = isBooking
+        ? (linkedDoc?.date || 
+           (linkedDoc?.startTime ? String(linkedDoc.startTime).split('T')[0] : null) || 
+           ((op as any).bookingDate ? String((op as any).bookingDate).split('T')[0] : null) ||
+           (typeof (op as any).date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test((op as any).date) ? (op as any).date : null))
+        : null;
+
+      const d = bookingDateRaw
+        ? (safeParseDate(bookingDateRaw + 'T12:00:00') || safeParseDate(bookingDateRaw) || new Date())
+        : (op.createdAt?.toDate ? op.createdAt.toDate() : (op.createdAt ? new Date(op.createdAt) : new Date()));
 
       let concept = 'Venta Mostrador';
       if (op.operationType === 'court_booking' || op.operationType === 'booking') concept = op.notes || 'Alquiler de Cancha';
@@ -8632,8 +8644,6 @@ const FinanceView = ({
         concept = op.items.map(it => `${it.quantity}x ${it.name}`).join(', ');
       }
 
-      const linkedDoc = (op.bookingId ? bookingsMap.get(String(op.bookingId)) : null) ||
-                        bookingsMap.get(op.id.replace('-booking', ''));
       const resolvedName = resolveClientName(op, users, linkedDoc);
       const isExp = Boolean((op as any).isExpense || op.operationType === 'expense' || op.operationType === 'purchase' || op.metadata?.isExpense);
 
@@ -8657,6 +8667,7 @@ const FinanceView = ({
         id: op.id,
         ticketCode: op.ticketCode || op.id.slice(0, 8).toUpperCase(),
         date: d,
+        bookingDate: bookingDateRaw || undefined,
         concept,
         clientName: resolvedName,
         contractualAmount: contractual,
@@ -8809,10 +8820,13 @@ const FinanceView = ({
         createdBy: 'sistema'
       };
 
+      const bDateStr = b.date || (b.start_time ? String(b.start_time).split('T')[0] : (b.startTime ? String(b.startTime).split('T')[0] : undefined));
+
       list.push({
         id: `${b.id}-booking`,
         ticketCode: virtualBookingOp.ticketCode,
         date: d,
+        bookingDate: bDateStr,
         concept: `Alquiler Cancha (${b.courtName || 'Cancha'})`,
         clientName: resolvedName,
         contractualAmount: tot,
@@ -8938,13 +8952,16 @@ const FinanceView = ({
   }, [financePeriod]);
 
   const periodOperations = useMemo(() => {
-    const inPeriod = combinedOperations.filter(op => {
+    return combinedOperations.filter(op => {
+      const isBookingOp = op.originalDoc?.operationType === 'court_booking' || op.originalDoc?.operationType === 'booking' || Boolean(op.originalDoc?.bookingId) || op.id.endsWith('-booking') || Boolean(op.bookingDate);
+      if (isBookingOp && op.bookingDate) {
+        const sDate = safeParseDate(op.bookingDate + 'T12:00:00') || safeParseDate(op.bookingDate) || op.date;
+        const t = sDate.getTime();
+        return t >= currentRange.start.getTime() && t <= currentRange.end.getTime();
+      }
       const t = op.date.getTime();
       return t >= currentRange.start.getTime() && t <= currentRange.end.getTime();
     });
-    // Si en el período actual no hay operaciones pero sí hay registros en general y se trata de "Hoy",
-    // calculamos las métricas con los datos del período (puede ser 0 si hoy no hubo movimientos)
-    return inPeriod;
   }, [combinedOperations, currentRange]);
 
   const periodMovements = useMemo(() => {
@@ -8956,6 +8973,12 @@ const FinanceView = ({
 
   const previousOperations = useMemo(() => {
     return combinedOperations.filter(op => {
+      const isBookingOp = op.originalDoc?.operationType === 'court_booking' || op.originalDoc?.operationType === 'booking' || Boolean(op.originalDoc?.bookingId) || op.id.endsWith('-booking') || Boolean(op.bookingDate);
+      if (isBookingOp && op.bookingDate) {
+        const sDate = safeParseDate(op.bookingDate + 'T12:00:00') || safeParseDate(op.bookingDate) || op.date;
+        const t = sDate.getTime();
+        return t >= previousRange.start.getTime() && t <= previousRange.end.getTime();
+      }
       const t = op.date.getTime();
       return t >= previousRange.start.getTime() && t <= previousRange.end.getTime();
     });
@@ -11846,6 +11869,53 @@ export default function App() {
     };
   }, [activeComplexId, user, refreshKey]);
 
+  // ---------------------------------------------------------------------------
+  // Notificaciones Push Web (FCM): registro de token y listener foreground
+  // ---------------------------------------------------------------------------
+  const [foregroundNotification, setForegroundNotification] = useState<{ title: string; body: string } | null>(null);
+
+  useEffect(() => {
+    if (!activeComplexId || !user) return;
+
+    // Solicitar permiso de notificaciones y guardar token en Firestore
+    requestNotificationPermissionAndGetToken(activeComplexId).catch((err) => {
+      console.warn('[FCM] Error registrando token FCM:', err);
+    });
+
+    // Configurar listener para notificaciones en primer plano con feedback sonoro y visual
+    let unsubscribeForeground: (() => void) | undefined;
+    initForegroundNotificationListener((payload) => {
+      const title = payload?.notification?.title || payload?.data?.title || 'Jogo';
+      const body = payload?.notification?.body || payload?.data?.body || 'Nueva actualización en tu complejo';
+
+      setForegroundNotification({ title, body });
+
+      // Reproducir sonido oficial de notificación
+      try {
+        const audio = new Audio('/sounds/efectosonidoexito.mp3');
+        audio.play().catch(() => {
+          const fallback = new Audio('/efectosonidoexito.mp3');
+          fallback.play().catch(() => {});
+        });
+      } catch {
+        // Silenciar si autoplay no está permitido en el navegador
+      }
+
+      // Auto-ocultar notificación emergente a los 6 segundos
+      setTimeout(() => {
+        setForegroundNotification((prev) => (prev?.title === title ? null : prev));
+      }, 6000);
+    }).then((unsub) => {
+      if (typeof unsub === 'function') {
+        unsubscribeForeground = unsub;
+      }
+    });
+
+    return () => {
+      if (unsubscribeForeground) unsubscribeForeground();
+    };
+  }, [activeComplexId, user]);
+
   // Índice de actividad unificado de jugadores del complejo activo (registrados + organizadores y participantes de reservas)
   const { crmUsers: unifiedCrmUsers, userMetricsMap: unifiedUserMetricsMap } = useMemo(() => {
     return buildCrmActivityIndex(users, activeBookings, activeComplexId, new Date());
@@ -12779,6 +12849,30 @@ export default function App() {
           complexName={welcomeCelebration.complexName}
           onClose={() => setWelcomeCelebration(null)}
         />
+      )}
+
+      {/* Banner de Notificación en Primer Plano (FCM) */}
+      {foregroundNotification && (
+        <div className="fixed top-5 right-5 z-[9999] max-w-sm bg-white dark:bg-slate-900 border border-[#129D44]/40 rounded-2xl p-4 shadow-2xl flex items-start gap-3 backdrop-blur-md animate-in fade-in slide-in-from-top-3">
+          <div className="w-10 h-10 rounded-xl bg-[#129D44]/15 text-[#129D44] flex items-center justify-center shrink-0 border border-[#129D44]/20 shadow-sm">
+            <Bell size={20} />
+          </div>
+          <div className="flex-1 min-w-0 pr-1">
+            <h4 className="text-sm font-bold text-slate-900 dark:text-white truncate">
+              {foregroundNotification.title}
+            </h4>
+            <p className="text-xs text-slate-600 dark:text-slate-300 mt-0.5 leading-relaxed">
+              {foregroundNotification.body}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setForegroundNotification(null)}
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg transition-colors cursor-pointer"
+          >
+            <X size={16} />
+          </button>
+        </div>
       )}
 
       {/* Mobile Bottom Navigation */}
