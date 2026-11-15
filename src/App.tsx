@@ -10105,7 +10105,7 @@ const FinanceView = ({
 
 
 const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = 'complejo_central' }: { onDataChange?: () => void, isDarkMode?: boolean, onToggleDarkMode?: () => void, complexId?: string }) => {
-  const { user, activeComplex, collaboratorData, logout, isStaff } = useFirebase();
+  const { user, activeComplex, collaboratorData, logout, isStaff, isOwner } = useFirebase();
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const [isLoading, setIsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -10678,6 +10678,17 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
           </button>
         )}
       </div>
+
+      {!isOwner && (
+        <button
+          type="button"
+          onClick={logout}
+          className="w-full mt-3 rounded-2xl border border-red-200/80 dark:border-red-900/50 bg-white dark:bg-slate-800 py-3.5 px-4 text-center font-bold text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-2"
+        >
+          <LogOut size={16} />
+          <span>Cerrar sesión</span>
+        </button>
+      )}
 
       {/* Mostrador & Gastos Bottom Sheet */}
       <MostradorBottomSheet
