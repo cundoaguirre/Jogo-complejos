@@ -333,6 +333,17 @@ export interface SupportTicket {
 
 export type ComplexClientStatus = 'trial' | 'active' | 'inactive' | 'paused';
 
+export type ComplexUserRole = 'owner' | 'manager' | 'staff';
+
+export interface ComplexMember {
+  uid: string;
+  email: string;
+  displayName?: string;
+  photoURL?: string;
+  role: ComplexUserRole;
+  joinedAt: any;
+}
+
 export interface CanonicalComplejo {
   id: string;
   name: string;
@@ -347,6 +358,8 @@ export interface CanonicalComplejo {
   isActivated?: boolean;
   ownerUid?: string;
   ownerEmail?: string;
+  memberInviteEnabled?: boolean;
+  memberInviteToken?: string;
   activatedAt?: any;
   createdAt?: any;
   updatedAt?: any;
@@ -371,7 +384,7 @@ export interface SaaSInvitation {
 export interface ComplexMembership {
   complexId: string;
   complexName: string;
-  role: string;
+  role: ComplexUserRole | string;
   clientStatus?: ComplexClientStatus;
 }
 

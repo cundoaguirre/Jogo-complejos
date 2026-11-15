@@ -2,6 +2,7 @@ import {
   doc, 
   getDoc, 
   setDoc, 
+  updateDoc,
   collection,
   query,
   where,
@@ -22,6 +23,8 @@ export interface InvitationValidationResult {
   documentId?: string;
   complexName?: string;
   errorMessage?: string;
+  isMemberInvite?: boolean;
+  complexId?: string;
 }
 
 /**
@@ -86,6 +89,58 @@ export async function validateSaasInvitation(token: string): Promise<InvitationV
   const cleanToken = token.trim();
   if (!cleanToken) {
     return { valid: false, reason: 'not_found' };
+  }
+
+  // Handle reusable member invitation links: member-{complexId}-{token}
+  if (cleanToken.startsWith('member-')) {
+    const rest = cleanToken.slice('member-'.length);
+    const lastDash = rest.lastIndexOf('-');
+    if (lastDash === -1) {
+      return { valid: false, reason: 'not_found' };
+    }
+    const complexId = rest.slice(0, lastDash);
+    const inviteToken = rest.slice(lastDash + 1);
+
+    try {
+      const compSnap = await getDoc(doc(db, 'complejos', complexId));
+      if (!compSnap.exists()) {
+        return { valid: false, reason: 'not_found' };
+      }
+      const cData = compSnap.data();
+      const compName = cData.name || cData.company || 'Mi Complejo';
+
+      if (!cData.memberInviteEnabled || cData.memberInviteToken !== inviteToken) {
+        return { 
+          valid: false, 
+          reason: 'revoked', 
+          complexName: compName,
+          errorMessage: 'El enlace de invitación para este complejo fue pausado o restablecido.' 
+        };
+      }
+
+      return {
+        valid: true,
+        isMemberInvite: true,
+        complexId,
+        complexName: compName,
+        invitation: {
+          token: cleanToken,
+          complexId,
+          complexName: compName,
+          role: 'staff',
+          status: 'pending',
+          createdAt: cData.createdAt,
+          expiresAt: null
+        }
+      };
+    } catch (err: any) {
+      console.error('[Invitations] Error validating member invite token:', err);
+      return {
+        valid: false,
+        reason: 'error',
+        errorMessage: err.message || 'Error validando enlace de invitación'
+      };
+    }
   }
 
   try {
@@ -201,6 +256,104 @@ export async function claimSaasInvitation(
   }
   if (!user || !user.uid) {
     throw new Error('Usuario no autenticado.');
+  }
+
+  // Handle reusable member invitation claim: member-{complexId}-{token}
+  if (cleanToken.startsWith('member-')) {
+    const rest = cleanToken.slice('member-'.length);
+    const lastDash = rest.lastIndexOf('-');
+    if (lastDash === -1) {
+      throw new Error('Token de invitación a miembros inválido.');
+    }
+    const complexId = rest.slice(0, lastDash);
+    const inviteToken = rest.slice(lastDash + 1);
+
+    const compSnap = await getDoc(doc(db, 'complejos', complexId));
+    if (!compSnap.exists()) {
+      throw new Error('El complejo no existe.');
+    }
+    const cData = compSnap.data();
+    if (!cData.memberInviteEnabled || cData.memberInviteToken !== inviteToken) {
+      throw new Error('Este enlace de invitación ya no está activo.');
+    }
+
+    const compName = cData.name || cData.company || 'Mi Complejo';
+
+    // 1. Register or update member in subcollection preserving existing owner/manager role
+    const memberRef = doc(db, 'complejos', complexId, 'members', user.uid);
+    let resolvedMemberRole: 'owner' | 'manager' | 'staff' = 'staff';
+    try {
+      const existingMember = await getDoc(memberRef);
+      if (existingMember.exists()) {
+        const existingRole = (existingMember.data()?.role || '').toString().toLowerCase().trim();
+        if (existingRole === 'owner' || existingRole === 'manager') {
+          resolvedMemberRole = existingRole;
+        }
+      }
+    } catch {
+      // Proceed with staff if member doc doesn't exist or isn't readable yet
+    }
+
+    await setDoc(memberRef, {
+      uid: user.uid,
+      email: user.email || '',
+      displayName: user.displayName || user.email?.split('@')[0] || 'Miembro',
+      photoURL: user.photoURL || null,
+      role: resolvedMemberRole,
+      joinedAt: serverTimestamp()
+    }, { merge: true });
+
+    // 2. Register membership in collaborator profile
+    const colabRef = doc(db, 'collaborators', user.uid);
+    const colabSnap = await getDoc(colabRef);
+
+    if (!colabSnap.exists()) {
+      await setDoc(colabRef, {
+        uid: user.uid,
+        email: user.email || null,
+        name: user.displayName || user.email?.split('@')[0] || 'Miembro',
+        photoURL: user.photoURL || null,
+        activeComplexId: complexId,
+        complexIds: [complexId],
+        memberships: [
+          {
+            complexId,
+            complexName: compName,
+            role: 'staff'
+          }
+        ],
+        claimedMemberInviteToken: inviteToken,
+        claimedMemberComplexId: complexId,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      });
+    } else {
+      const existing = colabSnap.data() as CollaboratorProfile;
+      const existingMemberships = Array.isArray(existing.memberships) ? existing.memberships : [];
+      const existingComplexIds = Array.isArray(existing.complexIds) ? existing.complexIds : existingMemberships.map(m => m.complexId);
+
+      const alreadyHas = existingMemberships.some(m => m.complexId === complexId);
+      const updatedMemberships = alreadyHas
+        ? existingMemberships.map(m => m.complexId === complexId ? { ...m, role: m.role || 'staff' } : m)
+        : [...existingMemberships, { complexId, complexName: compName, role: 'staff' }];
+
+      const updatedComplexIds = Array.from(new Set([...existingComplexIds, complexId]));
+
+      await updateDoc(colabRef, {
+        memberships: updatedMemberships,
+        complexIds: updatedComplexIds,
+        activeComplexId: complexId,
+        claimedMemberInviteToken: inviteToken,
+        claimedMemberComplexId: complexId,
+        updatedAt: serverTimestamp()
+      });
+    }
+
+    return {
+      success: true,
+      complexId,
+      complexName: compName
+    };
   }
 
   let inviteDocId = knownInviteDocId;

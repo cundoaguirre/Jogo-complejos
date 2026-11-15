@@ -66,6 +66,7 @@ import { playPurchaseSound } from '../lib/posAudio';
 import { cn } from '../lib/utils';
 import { isToday } from 'date-fns';
 import { CatalogInventorySection } from './CatalogInventorySection';
+import { useFirebase } from './FirebaseContext';
 
 interface MostradorBottomSheetProps {
   isOpen: boolean;
@@ -80,6 +81,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
   complexId,
   mode = 'mostrador'
 }) => {
+  const { isStaff } = useFirebase();
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
 
   // View state: 'categories' | 'products' | 'expenses'
@@ -676,7 +678,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
 
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!isProductFormValid) return;
+    if (isStaff || !isProductFormValid) return;
 
     const finalStock = productModalMode === 'create'
       ? 0
@@ -1683,14 +1685,18 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                 </p>
               </div>
 
-              <button
-                type="button"
-                onClick={() => handleOpenRenameCategory(selectedCategory)}
-                className="p-1.5 -mr-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
-                title="Editar nombre de categoría"
-              >
-                <Edit3 size={20} strokeWidth={2} />
-              </button>
+              {!(mode === 'mostrador' && isStaff) ? (
+                <button
+                  type="button"
+                  onClick={() => handleOpenRenameCategory(selectedCategory)}
+                  className="p-1.5 -mr-1.5 text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white transition-colors cursor-pointer"
+                  title="Editar nombre de categoría"
+                >
+                  <Edit3 size={20} strokeWidth={2} />
+                </button>
+              ) : (
+                <div className="w-8" />
+              )}
             </div>
           ) : (
             <div className="px-5 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
@@ -1815,14 +1821,16 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                         Creá tu primera categoría para comenzar a agregar productos.
                       </p>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setIsCategoryModalOpen(true)}
-                      className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-900/10 flex items-center gap-2 cursor-pointer transition-all"
-                    >
-                      <Plus size={16} />
-                      <span>Crear primera categoría</span>
-                    </button>
+                    {!(mode === 'mostrador' && isStaff) && (
+                      <button
+                        type="button"
+                        onClick={() => setIsCategoryModalOpen(true)}
+                        className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-md shadow-emerald-900/10 flex items-center gap-2 cursor-pointer transition-all"
+                      >
+                        <Plus size={16} />
+                        <span>Crear primera categoría</span>
+                      </button>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-2.5">
@@ -1871,24 +1879,26 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                           : 'No se encontraron productos registrados.'}
                       </p>
                     </div>
-                    {categories.length === 0 ? (
-                      <button
-                        type="button"
-                        onClick={() => setIsCategoryModalOpen(true)}
-                        className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-md"
-                      >
-                        <Plus size={16} />
-                        <span>Crear categoría primero</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleOpenCreateProduct(selectedCategory || undefined)}
-                        className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-md"
-                      >
-                        <Plus size={16} />
-                        <span>Agregar primer producto</span>
-                      </button>
+                    {!(mode === 'mostrador' && isStaff) && (
+                      categories.length === 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => setIsCategoryModalOpen(true)}
+                          className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-md"
+                        >
+                          <Plus size={16} />
+                          <span>Crear categoría primero</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleOpenCreateProduct(selectedCategory || undefined)}
+                          className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer shadow-md"
+                        >
+                          <Plus size={16} />
+                          <span>Agregar primer producto</span>
+                        </button>
+                      )
                     )}
                   </div>
                 ) : (
@@ -2195,7 +2205,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                 </button>
               )}
             </div>
-          ) : (
+          ) : !(mode === 'mostrador' && isStaff) ? (
             <div className="absolute right-5 bottom-5 z-20">
               <button
                 type="button"
@@ -2226,7 +2236,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                 )}
               </button>
             </div>
-          )}
+          ) : null}
         </motion.div>
 
         {/* Modal: Nueva Categoría de Producto */}
@@ -2629,13 +2639,17 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                   <div className="grid grid-cols-2 gap-3">
                     <div
                       onClick={() => {
+                        if (isStaff) return;
                         setAdjustType('adjustment');
                         setAdjustQuantity(1);
                         setAdjustReason('');
                         setIsAdjustStockOpen(true);
                       }}
-                      className="p-4 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-100 dark:border-slate-800/80 shadow-xs hover:border-emerald-300 dark:hover:border-emerald-700 cursor-pointer text-center transition-all group active:scale-[0.98]"
-                      title="Registrar pérdida de mercadería"
+                      className={cn(
+                        "p-4 rounded-2xl bg-white dark:bg-slate-800/90 border border-slate-100 dark:border-slate-800/80 shadow-xs text-center transition-all",
+                        !isStaff && "hover:border-emerald-300 dark:hover:border-emerald-700 cursor-pointer group active:scale-[0.98]"
+                      )}
+                      title={isStaff ? undefined : "Registrar pérdida de mercadería"}
                     >
                       <div className="text-3xl font-black text-gray-900 dark:text-white tracking-tight">
                         {selectedProduct.stock}
@@ -3063,10 +3077,11 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                           </label>
                           <input
                             type="text"
+                            disabled={isStaff}
                             placeholder="Ej. Coca-Cola 500 ml"
                             value={productForm.name}
                             onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
-                            className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                            className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:opacity-70 disabled:cursor-not-allowed"
                           />
                         </div>
 
@@ -3076,9 +3091,10 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                           </label>
                           {categories.length > 0 ? (
                             <select
+                              disabled={isStaff}
                               value={productForm.categoryId}
                               onChange={(e) => setProductForm({ ...productForm, categoryId: e.target.value })}
-                              className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer"
+                              className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 cursor-pointer disabled:opacity-70 disabled:cursor-not-allowed"
                             >
                               {categories.map((c) => (
                                 <option key={`opt-cat-prod-${c}`} value={c}>
@@ -3089,10 +3105,11 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                           ) : (
                             <input
                               type="text"
+                              disabled={isStaff}
                               placeholder="Categoría"
                               value={productForm.categoryId}
                               onChange={(e) => setProductForm({ ...productForm, categoryId: e.target.value })}
-                              className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white"
+                              className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm text-slate-900 dark:text-white disabled:opacity-70 disabled:cursor-not-allowed"
                             />
                           )}
                         </div>
@@ -3107,10 +3124,11 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                           <input
                             type="number"
                             min="0"
+                            disabled={isStaff}
                             placeholder="Ej. 1500"
                             value={productForm.salePrice}
                             onChange={(e) => setProductForm({ ...productForm, salePrice: e.target.value === '' ? '' : Number(e.target.value) })}
-                            className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                            className="w-full h-9.5 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs sm:text-sm font-mono text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 disabled:opacity-70 disabled:cursor-not-allowed"
                           />
                         </div>
 
@@ -3121,9 +3139,10 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                           <div className="inline-flex w-full items-center p-1 bg-slate-200/70 dark:bg-slate-800 rounded-xl gap-1 h-9.5">
                             <button
                               type="button"
+                              disabled={isStaff}
                               onClick={() => setProductForm({ ...productForm, status: 'activo' })}
                               className={cn(
-                                "flex-1 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer text-center",
+                                "flex-1 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer text-center disabled:opacity-70 disabled:cursor-not-allowed",
                                 productForm.status === 'activo'
                                   ? "bg-white dark:bg-slate-900 text-emerald-700 dark:text-emerald-400 shadow-xs"
                                   : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
@@ -3133,9 +3152,10 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                             </button>
                             <button
                               type="button"
+                              disabled={isStaff}
                               onClick={() => setProductForm({ ...productForm, status: 'inactivo' })}
                               className={cn(
-                                "flex-1 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer text-center",
+                                "flex-1 py-1 text-xs font-bold rounded-lg transition-all cursor-pointer text-center disabled:opacity-70 disabled:cursor-not-allowed",
                                 productForm.status === 'inactivo'
                                   ? "bg-white dark:bg-slate-900 text-red-600 dark:text-red-400 shadow-xs"
                                   : "text-slate-500 hover:text-slate-800 dark:text-slate-400"
@@ -3154,15 +3174,17 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                           onClick={() => setIsProductModalOpen(false)}
                           className="flex-1 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold transition-colors cursor-pointer"
                         >
-                          Cancelar
+                          {isStaff ? 'Cerrar' : 'Cancelar'}
                         </button>
-                        <button
-                          type="submit"
-                          disabled={!isProductFormValid}
-                          className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-emerald-900/10 transition-all cursor-pointer"
-                        >
-                          {productModalMode === 'create' ? 'Agregar producto' : 'Guardar datos'}
-                        </button>
+                        {!isStaff && (
+                          <button
+                            type="submit"
+                            disabled={!isProductFormValid}
+                            className="flex-1 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 disabled:opacity-50 text-white text-xs font-bold shadow-md shadow-emerald-900/10 transition-all cursor-pointer"
+                          >
+                            {productModalMode === 'create' ? 'Agregar producto' : 'Guardar datos'}
+                          </button>
+                        )}
                       </div>
                     </form>
                   )}
@@ -3582,36 +3604,38 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
                                           />
 
                                           {/* Zona 3: Flecha > con Popover de Borrado en letra gris */}
-                                          <div className="relative shrink-0">
-                                            <button
-                                              type="button"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setDeletePurchaseMenuRowId(isDeleteOpen ? null : p.id);
-                                              }}
-                                              className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer transition-colors"
-                                            >
-                                              <ChevronRight size={18} />
-                                            </button>
+                                          {!isStaff && (
+                                            <div className="relative shrink-0">
+                                              <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  setDeletePurchaseMenuRowId(isDeleteOpen ? null : p.id);
+                                                }}
+                                                className="p-1 text-gray-400 hover:text-gray-600 rounded-lg cursor-pointer transition-colors"
+                                              >
+                                                <ChevronRight size={18} />
+                                              </button>
 
-                                            {isDeleteOpen && (
-                                              <div className="absolute right-0 top-full mt-1 z-50 animate-in fade-in zoom-in-95 duration-150">
-                                                <button
-                                                  type="button"
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    handleRemovePurchasePaymentBlock(p.id);
-                                                    setDeletePurchaseMenuRowId(null);
-                                                  }}
-                                                  disabled={purchasePayments.length <= 1}
-                                                  className="px-3 py-1.5 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-gray-200 dark:border-slate-700 text-gray-500 dark:text-slate-300 hover:text-gray-700 text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-40"
-                                                >
-                                                  <Trash2 size={13} />
-                                                  <span>Borrar método de pago</span>
-                                                </button>
-                                              </div>
-                                            )}
-                                          </div>
+                                              {isDeleteOpen && (
+                                                <div className="absolute right-0 top-full mt-1 z-50 animate-in fade-in zoom-in-95 duration-150">
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                      e.stopPropagation();
+                                                      handleRemovePurchasePaymentBlock(p.id);
+                                                      setDeletePurchaseMenuRowId(null);
+                                                    }}
+                                                    disabled={purchasePayments.length <= 1}
+                                                    className="px-3 py-1.5 bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-gray-200 dark:border-slate-700 text-gray-500 dark:text-slate-300 hover:text-gray-700 text-xs font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer disabled:opacity-40"
+                                                  >
+                                                    <Trash2 size={13} />
+                                                    <span>Borrar método de pago</span>
+                                                  </button>
+                                                </div>
+                                              )}
+                                            </div>
+                                          )}
                                         </div>
                                       </div>
 

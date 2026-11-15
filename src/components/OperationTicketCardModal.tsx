@@ -32,6 +32,7 @@ import {
   subscribeToVenueProfile
 } from '../lib/firestoreSync';
 import { shareOrDownloadTicketImage, TicketImageData } from '../lib/ticketImageGenerator';
+import { useFirebase } from './FirebaseContext';
 
 const normalizePhoneDigits = (phone?: string) => String(phone || '').replace(/\D/g, '');
 
@@ -130,6 +131,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
   const [playerSearchQuery, setPlayerSearchQuery] = useState('');
   const [isUpdatingPlayers, setIsUpdatingPlayers] = useState(false);
   const [isPlayersExpanded, setIsPlayersExpanded] = useState(true);
+  const { isStaff } = useFirebase();
 
   // Venue profile subscription
   const [venueProfile, setVenueProfile] = useState<any>(null);
@@ -556,15 +558,19 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                 
                 {/* Izquierda: MoreVertical blanco sin círculo */}
                 <div className="relative" ref={menuRef}>
-                  <button
-                    type="button"
-                    onClick={() => setMenuOpen(prev => !prev)}
-                    className="text-white hover:text-white/80 p-1 cursor-pointer transition-colors"
-                    title="Opciones"
-                    aria-label="Opciones"
-                  >
-                    <MoreVertical size={20} />
-                  </button>
+                  {(isBooking ? (!isBookingCancelled || !isStaff) : !isStaff) ? (
+                    <button
+                      type="button"
+                      onClick={() => setMenuOpen(prev => !prev)}
+                      className="text-white hover:text-white/80 p-1 cursor-pointer transition-colors"
+                      title="Opciones"
+                      aria-label="Opciones"
+                    >
+                      <MoreVertical size={20} />
+                    </button>
+                  ) : (
+                    <div className="w-7 h-7" />
+                  )}
 
                   {/* Menú Desplegable */}
                   {menuOpen && (
@@ -585,6 +591,22 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                               <span>Editar reserva</span>
                             </button>
                           )}
+                          {!isStaff && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMenuOpen(false);
+                                setShowConfirmDelete(true);
+                              }}
+                              className="w-full px-3.5 py-2.5 text-left hover:bg-red-50 dark:hover:bg-red-950/40 flex items-center gap-2 cursor-pointer text-red-600 dark:text-red-400 transition-colors"
+                            >
+                              <Trash2 size={15} />
+                              <span>Eliminar reserva</span>
+                            </button>
+                          )}
+                        </>
+                      ) : (
+                        !isStaff && (
                           <button
                             type="button"
                             onClick={() => {
@@ -594,23 +616,11 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                             className="w-full px-3.5 py-2.5 text-left hover:bg-red-50 dark:hover:bg-red-950/40 flex items-center gap-2 cursor-pointer text-red-600 dark:text-red-400 transition-colors"
                           >
                             <Trash2 size={15} />
-                            <span>Eliminar reserva</span>
+                            <span>
+                              {isSale ? 'Eliminar venta' : isPurchase ? 'Eliminar compra' : 'Eliminar gasto'}
+                            </span>
                           </button>
-                        </>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            setShowConfirmDelete(true);
-                          }}
-                          className="w-full px-3.5 py-2.5 text-left hover:bg-red-50 dark:hover:bg-red-950/40 flex items-center gap-2 cursor-pointer text-red-600 dark:text-red-400 transition-colors"
-                        >
-                          <Trash2 size={15} />
-                          <span>
-                            {isSale ? 'Eliminar venta' : isPurchase ? 'Eliminar compra' : 'Eliminar gasto'}
-                          </span>
-                        </button>
+                        )
                       )}
                     </div>
                   )}

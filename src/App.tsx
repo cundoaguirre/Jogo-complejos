@@ -23,6 +23,7 @@ import { InviteView } from './components/InviteView';
 import { WelcomeCelebrationModal } from './components/WelcomeCelebrationModal';
 import { BillingNoticeModal } from './components/BillingNoticeModal';
 import { PayBalanceModal } from './components/PayBalanceModal';
+import { MembersModal } from './components/MembersModal';
 import { 
   calculateWeeklyObligations, 
   evaluateBillingNoticeState, 
@@ -209,7 +210,9 @@ const Sidebar = ({
   onOpenActivation,
   user,
   collaboratorData,
-  onLogout
+  onLogout,
+  isOwner,
+  onOpenMembers
 }: { 
   active: NavTabId | string, 
   onNavigate: (tab: NavTabId) => void, 
@@ -222,7 +225,9 @@ const Sidebar = ({
   onOpenActivation?: () => void,
   user?: any,
   collaboratorData?: any,
-  onLogout?: () => void
+  onLogout?: () => void,
+  isOwner?: boolean,
+  onOpenMembers?: () => void
 }) => {
   // Context-sensitive menu items
   const getMenuItems = () => {
@@ -376,6 +381,28 @@ const Sidebar = ({
               </span>
             </button>
           </div>
+
+          {/* Opción de Miembros para el Propietario */}
+          {isOwner && onOpenMembers && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onOpenMembers();
+                onClose();
+              }}
+              className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl transition-all bg-slate-800/90 hover:bg-slate-700/80 text-white border border-slate-700/60 text-xs font-semibold cursor-pointer active:scale-[0.98]"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+                  <Users size={16} />
+                </div>
+                <span>Miembros</span>
+              </div>
+              <ChevronRight size={16} className="text-slate-400" />
+            </button>
+          )}
 
           <div className="flex items-center justify-between px-1">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -2418,6 +2445,7 @@ const MatchDetailModal = ({
   onDeleteBooking?: (booking: Match) => void,
   users?: User[]
 }) => {
+  const { isStaff } = useFirebase();
   const [showManualPayment, setShowManualPayment] = useState(false);
   const [manualAmount, setManualAmount] = useState('');
   const [isPaying, setIsPaying] = useState(false);
@@ -2447,7 +2475,7 @@ const MatchDetailModal = ({
       >
         <div className="bg-white p-6 text-gray-900 relative border-b border-gray-100">
           <div className="absolute top-4 right-4 flex items-center gap-1">
-            {onDeleteBooking && (
+            {onDeleteBooking && !isStaff && (
               <button 
                 type="button" 
                 onClick={(e) => {
@@ -3056,6 +3084,7 @@ const CreateMatchModal = ({
   onCancelBooking?: (booking: any) => void,
   onDeleteBooking?: (booking: any) => void
 }) => {
+  const { isStaff } = useFirebase();
   // Proceso de Reserva en 2 Pasos (Paso 1: Datos de reserva / Paso 2: Registrar pago)
   const [step, setStep] = useState<1 | 2>(1);
   const [bookingPayments, setBookingPayments] = useState<Array<{
@@ -3797,7 +3826,7 @@ const CreateMatchModal = ({
                 </div>
 
                 <div className="flex items-center gap-1">
-                  {data.id && onDeleteBooking && (
+                  {data.id && onDeleteBooking && !isStaff && (
                     <button 
                       type="button" 
                       onClick={() => onDeleteBooking(initialData || data)}
@@ -8111,6 +8140,7 @@ const FinanceView = ({
   users?: any[];
   onEditBooking?: (booking: any) => void;
 }) => {
+  const { isOwner } = useFirebase();
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const targetIds = useMemo(() => {
     return (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
@@ -8947,9 +8977,11 @@ const FinanceView = ({
   // -------------------------------------------------------------------------
   // Métricas Financieras del Período Seleccionado vs Período Anterior
   // -------------------------------------------------------------------------
+  const effectiveFinancePeriod: FinancePeriod = !isOwner ? 'today' : financePeriod;
+
   const { current: currentRange, previous: previousRange, compareLabel } = useMemo(() => {
-    return getPeriodRange(financePeriod);
-  }, [financePeriod]);
+    return getPeriodRange(effectiveFinancePeriod);
+  }, [effectiveFinancePeriod, isOwner]);
 
   const periodOperations = useMemo(() => {
     return combinedOperations.filter(op => {
@@ -9087,6 +9119,14 @@ const FinanceView = ({
   // -------------------------------------------------------------------------
   const filteredCombinedMovements = useMemo(() => {
     return combinedMovements.filter(m => {
+      // Si no es propietario (Encargado o Staff), filtrar estrictamente por la fecha de Hoy
+      if (!isOwner) {
+        const t = m.date.getTime();
+        if (t < currentRange.start.getTime() || t > currentRange.end.getTime()) {
+          return false;
+        }
+      }
+
       const isReserva = m.category.toLowerCase().includes('reserva') ||
                         m.category.toLowerCase().includes('cancha') ||
                         m.category.toLowerCase().includes('alquiler') ||
@@ -9112,10 +9152,23 @@ const FinanceView = ({
       }
       return true;
     });
-  }, [combinedMovements, movementFilter, searchQuery]);
+  }, [combinedMovements, movementFilter, searchQuery, isOwner, currentRange]);
 
   const filteredCombinedOperations = useMemo(() => {
     return combinedOperations.filter(op => {
+      // Si no es propietario (Encargado o Staff), filtrar estrictamente por la fecha de Hoy
+      if (!isOwner) {
+        const isBookingOp = op.originalDoc?.operationType === 'court_booking' || op.originalDoc?.operationType === 'booking' || Boolean(op.originalDoc?.bookingId) || op.id.endsWith('-booking') || Boolean(op.bookingDate);
+        let opTime = op.date.getTime();
+        if (isBookingOp && op.bookingDate) {
+          const sDate = safeParseDate(op.bookingDate + 'T12:00:00') || safeParseDate(op.bookingDate) || op.date;
+          opTime = sDate.getTime();
+        }
+        if (opTime < currentRange.start.getTime() || opTime > currentRange.end.getTime()) {
+          return false;
+        }
+      }
+
       const isReserva = op.originalDoc?.operationType === 'court_booking' ||
                         op.originalDoc?.operationType === 'booking' ||
                         Boolean(op.originalDoc?.bookingId) ||
@@ -9144,7 +9197,7 @@ const FinanceView = ({
       }
       return true;
     });
-  }, [combinedOperations, operationFilter, searchQuery]);
+  }, [combinedOperations, operationFilter, searchQuery, isOwner, currentRange]);
 
   // Agrupación cronológica por fecha para el timeline
   const groupedTimelineItems = useMemo(() => {
@@ -10052,7 +10105,7 @@ const FinanceView = ({
 
 
 const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = 'complejo_central' }: { onDataChange?: () => void, isDarkMode?: boolean, onToggleDarkMode?: () => void, complexId?: string }) => {
-  const { user, activeComplex, collaboratorData, logout } = useFirebase();
+  const { user, activeComplex, collaboratorData, logout, isStaff } = useFirebase();
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
   const [isLoading, setIsLoading] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -10423,17 +10476,19 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
     <div className="bg-[#f4f5f7] dark:bg-slate-900 min-h-full pb-24 px-4 sm:px-6 pt-2 space-y-4 max-w-2xl mx-auto">
       {/* 1. Tarjeta de Información del Complejo */}
       <div className="bg-white dark:bg-slate-800 rounded-[28px] border border-gray-200/90 dark:border-slate-700/80 p-5 sm:p-6 shadow-2xs relative">
-        {/* 3 puntos para editar información */}
-        <div className="absolute top-5 right-5">
-          <button
-            type="button"
-            onClick={() => setEditSection('info')}
-            className="p-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-            title="Editar información"
-          >
-            <MoreHorizontal size={22} />
-          </button>
-        </div>
+        {/* 3 puntos para editar información (oculto para Staff) */}
+        {!isStaff && (
+          <div className="absolute top-5 right-5">
+            <button
+              type="button"
+              onClick={() => setEditSection('info')}
+              className="p-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+              title="Editar información"
+            >
+              <MoreHorizontal size={22} />
+            </button>
+          </div>
+        )}
 
         <h3 className="text-xl sm:text-2xl font-bold text-slate-700 dark:text-slate-100 tracking-tight leading-tight pr-10">
           {profile.name || activeComplex?.name || 'El colo loco'}
@@ -10479,57 +10534,59 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
             Canchas
           </h3>
 
-          <div className="flex flex-col items-end relative">
-            {/* 3 puntos con menú contextual para editar horario */}
-            <button
-              type="button"
-              onClick={() => setCourtMenuOpen(!courtMenuOpen)}
-              className="p-1.5 -mr-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-              title="Opciones de canchas"
-            >
-              <MoreHorizontal size={22} />
-            </button>
-
-            {courtMenuOpen && (
-              <div 
-                className="absolute right-0 top-8 z-30 bg-white dark:bg-slate-900 border border-gray-100 dark:border-slate-700 rounded-xl shadow-lg py-1 w-36"
-                onClick={() => setCourtMenuOpen(false)}
+          {!isStaff && (
+            <div className="flex flex-col items-end relative">
+              {/* 3 puntos con menú contextual para editar horario */}
+              <button
+                type="button"
+                onClick={() => setCourtMenuOpen(!courtMenuOpen)}
+                className="p-1.5 -mr-1.5 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors cursor-pointer"
+                title="Opciones de canchas"
               >
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCourtMenuOpen(false);
-                    setEditSection('hours');
-                  }}
-                  className="w-full text-left px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
-                >
-                  Editar horario
-                </button>
-              </div>
-            )}
+                <MoreHorizontal size={22} />
+              </button>
 
-            {/* Botón + nueva cancha debajo de los 3 puntos */}
-            <button
-              type="button"
-              onClick={() => {
-                setEditingCourt({
-                  name: '',
-                  type: 'fútbol 5',
-                  sport: 'Fútbol',
-                  surface: 'sintético',
-                  price: '',
-                  price_per_hour: '',
-                  is_roofed: false,
-                  status: 'activa',
-                  blockedCourts: []
-                } as any);
-                setEditSection('court');
-              }}
-              className="text-xs sm:text-sm font-bold text-[#129D44] hover:text-emerald-700 transition-colors cursor-pointer mt-0.5"
-            >
-              + nueva cancha
-            </button>
-          </div>
+              {courtMenuOpen && (
+                <div 
+                  className="absolute right-0 top-8 z-30 bg-white dark:bg-slate-900 border border-gray-100 dark:border-slate-700 rounded-xl shadow-lg py-1 w-36"
+                  onClick={() => setCourtMenuOpen(false)}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCourtMenuOpen(false);
+                      setEditSection('hours');
+                    }}
+                    className="w-full text-left px-3.5 py-2 text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer"
+                  >
+                    Editar horario
+                  </button>
+                </div>
+              )}
+
+              {/* Botón + nueva cancha debajo de los 3 puntos */}
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingCourt({
+                    name: '',
+                    type: 'fútbol 5',
+                    sport: 'Fútbol',
+                    surface: 'sintético',
+                    price: '',
+                    price_per_hour: '',
+                    is_roofed: false,
+                    status: 'activa',
+                    blockedCourts: []
+                  } as any);
+                  setEditSection('court');
+                }}
+                className="text-xs sm:text-sm font-bold text-[#129D44] hover:text-emerald-700 transition-colors cursor-pointer mt-0.5"
+              >
+                + nueva cancha
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Lista de píldoras de canchas */}
@@ -10542,7 +10599,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
             return (
               <div
                 key={`profile-court-pill-${court.id || cIdx}`}
-                onClick={() => {
+                onClick={!isStaff ? () => {
                   setEditingCourt({
                     ...court,
                     sport: (court as any).sport || (court.type?.toLowerCase().includes('fútbol') ? 'Fútbol' : court.type) || 'Fútbol',
@@ -10552,8 +10609,11 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                     blockedCourts: (court as any).blockedCourts || []
                   });
                   setEditSection('court');
-                }}
-                className="rounded-full border border-gray-200 dark:border-slate-700 px-4 py-2.5 flex items-center justify-between gap-3 hover:border-[#129D44]/50 transition-all cursor-pointer bg-white dark:bg-slate-800/60"
+                } : undefined}
+                className={cn(
+                  "rounded-full border border-gray-200 dark:border-slate-700 px-4 py-2.5 flex items-center justify-between gap-3 bg-white dark:bg-slate-800/60 transition-all",
+                  !isStaff ? "hover:border-[#129D44]/50 cursor-pointer" : "cursor-default"
+                )}
               >
                 {/* Lado izquierdo: Ícono + Nombre + Superficie */}
                 <div className="flex items-center gap-3 min-w-0">
@@ -10598,8 +10658,8 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
         </div>
       </div>
 
-      {/* Dos botones inferiores paralelos */}
-      <div className="grid grid-cols-2 gap-3 sm:gap-4 mt-4">
+      {/* Botones inferiores: Staff solo ve "Editar mostrador" a ancho completo */}
+      <div className={cn("grid gap-3 sm:gap-4 mt-4", isStaff ? "grid-cols-1" : "grid-cols-2")}>
         <button
           type="button"
           onClick={() => setMostradorSheetMode('mostrador')}
@@ -10608,13 +10668,15 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
           Editar mostrador
         </button>
 
-        <button
-          type="button"
-          onClick={() => setMostradorSheetMode('gastos')}
-          className="rounded-2xl border border-gray-200/90 dark:border-slate-700/80 bg-white dark:bg-slate-800 py-3.5 px-4 text-center font-bold text-sm text-slate-700 dark:text-slate-200 hover:bg-gray-50 dark:hover:bg-slate-750 transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-2"
-        >
-          Editar gastos
-        </button>
+        {!isStaff && (
+          <button
+            type="button"
+            onClick={() => setMostradorSheetMode('gastos')}
+            className="rounded-2xl border border-gray-200/90 dark:border-slate-700/80 bg-white dark:bg-slate-800 py-3.5 px-4 text-center font-bold text-sm text-slate-700 dark:text-slate-200 hover:bg-gray-50 dark:hover:bg-slate-750 transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-2"
+          >
+            Editar gastos
+          </button>
+        )}
       </div>
 
       {/* Mostrador & Gastos Bottom Sheet */}
@@ -10626,7 +10688,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
       />
 
       {/* Edit Info Modal */}
-      {editSection === 'info' && (
+      {editSection === 'info' && !isStaff && (
         <div 
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs" 
           onClick={() => setEditSection(null)}
@@ -10735,7 +10797,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
       )}
 
       {/* Edit Hours Modal */}
-      {editSection === 'hours' && (
+      {editSection === 'hours' && !isStaff && (
         <div 
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs"
           onClick={() => setEditSection(null)}
@@ -10840,7 +10902,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
       )}
 
       {/* Edit Court Modal */}
-      {editSection === 'court' && editingCourt && (
+      {editSection === 'court' && editingCourt && !isStaff && (
         <div 
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs" 
           onClick={() => setEditSection(null)}
@@ -11607,6 +11669,7 @@ export default function App() {
   const [showPersonalInfoModal, setShowPersonalInfoModal] = useState(false);
   const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
+  const [isMembersModalOpen, setIsMembersModalOpen] = useState(false);
   const [welcomeCelebration, setWelcomeCelebration] = useState<{ userName: string; complexName: string } | null>(null);
 
   // Unified navigation controller ensuring exact sync and widget reset
@@ -11640,6 +11703,7 @@ export default function App() {
   // ---------------------------------------------------------------------------
   const closeTopmostLayer = useCallback(() => {
     // Nivel 3: Modales secundarios (capa superior)
+    if (isMembersModalOpen) { setIsMembersModalOpen(false); return true; }
     if (deleteModalBooking) { setDeleteModalBooking(null); return true; }
     if (cancelModalBooking) { setCancelModalBooking(null); return true; }
     if (selectedUser && selectedMatch) { setSelectedUser(null); return true; }
@@ -11668,7 +11732,7 @@ export default function App() {
     // Nivel 0: Todo cerrado y en Finanzas => Permite salir normalmente de la app
     return false;
   }, [
-    deleteModalBooking, cancelModalBooking, selectedUser, selectedMatch,
+    isMembersModalOpen, deleteModalBooking, cancelModalBooking, selectedUser, selectedMatch,
     agendaTicketModalOp, agendaSettleModalTarget, isCreateMatchOpen,
     isCreateUserOpen, isNotificationsOpen, isSidebarOpen, showReportsModal,
     showGlobalSupportModal, showPersonalInfoModal, isNoticeModalOpen,
@@ -11676,7 +11740,7 @@ export default function App() {
   ]);
 
   const hasOpenLayer = Boolean(
-    deleteModalBooking || cancelModalBooking || selectedUser || selectedMatch ||
+    isMembersModalOpen || deleteModalBooking || cancelModalBooking || selectedUser || selectedMatch ||
     agendaTicketModalOp || agendaSettleModalTarget || isCreateMatchOpen ||
     isCreateUserOpen || isNotificationsOpen || isSidebarOpen || showReportsModal ||
     showGlobalSupportModal || showPersonalInfoModal || isNoticeModalOpen ||
@@ -11719,6 +11783,10 @@ export default function App() {
     activeComplex, 
     collaboratorData,
     billingConfig,
+    activeRole,
+    isOwner,
+    isManager,
+    isStaff,
     setActiveComplexId 
   } = useFirebase();
 
@@ -11795,6 +11863,13 @@ export default function App() {
   const [activeBookings, setActiveBookings] = useState<Match[]>([]);
   const [dayBookingsCount, setDayBookingsCount] = useState<number>(0);
   const [financePeriod, setFinancePeriod] = useState<FinancePeriod>('today');
+
+  // Enforce today-only view in Finance tab when active role is not owner
+  useEffect(() => {
+    if (!isOwner && financePeriod !== 'today') {
+      setFinancePeriod('today');
+    }
+  }, [isOwner, financePeriod]);
 
   const capitalizedTodayDate = useMemo(() => {
     const raw = format(new Date(), "EEEE, d 'de' MMMM", { locale: es });
@@ -12326,7 +12401,7 @@ export default function App() {
         active={activeTab} 
         onNavigate={handleNavigate}
         onAction={handleSidebarAction} 
-        isOpen={isSidebarOpen}
+        isOpen={Boolean(isOwner && isSidebarOpen)}
         onClose={() => setSidebarOpen(false)}
         isDarkMode={isDarkMode}
         onToggleDarkMode={toggleDarkMode}
@@ -12334,6 +12409,8 @@ export default function App() {
         user={user}
         collaboratorData={collaboratorData}
         onLogout={logout}
+        isOwner={isOwner}
+        onOpenMembers={() => setIsMembersModalOpen(true)}
         onOpenActivation={() => {
           window.history.pushState({}, '', '/activar');
           setCurrentPath('/activar');
@@ -12349,17 +12426,19 @@ export default function App() {
             : "bg-[#129D44] dark:bg-[#129D44] text-white"
         )}>
           <div className="flex items-center gap-3 sm:gap-4">
-            <button 
-              type="button" 
-              onClick={() => setSidebarOpen(true)} 
-              className={cn(
-                "lg:hidden p-1 -ml-1 cursor-pointer transition-colors",
-                (activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance' || activeTab === 'profile') ? "text-slate-600 dark:text-slate-100 hover:text-slate-800" : "text-white hover:text-white/80"
-              )} 
-              aria-label="Abrir menú lateral"
-            >
-              <Menu size={(activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance' || activeTab === 'profile') ? 30 : 32} strokeWidth={2.5} />
-            </button>
+            {isOwner && (
+              <button 
+                type="button" 
+                onClick={() => setSidebarOpen(true)} 
+                className={cn(
+                  "lg:hidden p-1 -ml-1 cursor-pointer transition-colors",
+                  (activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance' || activeTab === 'profile') ? "text-slate-600 dark:text-slate-100 hover:text-slate-800" : "text-white hover:text-white/80"
+                )} 
+                aria-label="Abrir menú lateral"
+              >
+                <Menu size={(activeTab === 'users' || activeTab === 'schedule' || activeTab === 'finance' || activeTab === 'profile') ? 30 : 32} strokeWidth={2.5} />
+              </button>
+            )}
             <div className="flex flex-col">
               <h2 className={cn(
                 activeTab === 'finance'
@@ -12413,22 +12492,28 @@ export default function App() {
                 <span>{dayBookingsCount}</span>
               </div>
             ) : activeTab === 'finance' ? (
-              <div className="relative inline-flex items-center gap-1 text-slate-600 dark:text-slate-200 font-bold text-lg sm:text-xl cursor-pointer">
-                <span>{FINANCE_PERIOD_OPTIONS.find(p => p.id === financePeriod)?.label || 'Hoy'}</span>
-                <ChevronRight size={20} className="text-slate-400" />
-                <select
-                  value={financePeriod}
-                  onChange={(e) => setFinancePeriod(e.target.value as FinancePeriod)}
-                  className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
-                  title="Seleccionar período de finanzas"
-                >
-                  {FINANCE_PERIOD_OPTIONS.map(opt => (
-                    <option key={opt.id} value={opt.id} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-sm">
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              !isOwner ? (
+                <div className="inline-flex items-center gap-1 text-slate-600 dark:text-slate-200 font-bold text-lg sm:text-xl select-none">
+                  <span>Hoy</span>
+                </div>
+              ) : (
+                <div className="relative inline-flex items-center gap-1 text-slate-600 dark:text-slate-200 font-bold text-lg sm:text-xl cursor-pointer">
+                  <span>{FINANCE_PERIOD_OPTIONS.find(p => p.id === financePeriod)?.label || 'Hoy'}</span>
+                  <ChevronRight size={20} className="text-slate-400" />
+                  <select
+                    value={financePeriod}
+                    onChange={(e) => setFinancePeriod(e.target.value as FinancePeriod)}
+                    className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                    title="Seleccionar período de finanzas"
+                  >
+                    {FINANCE_PERIOD_OPTIONS.map(opt => (
+                      <option key={opt.id} value={opt.id} className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-sm">
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )
             ) : activeTab === 'profile' ? (
               null
             ) : (
@@ -12646,10 +12731,10 @@ export default function App() {
             onCancelBooking={(m) => {
               setCancelModalBooking(m || selectedMatch);
             }}
-            onDeleteBooking={(m) => {
+            onDeleteBooking={!isStaff ? ((m) => {
               setDeleteModalBooking(m || selectedMatch);
               setSelectedMatch(null);
-            }}
+            }) : undefined}
             onDeleted={() => {
               setRefreshKey(prev => prev + 1);
               setSelectedMatch(null);
@@ -12721,7 +12806,7 @@ export default function App() {
             initialData={selectedMatch}
             onNavigate={handleNavigate}
             onCancelBooking={(b) => setCancelModalBooking(b)}
-            onDeleteBooking={(b) => setDeleteModalBooking(b)}
+            onDeleteBooking={!isStaff ? ((b) => setDeleteModalBooking(b)) : undefined}
             onCreate={selectedMatch && selectedMatch.id ? async (data) => {
               const isCancelled = data.status === 'cancelado' || data.status === 'cancelled';
               const resolvedPaymentStatus = isCancelled ? 'cancelled' : (data.payment_status || data.paymentStatus || 'pending');
@@ -12840,6 +12925,16 @@ export default function App() {
         totalDebt={billingNoticeState.totalDebt}
         billingConfig={billingConfig}
         complexName={activeComplejoName}
+      />
+
+      {/* Modal de Gestión de Miembros y Enlaces */}
+      <MembersModal
+        isOpen={isMembersModalOpen}
+        onClose={() => setIsMembersModalOpen(false)}
+        complexId={activeComplexId || ''}
+        complexName={activeComplejoName}
+        isOwner={isOwner}
+        currentUserId={user?.uid}
       />
 
       {/* Modal de Bienvenida y Celebración */}

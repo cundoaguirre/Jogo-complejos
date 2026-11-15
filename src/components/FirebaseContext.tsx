@@ -7,10 +7,10 @@ import {
   setPersistence,
   browserLocalPersistence
 } from 'firebase/auth';
-import { doc, setDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, deleteDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { auth, googleProvider, testConnection, db } from '../lib/firebase';
 import { parseTrialExpiration, isComplexCommerciallyAuthorized } from '../lib/invitations';
-import type { ComplexMembership, CollaboratorProfile, ComplexClientStatus } from '../types';
+import type { ComplexMembership, CollaboratorProfile, ComplexClientStatus, ComplexUserRole } from '../types';
 import type { BillingConfig } from '../lib/weeklyBilling';
 import { DEFAULT_BILLING_CONFIG, subscribeBillingConfig } from '../lib/weeklyBilling';
 
@@ -33,6 +33,10 @@ interface FirebaseContextType {
   collaboratorData: CollaboratorProfile | null;
   billingConfig: BillingConfig;
   authError: string | null;
+  activeRole: ComplexUserRole;
+  isOwner: boolean;
+  isManager: boolean;
+  isStaff: boolean;
   clearAuthError: () => void;
   signInWithGoogle: () => Promise<FirebaseUser | null>;
   logout: () => Promise<void>;
@@ -52,6 +56,10 @@ const FirebaseContext = createContext<FirebaseContextType>({
   collaboratorData: null,
   billingConfig: DEFAULT_BILLING_CONFIG,
   authError: null,
+  activeRole: 'owner',
+  isOwner: true,
+  isManager: false,
+  isStaff: false,
   clearAuthError: () => {},
   signInWithGoogle: async () => null,
   logout: async () => {},
@@ -78,7 +86,12 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [memberships, setMemberships] = useState<ComplexMembership[]>([]);
   const [billingConfig, setBillingConfig] = useState<BillingConfig>(DEFAULT_BILLING_CONFIG);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [activeRole, setActiveRole] = useState<ComplexUserRole>('owner');
   const expirationTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const isOwner = activeRole === 'owner';
+  const isManager = activeRole === 'manager';
+  const isStaff = activeRole === 'staff';
 
   const clearAuthError = useCallback(() => {
     setAuthError(null);
@@ -124,6 +137,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setHasAccess(false);
         setActiveComplexIdState(null);
         setActiveComplex(null);
+        setActiveRole('owner');
         try {
           localStorage.removeItem('activeComplexId');
         } catch (e) {}
@@ -352,6 +366,106 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
   }, [user, memberships, collaboratorData?.activeComplexId]);
 
+  // 4. Real-Time Complex Membership & Active Role Listener:
+  // Subscribes to complejos/{activeComplexId}/members/{user.uid}
+  // - Auto-creates owner member record if user is owner and no member doc exists.
+  // - Synchronizes activeRole ('owner' | 'manager' | 'staff') in real-time.
+  // - If member doc is removed by admin and user is not ownerUid: immediately clears access & kicks user out.
+  useEffect(() => {
+    if (!user || !activeComplexId) {
+      setActiveRole('owner');
+      return;
+    }
+
+    const memberDocRef = doc(db, 'complejos', activeComplexId, 'members', user.uid);
+
+    // Check if the current user is owner according to venue profile, email, or memberships
+    const isOwnerByComplex = activeComplex?.ownerUid === user.uid ||
+      Boolean(activeComplex?.ownerEmail && user.email && activeComplex.ownerEmail.toLowerCase() === user.email.toLowerCase());
+    const isOwnerByMembership = memberships.some(
+      m => m.complexId === activeComplexId && (m.role === 'owner' || m.role === 'admin' || !m.role)
+    );
+    const isLikelyOwner = isOwnerByComplex || isOwnerByMembership;
+
+    const unsubMember = onSnapshot(memberDocRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        const rawRole = (data?.role || '').toString().toLowerCase().trim();
+        const normalizedRole: ComplexUserRole = (rawRole === 'manager' || rawRole === 'encargado')
+          ? 'manager'
+          : (rawRole === 'staff')
+            ? 'staff'
+            : 'owner';
+        setActiveRole(normalizedRole);
+      } else {
+        // Document does not exist
+        if (isLikelyOwner) {
+          // Auto-provision owner member doc
+          setActiveRole('owner');
+          setDoc(memberDocRef, {
+            uid: user.uid,
+            email: user.email || '',
+            displayName: user.displayName || user.email?.split('@')[0] || 'Propietario',
+            photoURL: user.photoURL || null,
+            role: 'owner',
+            joinedAt: serverTimestamp()
+          }, { merge: true }).catch((err) => {
+            console.warn('[Members] Auto-provision owner member error:', err);
+          });
+        } else {
+          const isInviteRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/invite/');
+          if (isInviteRoute) {
+            return;
+          }
+
+          // Non-owner user whose member doc was deleted/does not exist:
+          // Administrator removed this member from the complex!
+          console.warn('[Members] User membership removed or not found. Revoking access for UID:', user.uid);
+
+          // Clean up user's own collaborator document
+          const remainingMemberships = memberships.filter(m => m.complexId !== activeComplexId);
+          const remainingComplexIds = remainingMemberships.map(m => m.complexId);
+
+          if (remainingMemberships.length === 0) {
+            deleteDoc(doc(db, 'collaborators', user.uid)).catch(() => {
+              setDoc(doc(db, 'collaborators', user.uid), {
+                memberships: [],
+                complexIds: [],
+                activeComplexId: '',
+                updatedAt: serverTimestamp()
+              }, { merge: true }).catch(() => {});
+            });
+          } else {
+            setDoc(doc(db, 'collaborators', user.uid), {
+              memberships: remainingMemberships,
+              complexIds: remainingComplexIds,
+              activeComplexId: remainingMemberships[0].complexId,
+              updatedAt: serverTimestamp()
+            }, { merge: true }).catch(() => {});
+          }
+
+          // Immediately revoke session in memory without page reload
+          setAuthorizedComplexes(prev => prev.filter(c => c.complexId !== activeComplexId));
+          setHasAccess(false);
+          setActiveComplexIdState(null);
+          setActiveComplex(null);
+          setActiveRole('owner');
+          try {
+            localStorage.removeItem('activeComplexId');
+          } catch (e) {}
+        }
+      }
+    }, (err) => {
+      console.warn('[Members] Real-time member listener error:', err);
+      // Fallback to owner if user is known owner
+      if (isLikelyOwner) {
+        setActiveRole('owner');
+      }
+    });
+
+    return () => unsubMember();
+  }, [user, activeComplexId, activeComplex?.ownerUid, activeComplex?.ownerEmail, memberships]);
+
   /**
    * Switch active complex among the authorized complexes.
    * Never allows arbitrary complexIds.
@@ -427,6 +541,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setHasAccess(false);
       setActiveComplexIdState(null);
       setActiveComplex(null);
+      setActiveRole('owner');
       setAuthError(null);
     } catch (error) {
       console.error('[Auth] Error signing out:', error);
@@ -463,6 +578,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         collaboratorData,
         billingConfig,
         authError,
+        activeRole,
+        isOwner,
+        isManager,
+        isStaff,
         clearAuthError,
         signInWithGoogle, 
         logout,

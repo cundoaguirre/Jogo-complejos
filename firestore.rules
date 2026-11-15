@@ -70,13 +70,49 @@ service cloud.firestore {
              ));
     }
 
+    // Role-based helpers backed by complejos/{complexId}/members/{uid}
+    function isComplexOwner(complexId) {
+      let compPath = /databases/$(database)/documents/complejos/$(complexId);
+      let memPath = /databases/$(database)/documents/complejos/$(complexId)/members/$(request.auth.uid);
+      return isSignedIn() && (
+        isSuperAdmin() ||
+        (exists(compPath) && get(compPath).data.ownerUid == request.auth.uid) ||
+        (exists(memPath) && get(memPath).data.role == 'owner')
+      );
+    }
+
+    function isComplexManagerOrOwner(complexId) {
+      let memPath = /databases/$(database)/documents/complejos/$(complexId)/members/$(request.auth.uid);
+      return isComplexOwner(complexId) || (
+        isSignedIn() &&
+        exists(memPath) &&
+        get(memPath).data.role == 'manager'
+      );
+    }
+
+    function isActiveComplexMember(complexId) {
+      let compPath = /databases/$(database)/documents/complejos/$(complexId);
+      let memPath = /databases/$(database)/documents/complejos/$(complexId)/members/$(request.auth.uid);
+      return isSignedIn() && (
+        isSuperAdmin() ||
+        (exists(compPath) && get(compPath).data.ownerUid == request.auth.uid) ||
+        exists(memPath)
+      );
+    }
+
     // Enforce both membership AND valid commercial status for operational data
     function hasComplexAccess(complexId) {
       return isSignedIn() && (
         isSuperAdmin() ||
         (
-          isCollaboratorOf(complexId) &&
-          isComplexCommerciallyActive(complexId)
+          (isActiveComplexMember(complexId) || isCollaboratorOf(complexId)) &&
+          isComplexCommerciallyActive(complexId) &&
+          (
+            !exists(/databases/$(database)/documents/complejos/$(complexId)) ||
+            !('ownerUid' in get(/databases/$(database)/documents/complejos/$(complexId)).data) ||
+            get(/databases/$(database)/documents/complejos/$(complexId)).data.ownerUid == request.auth.uid ||
+            exists(/databases/$(database)/documents/complejos/$(complexId)/members/$(request.auth.uid))
+          )
         )
       );
     }
@@ -161,12 +197,29 @@ service cloud.firestore {
         request.resource.data.activeComplexId == get(invitePath).data.complexId;
     }
 
+    function isLegitimateMemberInviteClaim(userId) {
+      return isSignedIn() &&
+        request.auth.uid == userId &&
+        'claimedMemberInviteToken' in request.resource.data &&
+        'claimedMemberComplexId' in request.resource.data &&
+        exists(/databases/$(database)/documents/complejos/$(request.resource.data.claimedMemberComplexId)) &&
+        get(/databases/$(database)/documents/complejos/$(request.resource.data.claimedMemberComplexId)).data.memberInviteEnabled == true &&
+        get(/databases/$(database)/documents/complejos/$(request.resource.data.claimedMemberComplexId)).data.memberInviteToken == request.resource.data.claimedMemberInviteToken &&
+        request.resource.data.uid == request.auth.uid &&
+        request.resource.data.claimedMemberComplexId in request.resource.data.complexIds;
+    }
+
     // ------------------------------------------------------------------------
     // Complex Update Helpers (Operational vs Claim Updates)
     // ------------------------------------------------------------------------
     function isCollaboratorOperationalUpdate(complexId) {
-      return isCollaboratorOf(complexId) &&
+      let touchesInvite = request.resource.data.diff(resource.data).affectedKeys().hasAny([
+        'memberInviteEnabled',
+        'memberInviteToken'
+      ]);
+      return isActiveComplexMember(complexId) &&
         isComplexCommerciallyActive(complexId) &&
+        (touchesInvite ? isComplexOwner(complexId) : isComplexManagerOrOwner(complexId)) &&
         !request.resource.data.diff(resource.data).affectedKeys().hasAny([
           'clientStatus',
           'trialStartedAt',
@@ -245,9 +298,9 @@ service cloud.firestore {
     // ------------------------------------------------------------------------
     match /collaborators/{userId} {
       allow read: if isSignedIn() && (request.auth.uid == userId || isSuperAdmin());
-      allow create: if isSuperAdmin() || isLegitimateCollaboratorClaimCreate(userId);
-      allow update: if isSuperAdmin() || isCollaboratorSelfUpdate(userId) || isLegitimateCollaboratorClaimUpdate(userId);
-      allow delete: if isSuperAdmin();
+      allow create: if isSuperAdmin() || isLegitimateCollaboratorClaimCreate(userId) || isLegitimateMemberInviteClaim(userId);
+      allow update: if isSuperAdmin() || isCollaboratorSelfUpdate(userId) || isLegitimateCollaboratorClaimUpdate(userId) || isLegitimateMemberInviteClaim(userId);
+      allow delete: if isSuperAdmin() || (isSignedIn() && request.auth.uid == userId);
     }
 
     // ------------------------------------------------------------------------
@@ -274,6 +327,28 @@ service cloud.firestore {
         isLegitimateComplexClaimUpdate(complexId)
       );
 
+      match /members/{memberUid} {
+        allow read: if isSignedIn() && (hasComplexAccess(complexId) || isSuperAdmin());
+        allow create: if isSignedIn() && (
+          isSuperAdmin() ||
+          isComplexOwner(complexId) ||
+          (
+            request.auth.uid == memberUid &&
+            exists(/databases/$(database)/documents/complejos/$(complexId)) &&
+            get(/databases/$(database)/documents/complejos/$(complexId)).data.ownerUid == request.auth.uid &&
+            request.resource.data.role == 'owner'
+          ) ||
+          (
+            request.auth.uid == memberUid &&
+            exists(/databases/$(database)/documents/complejos/$(complexId)) &&
+            get(/databases/$(database)/documents/complejos/$(complexId)).data.memberInviteEnabled == true &&
+            request.resource.data.role == 'staff' &&
+            request.resource.data.uid == request.auth.uid
+          )
+        );
+        allow update, delete: if isSignedIn() && (isSuperAdmin() || isComplexOwner(complexId));
+      }
+
       match /payment_obligations/{obligationId} {
         allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
         allow write: if isSuperAdmin();
@@ -294,6 +369,28 @@ service cloud.firestore {
         isCollaboratorOperationalUpdate(complexId) ||
         isLegitimateComplexClaimUpdate(complexId)
       );
+
+      match /members/{memberUid} {
+        allow read: if isSignedIn() && (hasComplexAccess(complexId) || isSuperAdmin());
+        allow create: if isSignedIn() && (
+          isSuperAdmin() ||
+          isComplexOwner(complexId) ||
+          (
+            request.auth.uid == memberUid &&
+            exists(/databases/$(database)/documents/complejos/$(complexId)) &&
+            get(/databases/$(database)/documents/complejos/$(complexId)).data.ownerUid == request.auth.uid &&
+            request.resource.data.role == 'owner'
+          ) ||
+          (
+            request.auth.uid == memberUid &&
+            exists(/databases/$(database)/documents/complejos/$(complexId)) &&
+            get(/databases/$(database)/documents/complejos/$(complexId)).data.memberInviteEnabled == true &&
+            request.resource.data.role == 'staff' &&
+            request.resource.data.uid == request.auth.uid
+          )
+        );
+        allow update, delete: if isSignedIn() && (isSuperAdmin() || isComplexOwner(complexId));
+      }
 
       match /payment_obligations/{obligationId} {
         allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
@@ -320,7 +417,10 @@ service cloud.firestore {
           getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
         )
       );
-      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow delete: if isSignedIn() && (
+        isSuperAdmin() ||
+        (getDocComplexId(resource.data) != null && isComplexManagerOrOwner(getDocComplexId(resource.data)))
+      );
     }
 
     // Matches / Turnos aliases
@@ -335,7 +435,10 @@ service cloud.firestore {
           getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
         )
       );
-      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow delete: if isSignedIn() && (
+        isSuperAdmin() ||
+        (getDocComplexId(resource.data) != null && isComplexManagerOrOwner(getDocComplexId(resource.data)))
+      );
     }
 
     match /turnos/{turnoId} {
@@ -349,7 +452,10 @@ service cloud.firestore {
           getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
         )
       );
-      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow delete: if isSignedIn() && (
+        isSuperAdmin() ||
+        (getDocComplexId(resource.data) != null && isComplexManagerOrOwner(getDocComplexId(resource.data)))
+      );
     }
 
     // ------------------------------------------------------------------------
@@ -481,7 +587,10 @@ service cloud.firestore {
           getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
         )
       );
-      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow delete: if isSignedIn() && (
+        isSuperAdmin() ||
+        (getDocComplexId(resource.data) != null && isComplexManagerOrOwner(getDocComplexId(resource.data)))
+      );
     }
 
     // ------------------------------------------------------------------------
@@ -498,7 +607,10 @@ service cloud.firestore {
           getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
         )
       );
-      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow delete: if isSignedIn() && (
+        isSuperAdmin() ||
+        (getDocComplexId(resource.data) != null && isComplexManagerOrOwner(getDocComplexId(resource.data)))
+      );
     }
 
     // ------------------------------------------------------------------------
@@ -515,7 +627,10 @@ service cloud.firestore {
           getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
         )
       );
-      allow delete: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
+      allow delete: if isSignedIn() && (
+        isSuperAdmin() ||
+        (getDocComplexId(resource.data) != null && isComplexManagerOrOwner(getDocComplexId(resource.data)))
+      );
     }
 
     // ------------------------------------------------------------------------

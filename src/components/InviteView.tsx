@@ -238,27 +238,43 @@ export const InviteView: React.FC<InviteViewProps> = ({
               <Link2 size={11} strokeWidth={2.5} className="!text-[#EAFBEA] -rotate-45" />
             </span>
             <span className="text-[10.5px] sm:text-[11px] font-bold !text-[#129D44] leading-none tracking-[-0.01em]">
-              Link de invitación
+              {validation?.isMemberInvite || token.startsWith('member-') ? 'Invitación de equipo' : 'Link de invitación'}
             </span>
           </div>
 
           {/* Bloque 2: Título en 2 renglones */}
-          <h1 className="text-[37px] xs:text-[39px] sm:text-[43px] font-extrabold text-white leading-[1.0] tracking-[-0.03em]">
-            Felicidades<br />
-            por este gran paso!
-          </h1>
+          {validation?.isMemberInvite || token.startsWith('member-') ? (
+            <h1 className="text-[30px] xs:text-[34px] sm:text-[38px] font-extrabold text-white leading-[1.1] tracking-[-0.025em]">
+              Te damos la bienvenida<br />
+              al Complejo {displayComplexName}
+            </h1>
+          ) : (
+            <h1 className="text-[37px] xs:text-[39px] sm:text-[43px] font-extrabold text-white leading-[1.0] tracking-[-0.03em]">
+              Felicidades<br />
+              por este gran paso!
+            </h1>
+          )}
 
-          {/* Bloque 3: Línea de bienvenida con nombre dinámico del complejo (sin Colo Loco por defecto) */}
-          <p translate="no" className="notranslate text-[19px] sm:text-[20px] leading-[1.2] tracking-[-0.015em] font-normal text-white">
-            <span>Bienvenido a Jogo, </span><span className="font-extrabold text-white">{displayComplexName}.</span>
-          </p>
+          {/* Bloque 3: Línea de bienvenida con nombre dinámico del complejo */}
+          {!(validation?.isMemberInvite || token.startsWith('member-')) && (
+            <p translate="no" className="notranslate text-[19px] sm:text-[20px] leading-[1.2] tracking-[-0.015em] font-normal text-white">
+              <span>Bienvenido a Jogo, </span><span className="font-extrabold text-white">{displayComplexName}.</span>
+            </p>
+          )}
 
           {/* Bloque 4: Párrafo explicativo */}
-          <p className="text-[14px] sm:text-[15px] leading-[1.32] tracking-[-0.01em] text-white font-normal">
-            Desde hoy, tenés una nueva herramienta que<br />
-            te facilitará el trabajo diario y te ayudará a<br />
-            tomar mejores decisiones!
-          </p>
+          {validation?.isMemberInvite || token.startsWith('member-') ? (
+            <p className="text-[14px] sm:text-[15px] leading-[1.32] tracking-[-0.01em] text-white font-normal">
+              Desde hoy formas parte del equipo de trabajo.<br />
+              ¡Éxitos en tu gestión diaria!
+            </p>
+          ) : (
+            <p className="text-[14px] sm:text-[15px] leading-[1.32] tracking-[-0.01em] text-white font-normal">
+              Desde hoy, tenés una nueva herramienta que<br />
+              te facilitará el trabajo diario y te ayudará a<br />
+              tomar mejores decisiones!
+            </p>
+          )}
         </div>
 
         {/* Tarjeta Inferior Blanca (con pb-[34px] sm:pb-[40px] para franja blanca inferior holgada) */}
@@ -300,9 +316,15 @@ export const InviteView: React.FC<InviteViewProps> = ({
             <div className="mt-3.5 w-full p-3.5 bg-emerald-50 border border-[#129D44]/30 rounded-2xl text-emerald-800 text-xs flex items-center gap-2.5 text-left">
               <CheckCircle2 size={20} className="text-[#129D44] shrink-0" />
               <div>
-                <p className="font-bold text-xs">¡Complejo vinculado con éxito!</p>
+                <p className="font-bold text-xs">
+                  {validation?.isMemberInvite || token.startsWith('member-')
+                    ? '¡Te uniste al equipo con éxito!'
+                    : '¡Complejo vinculado con éxito!'}
+                </p>
                 <p className="text-[10.5px] text-emerald-700 mt-0.5">
-                  Entrando al panel de administración...
+                  {validation?.isMemberInvite || token.startsWith('member-')
+                    ? 'Entrando al panel del complejo...'
+                    : 'Entrando al panel de administración...'}
                 </p>
               </div>
             </div>
