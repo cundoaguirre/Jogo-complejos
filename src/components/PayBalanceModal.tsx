@@ -34,6 +34,14 @@ export const PayBalanceModal: React.FC<PayBalanceModalProps> = ({
 
   if (!isOpen || activeItems.length === 0) return null;
 
+  const isSubscriptionItem = (o: WeeklyPaymentObligation) =>
+    o.track === 'subscription' || o.id.startsWith('sub_') || o.id.startsWith('plan_');
+
+  const subItems = activeItems.filter(isSubscriptionItem);
+  const commItems = activeItems.filter(o => !isSubscriptionItem(o));
+  const subSubtotal = subItems.reduce((sum, o) => sum + (o.remainingBalance || 0), 0);
+  const commSubtotal = commItems.reduce((sum, o) => sum + (o.remainingBalance || 0), 0);
+
   const primaryObligation = activeItems[0];
   const finalAmount = totalDebt !== undefined && totalDebt > 0
     ? totalDebt
@@ -71,6 +79,21 @@ export const PayBalanceModal: React.FC<PayBalanceModalProps> = ({
   const totalGmv = activeItems.reduce((sum, o) => sum + (o.gmv || 0), 0);
   const gmvFormatted = formatCurrencyARS(totalGmv);
   const totalBookingsCount = activeItems.reduce((sum, o) => sum + (o.playedBookings?.length || 0), 0);
+  const primaryIsSub = isSubscriptionItem(primaryObligation);
+  const primaryPercent = primaryObligation.commissionPercent || 10;
+
+  let headerSubtitle = '';
+  if (activeItems.length === 1) {
+    headerSubtitle = primaryIsSub
+      ? `Plan Jogo · ${startFormatted}–${endFormatted}`
+      : `Turnos de Jogo · ${startFormatted}–${endFormatted}`;
+  } else if (subItems.length > 0 && commItems.length > 0) {
+    headerSubtitle = `Plan Jogo y Turnos de Jogo · ${activeItems.length} períodos`;
+  } else if (subItems.length > 0) {
+    headerSubtitle = `Plan Jogo · ${subItems.length} ${subItems.length === 1 ? 'período' : 'períodos'}`;
+  } else {
+    headerSubtitle = `Turnos de Jogo · ${commItems.length} ${commItems.length === 1 ? 'semana' : 'semanas'}`;
+  }
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs animate-fadeIn">
@@ -85,9 +108,7 @@ export const PayBalanceModal: React.FC<PayBalanceModalProps> = ({
               Regularizá tu saldo
             </h3>
             <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">
-              {activeItems.length > 1
-                ? `Deuda total acumulada · ${activeItems.length} semanas pendientes`
-                : `Liquidación semanal · ${startFormatted}–${endFormatted}`}
+              {headerSubtitle}
             </p>
           </div>
           <button
@@ -112,41 +133,59 @@ export const PayBalanceModal: React.FC<PayBalanceModalProps> = ({
             </div>
             <div className="text-[11px] sm:text-xs font-medium text-slate-600 dark:text-slate-300 pt-1 border-t border-emerald-200/40 dark:border-emerald-800/40">
               {activeItems.length > 1 ? (
+                subItems.length > 0 && commItems.length > 0 ? (
+                  <span>
+                    Plan Jogo (<span className="font-semibold text-slate-900 dark:text-white">{formatCurrencyARS(subSubtotal)}</span>) + Turnos de Jogo (<span className="font-semibold text-slate-900 dark:text-white">{formatCurrencyARS(commSubtotal)}</span>)
+                  </span>
+                ) : subItems.length > 0 ? (
+                  <span>
+                    Plan Jogo · <span className="font-semibold text-slate-900 dark:text-white">{subItems.length} períodos</span>
+                  </span>
+                ) : (
+                  <span>
+                    Turnos de Jogo · <span className="font-semibold text-slate-900 dark:text-white">{commItems.length} semanas</span> ·{' '}
+                    <span className="font-semibold text-slate-900 dark:text-white">{totalBookingsCount}</span> {totalBookingsCount === 1 ? 'turno' : 'turnos'}
+                  </span>
+                )
+              ) : primaryIsSub ? (
                 <span>
-                  Suma de <span className="font-semibold text-slate-900 dark:text-white">{activeItems.length} semanas</span> ·{' '}
-                  <span className="font-semibold text-slate-900 dark:text-white">{totalBookingsCount}</span> reservas · Comisión 10%
+                  Plan Jogo mensual · Período <span className="font-semibold text-slate-900 dark:text-white">{startFormatted}–{endFormatted}</span>
                 </span>
               ) : (
                 <span>
-                  GMV jugado: <span className="font-semibold text-slate-900 dark:text-white">{gmvFormatted}</span> ·{' '}
-                  <span className="font-semibold text-slate-900 dark:text-white">{primaryObligation.playedBookings?.length || 0}</span> reservas · Comisión 10%
+                  <span className="font-semibold text-slate-900 dark:text-white">{primaryObligation.playedBookings?.length || 0}</span> {(primaryObligation.playedBookings?.length || 0) === 1 ? 'turno acercado por Jogo' : 'turnos acercados por Jogo'} · Total canchas{' '}
+                  <span className="font-semibold text-slate-900 dark:text-white">{gmvFormatted}</span> ({primaryPercent}%)
                 </span>
               )}
             </div>
           </div>
 
-          {/* Desglose de semanas si hay más de una */}
+          {/* Desglose de períodos si hay más de uno */}
           {activeItems.length > 1 && (
             <div className="space-y-2">
               <span className="text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400 block">
-                Detalle por semana ({activeItems.length}):
+                Detalle ({activeItems.length}):
               </span>
               <div className="divide-y divide-slate-100 dark:divide-slate-800 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/50">
-                {activeItems.map((item) => (
-                  <div key={item.id} className="p-2.5 px-3 flex items-center justify-between text-xs">
-                    <div>
-                      <span className="font-bold text-slate-800 dark:text-slate-200">
-                        {formatDDMM(item.startDateStr)}–{formatDDMM(item.endDateStr)}
-                      </span>
-                      <span className="text-[11px] text-slate-400 ml-2">
-                        Venc: {formatDDMM(item.dueDateStr)}
-                      </span>
+                {activeItems.map((item) => {
+                  const isSub = isSubscriptionItem(item);
+                  return (
+                    <div key={item.id} className="p-2.5 px-3 flex items-center justify-between text-xs gap-2">
+                      <div className="min-w-0">
+                        <span className="font-bold text-slate-800 dark:text-slate-200">
+                          {isSub ? 'Plan Jogo' : 'Turnos de Jogo'} · {formatDDMM(item.startDateStr)}–{formatDDMM(item.endDateStr)}
+                        </span>
+                        <span className="text-[11px] text-slate-400 ml-2">
+                          Venc: {formatDDMM(item.dueDateStr)}
+                          {!isSub && (item.playedBookings?.length || 0) > 0 && ` · ${item.playedBookings.length} turnos`}
+                        </span>
+                      </div>
+                      <div className="font-mono font-bold text-slate-900 dark:text-white shrink-0">
+                        {formatCurrencyARS(item.remainingBalance)}
+                      </div>
                     </div>
-                    <div className="font-mono font-bold text-slate-900 dark:text-white">
-                      {formatCurrencyARS(item.remainingBalance)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

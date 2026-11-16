@@ -28,6 +28,7 @@ import {
   calculateWeeklyObligations, 
   evaluateBillingNoticeState, 
   syncPlayedBookings,
+  subscribeComplexPaymentObligations,
   type WeeklyPaymentObligation,
   type BillingNoticeState 
 } from './lib/weeklyBilling';
@@ -11927,12 +11928,15 @@ export default function App() {
     };
   }, [selectedMatch, activeBookings, activeComplexId]);
 
+  const [subcollectionObligations, setSubcollectionObligations] = useState<any[]>([]);
+
   // Sincronización en tiempo real estrictamente ligada al complejo asignado del operador autenticado
   useEffect(() => {
     if (!activeComplexId || !user) {
       setUsers([]);
       setCourts([]);
       setActiveBookings([]);
+      setSubcollectionObligations([]);
       return;
     }
 
@@ -11948,10 +11952,15 @@ export default function App() {
       setActiveBookings(Array.isArray(firestoreBookings) ? firestoreBookings : []);
     });
 
+    const unsubObligations = subscribeComplexPaymentObligations(activeComplexId, (items) => {
+      setSubcollectionObligations(items);
+    });
+
     return () => {
       unsubUsers();
       unsubCourts();
       unsubBookings();
+      unsubObligations();
     };
   }, [activeComplexId, user, refreshKey]);
 
@@ -12007,11 +12016,11 @@ export default function App() {
     return buildCrmActivityIndex(users, activeBookings, activeComplexId, new Date());
   }, [users, activeBookings, activeComplexId]);
 
-  // Cálculo y sincronización del ciclo de cobro semanal (10% sobre turnos jugados)
+  // Cálculo y sincronización de obligaciones semanales (Carril B: Turnos de Jogo)
   const weeklyObligations = useMemo(() => {
     if (!activeComplexId || !activeComplex) return [];
-    return calculateWeeklyObligations(activeComplexId, activeComplex, activeBookings);
-  }, [activeComplexId, activeComplex, activeBookings]);
+    return calculateWeeklyObligations(activeComplexId, activeComplex, activeBookings, new Date(), subcollectionObligations);
+  }, [activeComplexId, activeComplex, activeBookings, subcollectionObligations]);
 
   // Sincronización automática de estado 'jugado' en /bookings para reservas cuyo horario de fin ya pasó
   useEffect(() => {
@@ -12021,11 +12030,12 @@ export default function App() {
     });
   }, [activeComplexId, activeBookings]);
 
-  // Evaluar estado de aviso (Prueba, Lunes, Martes, Miércoles) y de bloqueo permanente (Jueves+)
+  // Evaluar estado de aviso (Prueba, Carril A: Plan Jogo, Carril B: Turnos de Jogo) y pausa de cuenta
   const billingNoticeState = useMemo<BillingNoticeState>(() => {
     if (!activeComplexId || !activeComplex) {
       return {
         type: null,
+        noticeTrack: null,
         obligation: null,
         trialDaysRemaining: null,
         isBlockedByDebt: false,
@@ -12033,11 +12043,13 @@ export default function App() {
         totalDebt: 0,
         totalOverdueDebt: 0,
         unpaidObligations: [],
-        overdueObligations: []
+        overdueObligations: [],
+        subscriptionObligations: [],
+        commissionObligations: []
       };
     }
-    return evaluateBillingNoticeState(activeComplexId, activeComplex, weeklyObligations);
-  }, [activeComplexId, activeComplex, weeklyObligations]);
+    return evaluateBillingNoticeState(activeComplexId, activeComplex, weeklyObligations, new Date(), subcollectionObligations);
+  }, [activeComplexId, activeComplex, weeklyObligations, subcollectionObligations]);
 
   // Estados de control para modales de aviso y pago
   const [payTargetObligation, setPayTargetObligation] = useState<WeeklyPaymentObligation | null>(null);
@@ -12049,7 +12061,7 @@ export default function App() {
     } else {
       setIsNoticeModalOpen(false);
     }
-  }, [billingNoticeState.type, billingNoticeState.obligation?.id, billingNoticeState.isBlockedByDebt]);
+  }, [billingNoticeState.type, billingNoticeState.noticeTrack, billingNoticeState.obligation?.id, billingNoticeState.isBlockedByDebt]);
 
   const handleSidebarAction = (action: string) => {
     if (action === 'exposure') setShowExposureStats(true);
@@ -12372,12 +12384,13 @@ export default function App() {
     );
   }
 
-  // CASO E: Suspensión por deuda semanal vencida (Jueves en adelante con daysAfterDue >= 3 y saldo pendiente > 0)
-  if (billingNoticeState.isBlockedByDebt && billingNoticeState.blockingObligation) {
+  // CASO E: Cuenta en pausa (Plan Jogo vencido tras 3 días de gracia o bloqueo manual del ERP)
+  if (billingNoticeState.isBlockedByDebt) {
     return (
       <>
         <AccessDeniedView
           isDarkMode={isDarkMode}
+          isBlockedByDebt={billingNoticeState.isBlockedByDebt}
           blockingObligation={billingNoticeState.blockingObligation}
           overdueObligations={billingNoticeState.overdueObligations}
           totalOverdueDebt={billingNoticeState.totalOverdueDebt}
@@ -12907,14 +12920,16 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Modal de Aviso de Cobro Semanal / Fin de Prueba Gratuita */}
+      {/* Modal de Aviso (Plan Jogo / Turnos de Jogo / Fin de Prueba Gratuita) */}
       <BillingNoticeModal
         isOpen={isNoticeModalOpen}
         onClose={() => setIsNoticeModalOpen(false)}
         noticeType={billingNoticeState.type}
+        noticeTrack={billingNoticeState.noticeTrack}
         obligation={billingNoticeState.obligation}
         unpaidObligations={billingNoticeState.unpaidObligations}
         totalDebt={billingNoticeState.totalDebt}
+        totalOverdueDebt={billingNoticeState.totalOverdueDebt}
         trialDaysRemaining={billingNoticeState.trialDaysRemaining}
         billingConfig={billingConfig}
         complexId={activeComplexId}

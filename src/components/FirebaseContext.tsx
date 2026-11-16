@@ -33,7 +33,7 @@ interface FirebaseContextType {
   collaboratorData: CollaboratorProfile | null;
   billingConfig: BillingConfig;
   authError: string | null;
-  activeRole: ComplexUserRole;
+  activeRole: ComplexUserRole | null;
   isOwner: boolean;
   isManager: boolean;
   isStaff: boolean;
@@ -56,8 +56,8 @@ const FirebaseContext = createContext<FirebaseContextType>({
   collaboratorData: null,
   billingConfig: DEFAULT_BILLING_CONFIG,
   authError: null,
-  activeRole: 'owner',
-  isOwner: true,
+  activeRole: null,
+  isOwner: false,
   isManager: false,
   isStaff: false,
   clearAuthError: () => {},
@@ -66,6 +66,13 @@ const FirebaseContext = createContext<FirebaseContextType>({
   setActiveComplexId: () => {},
   reloadCollaboratorData: async () => {},
 });
+
+function normalizeMemberRole(rawRoleValue: any): ComplexUserRole {
+  const raw = (rawRoleValue || '').toString().toLowerCase().trim();
+  if (raw === 'owner' || raw === 'propietario') return 'owner';
+  if (raw === 'manager' || raw === 'encargado') return 'manager';
+  return 'staff';
+}
 
 // Super admin email list for support purposes
 const SUPER_ADMIN_EMAILS = [
@@ -86,8 +93,9 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [memberships, setMemberships] = useState<ComplexMembership[]>([]);
   const [billingConfig, setBillingConfig] = useState<BillingConfig>(DEFAULT_BILLING_CONFIG);
   const [authError, setAuthError] = useState<string | null>(null);
-  const [activeRole, setActiveRole] = useState<ComplexUserRole>('owner');
+  const [activeRole, setActiveRole] = useState<ComplexUserRole | null>(null);
   const expirationTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const revokedCleanupAttemptedRef = useRef<Set<string>>(new Set());
 
   const isOwner = activeRole === 'owner';
   const isManager = activeRole === 'manager';
@@ -135,9 +143,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setMemberships([]);
         setAuthorizedComplexes([]);
         setHasAccess(false);
+        activeComplexIdRef.current = null;
         setActiveComplexIdState(null);
         setActiveComplex(null);
-        setActiveRole('owner');
+        setActiveRole(null);
+        revokedCleanupAttemptedRef.current.clear();
         try {
           localStorage.removeItem('activeComplexId');
         } catch (e) {}
@@ -165,8 +175,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setMemberships([]);
         setAuthorizedComplexes([]);
         setHasAccess(false);
+        activeComplexIdRef.current = null;
         setActiveComplexIdState(null);
         setActiveComplex(null);
+        setActiveRole(null);
         try {
           localStorage.removeItem('activeComplexId');
         } catch (e) {}
@@ -183,8 +195,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         console.log('[Auth] Collaborator has 0 memberships for UID:', user.uid);
         setAuthorizedComplexes([]);
         setHasAccess(false);
+        activeComplexIdRef.current = null;
         setActiveComplexIdState(null);
         setActiveComplex(null);
+        setActiveRole(null);
         try {
           localStorage.removeItem('activeComplexId');
         } catch (e) {}
@@ -196,21 +210,54 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setMemberships([]);
       setAuthorizedComplexes([]);
       setHasAccess(false);
+      activeComplexIdRef.current = null;
+      setActiveComplexIdState(null);
+      setActiveComplex(null);
+      setActiveRole(null);
       setLoading(false);
     });
 
     return () => unsubColab();
   }, [user]);
 
-  // 3. Real-Time Complexes Status Listeners (Reactive Authorization):
-  // Dynamically subscribes to onSnapshot on each complexId in memberships.
-  // Evaluates canonical commercial authorization:
-  // - active -> allowed
-  // - trial && now < trialEndsAt -> allowed
-  // - trial && now >= trialEndsAt -> DENIED
-  // - paused -> DENIED
-  // - inactive -> DENIED
-  // Employs a targeted timer to flip authorization the exact moment a trial expires.
+  const cleanupRevokedMemberships = useCallback((uid: string, revokedIds: string[], currentMemberships: ComplexMembership[]) => {
+    if (!uid || revokedIds.length === 0) return;
+    const isInviteRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/invite/');
+    if (isInviteRoute) return;
+
+    const unattempted = revokedIds.filter(id => !revokedCleanupAttemptedRef.current.has(`${uid}:${id}`));
+    if (unattempted.length === 0) return;
+    for (const id of unattempted) {
+      revokedCleanupAttemptedRef.current.add(`${uid}:${id}`);
+    }
+
+    const revokedSet = new Set(revokedIds);
+    const remainingMemberships = currentMemberships.filter(m => m?.complexId && !revokedSet.has(m.complexId));
+    const remainingComplexIds = remainingMemberships.map(m => m.complexId);
+
+    if (remainingMemberships.length === 0) {
+      deleteDoc(doc(db, 'collaborators', uid)).catch(() => {
+        setDoc(doc(db, 'collaborators', uid), {
+          memberships: [],
+          complexIds: [],
+          activeComplexId: '',
+          updatedAt: serverTimestamp()
+        }, { merge: true }).catch(() => {});
+      });
+    } else {
+      setDoc(doc(db, 'collaborators', uid), {
+        memberships: remainingMemberships,
+        complexIds: remainingComplexIds,
+        activeComplexId: remainingMemberships[0].complexId,
+        updatedAt: serverTimestamp()
+      }, { merge: true }).catch(() => {});
+    }
+  }, []);
+
+  // 3. Real-Time Complexes + Memberships Authorization (Reactive Authorization):
+  // Dynamically subscribes to onSnapshot on each complejos/{cid} AND complejos/{cid}/members/{user.uid}.
+  // NEVER grants hasAccess=true until confirming that complejos/{cid}/members/{user.uid} exists
+  // (unless complexData.ownerUid === user.uid) AND commercial status is valid.
   useEffect(() => {
     if (!user || memberships.length === 0) {
       if (expirationTimerRef.current) {
@@ -219,8 +266,10 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
       setAuthorizedComplexes([]);
       setHasAccess(false);
+      activeComplexIdRef.current = null;
       setActiveComplexIdState(null);
       setActiveComplex(null);
+      setActiveRole(null);
       // Keep loading: true while waiting for collaborator snapshot; if collaborator had 0 memberships, listener already set loading(false).
       return;
     }
@@ -233,15 +282,19 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
       setAuthorizedComplexes([]);
       setHasAccess(false);
+      activeComplexIdRef.current = null;
       setActiveComplexIdState(null);
       setActiveComplex(null);
+      setActiveRole(null);
       setLoading(false);
       return;
     }
 
-    // In-memory live mirror of complex documents
+    // In-memory live mirror of complex & member documents
     const liveComplexMap: Record<string, any> = {};
+    const liveMemberMap: Record<string, { exists: boolean; role: ComplexUserRole | null }> = {};
     const respondedComplexIds = new Set<string>();
+    const respondedMemberIds = new Set<string>();
 
     const recomputeAuthorization = () => {
       if (expirationTimerRef.current) {
@@ -250,21 +303,45 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
 
       const authorized: AuthorizedComplexItem[] = [];
+      const revokedComplexIds: string[] = [];
       const nowMs = Date.now();
       const upcomingExpirations: number[] = [];
 
       for (const m of memberships) {
-        const cData = liveComplexMap[m.complexId];
-        if (!cData) continue;
+        const cid = m.complexId;
+        if (!cid) continue;
+        if (!respondedComplexIds.has(cid) || !respondedMemberIds.has(cid)) continue;
+
+        const cData = liveComplexMap[cid];
+        if (!cData) {
+          revokedComplexIds.push(cid);
+          continue;
+        }
+
+        const isOwnerByComplexUid = cData.ownerUid === user.uid;
+        const memberState = liveMemberMap[cid];
+        const hasVerifiedMemberDoc = Boolean(memberState?.exists);
+
+        // Strict rule: DO NOT grant access if members/{uid} does not exist and user is not ownerUid
+        if (!hasVerifiedMemberDoc && !isOwnerByComplexUid) {
+          console.warn(`[Auth] Revoked or missing member doc for complex ${cid} (UID: ${user.uid}). Blocking access.`);
+          revokedComplexIds.push(cid);
+          continue;
+        }
+        revokedCleanupAttemptedRef.current.delete(`${user.uid}:${cid}`);
+
+        const resolvedRole: ComplexUserRole = isOwnerByComplexUid
+          ? 'owner'
+          : (memberState?.role || 'staff');
 
         const rawStatus = (cData.clientStatus || '').toString().toLowerCase().trim();
         const isAuthorized = isComplexCommerciallyAuthorized(cData, nowMs);
 
         if (isAuthorized) {
           authorized.push({
-            complexId: m.complexId,
+            complexId: cid,
             complexName: cData.name || cData.company || m.complexName || 'Mi Complejo',
-            role: m.role || 'operator',
+            role: resolvedRole,
             clientStatus: rawStatus === 'active' ? 'active' : 'trial'
           });
 
@@ -275,13 +352,16 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             }
           }
         } else {
-          console.log(`[Auth] Real-time: Complex ${m.complexId} clientStatus is "${rawStatus}" (authorized: false). Access disallowed.`);
+          console.log(`[Auth] Real-time: Complex ${cid} clientStatus is "${rawStatus}" (authorized: false). Access disallowed.`);
         }
       }
 
+      if (revokedComplexIds.length > 0) {
+        cleanupRevokedMemberships(user.uid, revokedComplexIds, memberships);
+      }
+
       if (authorized.length > 0) {
-        // At least one complex has active/trial status: ACCESS GRANTED
-        // Select or retain activeComplexId strictly among authorized complexes
+        // Select or retain activeComplexId strictly among verified & authorized complexes
         let chosenId = authorized[0].complexId;
         let savedPref: string | null = null;
         try {
@@ -299,13 +379,16 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
         activeComplexIdRef.current = chosenId;
 
-        // Update activeComplex metadata directly from real-time snapshot
         const currentDoc = liveComplexMap[chosenId];
         if (currentDoc) {
           setActiveComplex({ id: chosenId, ...currentDoc });
         }
 
-        // Targeted expiration timer: flips state the exact moment the trial expires
+        const chosenMemberState = liveMemberMap[chosenId];
+        const chosenRole: ComplexUserRole | null = currentDoc?.ownerUid === user.uid
+          ? 'owner'
+          : (chosenMemberState?.exists ? (chosenMemberState.role || 'staff') : null);
+
         if (upcomingExpirations.length > 0) {
           const nextExpMs = Math.min(...upcomingExpirations);
           const delayMs = Math.min(2147483647, Math.max(100, nextExpMs - Date.now() + 500));
@@ -316,20 +399,23 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           }, delayMs);
         }
 
-        // Atomically set access, complex id and release loading in the exact same cycle
         setAuthorizedComplexes(authorized);
+        setActiveRole(chosenRole);
         setHasAccess(true);
         setActiveComplexIdState(chosenId);
         setLoading(false);
       } else {
-        // Only if all complexes have responded at least once
-        const allResponded = complexIds.every(id => respondedComplexIds.has(id));
+        const allResponded = complexIds.every(
+          id => respondedComplexIds.has(id) && respondedMemberIds.has(id)
+        );
         if (allResponded) {
-          console.log('[Auth] Real-time: All complex snapshots received, none authorized. Setting hasAccess=false.');
+          console.log('[Auth] Real-time: All complex & member checks completed, none authorized. Setting hasAccess=false.');
           setAuthorizedComplexes([]);
           setHasAccess(false);
+          activeComplexIdRef.current = null;
           setActiveComplexIdState(null);
           setActiveComplex(null);
+          setActiveRole(null);
           try {
             localStorage.removeItem('activeComplexId');
           } catch (e) {}
@@ -338,24 +424,49 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
     };
 
-    // Attach onSnapshot to every complex document in memberships
-    const unsubs = complexIds.map((cid) => {
+    // Attach onSnapshot to every complex document AND member document in memberships
+    const unsubs: Array<() => void> = [];
+
+    for (const cid of complexIds) {
       const compRef = doc(db, 'complejos', cid);
-      return onSnapshot(compRef, (snap) => {
-        respondedComplexIds.add(cid);
-        if (snap.exists()) {
-          liveComplexMap[cid] = snap.data();
-        } else {
+      unsubs.push(
+        onSnapshot(compRef, (snap) => {
+          respondedComplexIds.add(cid);
+          if (snap.exists()) {
+            liveComplexMap[cid] = snap.data();
+          } else {
+            delete liveComplexMap[cid];
+          }
+          recomputeAuthorization();
+        }, (err) => {
+          console.warn(`[Auth] Real-time snapshot error for complejo ${cid}:`, err);
+          respondedComplexIds.add(cid);
           delete liveComplexMap[cid];
-        }
-        recomputeAuthorization();
-      }, (err) => {
-        console.warn(`[Auth] Real-time snapshot error for complejo ${cid}:`, err);
-        respondedComplexIds.add(cid);
-        delete liveComplexMap[cid];
-        recomputeAuthorization();
-      });
-    });
+          recomputeAuthorization();
+        })
+      );
+
+      const memberRef = doc(db, 'complejos', cid, 'members', user.uid);
+      unsubs.push(
+        onSnapshot(memberRef, (snap) => {
+          respondedMemberIds.add(cid);
+          if (snap.exists()) {
+            liveMemberMap[cid] = {
+              exists: true,
+              role: normalizeMemberRole(snap.data()?.role)
+            };
+          } else {
+            liveMemberMap[cid] = { exists: false, role: null };
+          }
+          recomputeAuthorization();
+        }, (err) => {
+          console.warn(`[Auth] Real-time member snapshot error for complejo ${cid}:`, err);
+          respondedMemberIds.add(cid);
+          liveMemberMap[cid] = { exists: false, role: null };
+          recomputeAuthorization();
+        })
+      );
+    }
 
     return () => {
       if (expirationTimerRef.current) {
@@ -364,43 +475,50 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
       unsubs.forEach(u => u());
     };
-  }, [user, memberships, collaboratorData?.activeComplexId]);
+  }, [user, memberships, collaboratorData?.activeComplexId, cleanupRevokedMemberships]);
 
   // 4. Real-Time Complex Membership & Active Role Listener:
   // Subscribes to complejos/{activeComplexId}/members/{user.uid}
-  // - Auto-creates owner member record if user is owner and no member doc exists.
+  // - Auto-creates owner member record ONLY if activeComplex.ownerUid === user.uid.
   // - Synchronizes activeRole ('owner' | 'manager' | 'staff') in real-time.
-  // - If member doc is removed by admin and user is not ownerUid: immediately clears access & kicks user out.
+  // - If member doc is removed/denied and user is not ownerUid: immediately revokes access & cleans collaborator doc.
   useEffect(() => {
     if (!user || !activeComplexId) {
-      setActiveRole('owner');
+      setActiveRole(null);
       return;
     }
 
     const memberDocRef = doc(db, 'complejos', activeComplexId, 'members', user.uid);
+    const isOwnerByComplexUid = activeComplex?.ownerUid === user.uid;
 
-    // Check if the current user is owner according to venue profile, email, or memberships
-    const isOwnerByComplex = activeComplex?.ownerUid === user.uid ||
-      Boolean(activeComplex?.ownerEmail && user.email && activeComplex.ownerEmail.toLowerCase() === user.email.toLowerCase());
-    const isOwnerByMembership = memberships.some(
-      m => m.complexId === activeComplexId && (m.role === 'owner' || m.role === 'admin' || !m.role)
-    );
-    const isLikelyOwner = isOwnerByComplex || isOwnerByMembership;
+    const revokeActiveComplexAccess = () => {
+      const isInviteRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/invite/');
+      if (isInviteRoute) return;
+
+      console.warn('[Members] User membership removed or not found. Revoking access for UID:', user.uid);
+      cleanupRevokedMemberships(user.uid, [activeComplexId], memberships);
+
+      setAuthorizedComplexes(prev => prev.filter(c => c.complexId !== activeComplexId));
+      setHasAccess(false);
+      activeComplexIdRef.current = null;
+      setActiveComplexIdState(null);
+      setActiveComplex(null);
+      setActiveRole(null);
+      try {
+        localStorage.removeItem('activeComplexId');
+      } catch (e) {}
+    };
 
     const unsubMember = onSnapshot(memberDocRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        const rawRole = (data?.role || '').toString().toLowerCase().trim();
-        const normalizedRole: ComplexUserRole = (rawRole === 'manager' || rawRole === 'encargado')
-          ? 'manager'
-          : (rawRole === 'staff')
-            ? 'staff'
-            : 'owner';
+        const normalizedRole: ComplexUserRole = isOwnerByComplexUid
+          ? 'owner'
+          : normalizeMemberRole(data?.role);
         setActiveRole(normalizedRole);
       } else {
-        // Document does not exist
-        if (isLikelyOwner) {
-          // Auto-provision owner member doc
+        if (isOwnerByComplexUid) {
+          // Auto-provision owner member doc ONLY when complex.ownerUid === user.uid
           setActiveRole('owner');
           setDoc(memberDocRef, {
             uid: user.uid,
@@ -413,58 +531,20 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             console.warn('[Members] Auto-provision owner member error:', err);
           });
         } else {
-          const isInviteRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/invite/');
-          if (isInviteRoute) {
-            return;
-          }
-
-          // Non-owner user whose member doc was deleted/does not exist:
-          // Administrator removed this member from the complex!
-          console.warn('[Members] User membership removed or not found. Revoking access for UID:', user.uid);
-
-          // Clean up user's own collaborator document
-          const remainingMemberships = memberships.filter(m => m.complexId !== activeComplexId);
-          const remainingComplexIds = remainingMemberships.map(m => m.complexId);
-
-          if (remainingMemberships.length === 0) {
-            deleteDoc(doc(db, 'collaborators', user.uid)).catch(() => {
-              setDoc(doc(db, 'collaborators', user.uid), {
-                memberships: [],
-                complexIds: [],
-                activeComplexId: '',
-                updatedAt: serverTimestamp()
-              }, { merge: true }).catch(() => {});
-            });
-          } else {
-            setDoc(doc(db, 'collaborators', user.uid), {
-              memberships: remainingMemberships,
-              complexIds: remainingComplexIds,
-              activeComplexId: remainingMemberships[0].complexId,
-              updatedAt: serverTimestamp()
-            }, { merge: true }).catch(() => {});
-          }
-
-          // Immediately revoke session in memory without page reload
-          setAuthorizedComplexes(prev => prev.filter(c => c.complexId !== activeComplexId));
-          setHasAccess(false);
-          setActiveComplexIdState(null);
-          setActiveComplex(null);
-          setActiveRole('owner');
-          try {
-            localStorage.removeItem('activeComplexId');
-          } catch (e) {}
+          revokeActiveComplexAccess();
         }
       }
     }, (err) => {
       console.warn('[Members] Real-time member listener error:', err);
-      // Fallback to owner if user is known owner
-      if (isLikelyOwner) {
+      if (isOwnerByComplexUid) {
         setActiveRole('owner');
+      } else {
+        revokeActiveComplexAccess();
       }
     });
 
     return () => unsubMember();
-  }, [user, activeComplexId, activeComplex?.ownerUid, activeComplex?.ownerEmail, memberships]);
+  }, [user, activeComplexId, activeComplex?.ownerUid, memberships, cleanupRevokedMemberships]);
 
   /**
    * Switch active complex among the authorized complexes.
@@ -539,9 +619,11 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setMemberships([]);
       setAuthorizedComplexes([]);
       setHasAccess(false);
+      activeComplexIdRef.current = null;
       setActiveComplexIdState(null);
       setActiveComplex(null);
-      setActiveRole('owner');
+      setActiveRole(null);
+      revokedCleanupAttemptedRef.current.clear();
       setAuthError(null);
     } catch (error) {
       console.error('[Auth] Error signing out:', error);

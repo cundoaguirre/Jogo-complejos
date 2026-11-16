@@ -346,8 +346,7 @@ export function formatBookingToMatch(b: any, users?: User[]): Match {
   const rawUserId = b.userId || b.host_id || b.user_id || b.clientId || '';
   const resolvedUserId = (rawUserId && String(rawUserId) !== '0') ? String(rawUserId) : undefined;
 
-  const resolvedSource: BookingCreatedSource = 
-    (b.createdSource === 'complejo' || b.createdSource === 'saas') ? 'complejo' : 'jogo';
+  const resolvedSource: BookingCreatedSource = b.createdSource === 'jogo' ? 'jogo' : 'complejo';
 
   return {
     id: b.id,
@@ -1278,6 +1277,11 @@ export async function updateBookingInFirestore(
       );
       const oldLockSnaps = await Promise.all(oldLockRefs.map(ref => transaction.get(ref)));
 
+      const sanitizedPatch: Record<string, any> = { ...patch };
+      if (curr.createdSource === 'jogo') {
+        sanitizedPatch.createdSource = 'jogo';
+      }
+
       // If cancelling: release from lock and update booking
       if (isCancelled) {
         for (let i = 0; i < oldAffectedCourts.length; i++) {
@@ -1293,7 +1297,7 @@ export async function updateBookingInFirestore(
         }
 
         transaction.update(docRef, cleanFirestoreDocument({
-          ...patch,
+          ...sanitizedPatch,
           status: 'cancelado',
           cancelledSource: 'complejo',
           cancelledAt: new Date().toISOString(),
@@ -1375,14 +1379,23 @@ export async function updateBookingInFirestore(
 
       // Update booking document
       transaction.update(docRef, cleanFirestoreDocument({
-        ...patch,
+        ...sanitizedPatch,
         updatedAt: new Date().toISOString()
       }));
     });
   } else {
     // Pure metadata update (e.g. payment, deposit, notes)
+    const sanitizedPatch: Record<string, any> = { ...patch };
+    if (sanitizedPatch.createdSource !== undefined && sanitizedPatch.createdSource !== 'jogo') {
+      const existingSnap = await getDoc(docRef);
+      if (existingSnap.exists() && existingSnap.data()?.createdSource === 'jogo') {
+        sanitizedPatch.createdSource = 'jogo';
+      } else {
+        sanitizedPatch.createdSource = 'complejo';
+      }
+    }
     await updateDoc(docRef, cleanFirestoreDocument({
-      ...patch,
+      ...sanitizedPatch,
       updatedAt: new Date().toISOString()
     }));
   }

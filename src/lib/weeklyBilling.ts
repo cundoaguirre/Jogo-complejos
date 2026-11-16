@@ -10,7 +10,7 @@
  * - ID determinístico: obl_${complexId}_${startDateStr}_${endDateStr}
  */
 
-import { doc, onSnapshot, writeBatch, serverTimestamp } from 'firebase/firestore';
+import { collection, doc, onSnapshot, writeBatch, serverTimestamp } from 'firebase/firestore';
 import { db } from './firebase';
 import { SUPPORT_CONFIG } from '../config/support';
 import type { Match } from '../types';
@@ -26,26 +26,31 @@ export interface BillingConfig {
   updatedAt?: string;
 }
 
+export type BillingNoticeTrack = 'subscription' | 'commission';
+
 export interface WeeklyPaymentObligation {
-  id: string; // obl_${complexId}_${startDateStr}_${endDateStr}
+  id: string; // obl_${complexId}_${startDateStr}_${endDateStr} o sub_${complexId}_...
   complexId: string;
   complexName: string;
   startDateStr: string; // YYYY-MM-DD
   endDateStr: string;   // YYYY-MM-DD
-  dueDateStr: string;   // YYYY-MM-DD (Monday)
+  dueDateStr: string;   // YYYY-MM-DD
   gmv: number;
-  originalAmountDue: number; // Math.round(gmv * 0.10)
+  originalAmountDue: number;
   amountPaid: number;
   remainingBalance: number;
   status: 'paid' | 'pending' | 'partial';
   daysAfterDue: number;
   playedBookings: Match[];
+  track?: BillingNoticeTrack;
+  commissionPercent?: number;
 }
 
 export type NoticeModalType = 'trial' | 'monday' | 'tuesday' | 'wednesday';
 
 export interface BillingNoticeState {
   type: NoticeModalType | null;
+  noticeTrack: BillingNoticeTrack | null;
   obligation: WeeklyPaymentObligation | null;
   trialDaysRemaining: number | null;
   isBlockedByDebt: boolean;
@@ -54,6 +59,8 @@ export interface BillingNoticeState {
   totalOverdueDebt: number;
   unpaidObligations: WeeklyPaymentObligation[];
   overdueObligations: WeeklyPaymentObligation[];
+  subscriptionObligations: WeeklyPaymentObligation[];
+  commissionObligations: WeeklyPaymentObligation[];
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +251,38 @@ export function subscribeBillingConfig(onUpdate: (config: BillingConfig) => void
   return unsubscribe;
 }
 
+/**
+ * Suscripción en tiempo real a la subcolección complejos/{complexId}/payment_obligations
+ * escrita por el ERP (Plan Jogo mensual y Turnos de Jogo semanales).
+ */
+export function subscribeComplexPaymentObligations(
+  complexId: string,
+  onUpdate: (obligations: any[]) => void
+): () => void {
+  if (!complexId) {
+    onUpdate([]);
+    return () => {};
+  }
+
+  const oblColRef = collection(db, 'complejos', complexId, 'payment_obligations');
+  const unsubscribe = onSnapshot(
+    oblColRef,
+    (snapshot) => {
+      const items = snapshot.docs.map((d) => ({
+        id: d.id,
+        ...d.data(),
+      }));
+      onUpdate(items);
+    },
+    (err) => {
+      console.warn('[Billing] Error listening to payment_obligations:', err);
+      onUpdate([]);
+    }
+  );
+
+  return unsubscribe;
+}
+
 // ---------------------------------------------------------------------------
 // 2. Cálculo de Períodos Semanales y Liquidaciones Devengadas
 // ---------------------------------------------------------------------------
@@ -358,6 +397,31 @@ export interface NormalizedErpPeriod {
   amountPaid: number;
   remainingBalance?: number;
   status?: string;
+  track?: BillingNoticeTrack;
+  isExplicitTrack?: boolean;
+  gmv?: number;
+}
+
+export function isSubscriptionErpItem(item: any, key?: string): boolean {
+  const track = String(item?.track || '').toLowerCase().trim();
+  const type = String(item?.type || item?.obligationType || item?.kind || item?.periodType || '').toLowerCase().trim();
+  const idStr = String(item?.id || item?.periodId || key || '').toLowerCase().trim();
+  return (
+    track === 'subscription' ||
+    type === 'subscription' ||
+    type === 'monthly' ||
+    type === 'plan_jogo' ||
+    idStr.startsWith('sub_') ||
+    idStr.startsWith('plan_') ||
+    idStr.startsWith('monthly_')
+  );
+}
+
+function isExplicitCommissionErpItem(item: any, key?: string): boolean {
+  const track = String(item?.track || '').toLowerCase().trim();
+  const type = String(item?.type || item?.obligationType || item?.kind || item?.periodType || '').toLowerCase().trim();
+  const idStr = String(item?.id || item?.periodId || key || '').toLowerCase().trim();
+  return track === 'commission' || type === 'commission' || idStr.startsWith('comm_');
 }
 
 /**
@@ -467,18 +531,24 @@ export function parsePeriodDates(item: any, key?: string): { startDateStr: strin
 }
 
 /**
- * Normaliza y deduplica las obligaciones registradas en el ERP (en paymentObligations o paymentPeriods)
- * evitando duplicar períodos si aparecen representados en ambas estructuras y garantizando que
- * el estado pagado y el saldo cero prevalezcan de forma infalible ante cualquier divergencia.
+ * Normaliza y deduplica las obligaciones semanales (Carril B) registradas en el ERP
+ * (en paymentObligations, paymentPeriods o subcolección payment_obligations),
+ * excluyendo los registros mensuales de Plan Jogo (Carril A).
  */
-export function extractNormalizedErpObligations(complexDoc: any): Map<string, NormalizedErpPeriod> {
+export function extractNormalizedErpObligations(
+  complexDoc: any,
+  subcollectionObligations: any[] = []
+): Map<string, NormalizedErpPeriod> {
   const map = new Map<string, NormalizedErpPeriod>();
   const mapByEnd = new Map<string, NormalizedErpPeriod>();
-  if (!complexDoc) return map;
+  if (!complexDoc && (!Array.isArray(subcollectionObligations) || subcollectionObligations.length === 0)) {
+    return map;
+  }
 
-  const sources: Array<{ src: any; name: 'paymentObligations' | 'paymentPeriods' }> = [
-    { src: complexDoc.paymentObligations, name: 'paymentObligations' },
-    { src: complexDoc.paymentPeriods, name: 'paymentPeriods' }
+  const sources: Array<{ src: any; name: string }> = [
+    { src: complexDoc?.paymentObligations, name: 'paymentObligations' },
+    { src: complexDoc?.paymentPeriods, name: 'paymentPeriods' },
+    { src: subcollectionObligations, name: 'payment_obligations' }
   ];
 
   for (const { src } of sources) {
@@ -496,6 +566,8 @@ export function extractNormalizedErpObligations(complexDoc: any): Map<string, No
     }
 
     for (const { item, key } of entries) {
+      if (isSubscriptionErpItem(item, key)) continue;
+
       const dates = parsePeriodDates(item, key);
       if (!dates) continue;
       const periodKey = `${dates.startDateStr}_${dates.endDateStr}`;
@@ -510,6 +582,8 @@ export function extractNormalizedErpObligations(complexDoc: any): Map<string, No
       let rem = rawRem !== undefined && rawRem !== null && rawRem !== '' ? Math.max(0, Number(rawRem)) : undefined;
 
       const itemPaid = isErpItemPaid(item);
+      const explicitTrack = isExplicitCommissionErpItem(item, key);
+      const itemGmv = item.gmv !== undefined && item.gmv !== null ? Number(item.gmv) : undefined;
 
       if (itemPaid) {
         rem = 0;
@@ -533,13 +607,17 @@ export function extractNormalizedErpObligations(complexDoc: any): Map<string, No
           originalAmountDue: origDue,
           amountPaid: paid,
           remainingBalance: rem,
-          status: itemStatus
+          status: itemStatus,
+          track: 'commission',
+          isExplicitTrack: explicitTrack,
+          gmv: itemGmv
         };
         map.set(periodKey, normalized);
         mapByEnd.set(dates.endDateStr, normalized);
       } else {
-        // Conciliación segura entre paymentObligations y paymentPeriods:
-        // Si CUALQUIERA de las fuentes declara el período pagado o con saldo cero, el estado pagado es soberano
+        existing.isExplicitTrack = Boolean(existing.isExplicitTrack || explicitTrack);
+        if (itemGmv !== undefined) existing.gmv = itemGmv;
+
         if (itemPaid || rem === 0 || existing.remainingBalance === 0 || existing.status === 'paid') {
           existing.remainingBalance = 0;
           existing.status = 'paid';
@@ -547,7 +625,6 @@ export function extractNormalizedErpObligations(complexDoc: any): Map<string, No
           const targetTotal = Math.max(existing.originalAmountDue || 0, origDue || 0, existing.amountPaid, paid);
           existing.amountPaid = targetTotal;
         } else {
-          // Si ninguna lo declara 100% pagado, conciliar pagos mayores y menor saldo remanente
           existing.originalAmountDue = origDue ?? existing.originalAmountDue;
           existing.amountPaid = Math.max(existing.amountPaid, paid);
 
@@ -577,6 +654,173 @@ export function extractNormalizedErpObligations(complexDoc: any): Map<string, No
   }
 
   return map;
+}
+
+/**
+ * Extrae y concilia las obligaciones mensuales de Plan Jogo (Carril A) escritas por el ERP
+ * en complexDoc.paymentObligations, complexDoc.paymentPeriods o complejos/{id}/payment_obligations.
+ */
+export function extractSubscriptionObligations(
+  complexId: string,
+  complexDoc: any,
+  subcollectionObligations: any[] = [],
+  now: Date = new Date()
+): WeeklyPaymentObligation[] {
+  if (!complexId || !complexDoc) return [];
+
+  const rawStatus = (complexDoc.clientStatus || '').toString().toLowerCase().trim();
+  if (rawStatus !== 'active') return [];
+
+  const nowArg = getArgentinaNowComponents(now);
+  const complexName = complexDoc.name || complexDoc.company || 'Mi Complejo';
+  const defaultFee = Math.max(0, Number(complexDoc.monthlySubscriptionFee || 0));
+
+  const sources: any[] = [
+    complexDoc.paymentObligations,
+    complexDoc.paymentPeriods,
+    subcollectionObligations
+  ];
+
+  const byKey = new Map<string, WeeklyPaymentObligation>();
+
+  for (const src of sources) {
+    if (!src) continue;
+
+    const entries: Array<{ item: any; key?: string }> = [];
+    if (Array.isArray(src)) {
+      for (const item of src) {
+        if (item && typeof item === 'object') entries.push({ item, key: item.id || item.periodId });
+      }
+    } else if (typeof src === 'object') {
+      for (const [k, v] of Object.entries(src)) {
+        if (v && typeof v === 'object') entries.push({ item: v, key: k });
+      }
+    }
+
+    for (const { item, key } of entries) {
+      if (!isSubscriptionErpItem(item, key)) continue;
+
+      let startDateStr = toYmdString(
+        item.startDateStr || item.startDate || item.start || item.from || item.fechaInicio || item.periodStart || item.cycleStart
+      );
+      let endDateStr = toYmdString(
+        item.endDateStr || item.endDate || item.end || item.to || item.fechaFin || item.periodEnd || item.cycleEnd
+      );
+      let dueDateStr = toYmdString(
+        item.dueDateStr || item.dueDate || item.fechaVencimiento || item.dueAt
+      );
+
+      if (!startDateStr || !endDateStr) {
+        const idOrKey = String(item.id || item.periodId || key || '');
+        const match = idOrKey.match(/(\d{4}-\d{2}-\d{2})[_\-/ ]+(\d{4}-\d{2}-\d{2})/);
+        if (match) {
+          startDateStr = startDateStr || match[1];
+          endDateStr = endDateStr || match[2];
+        }
+      }
+
+      if (startDateStr && !endDateStr) {
+        const [sy, sm, sd] = startDateStr.split('-').map(Number);
+        if (!isNaN(sy) && !isNaN(sm) && !isNaN(sd)) {
+          const endObj = addDays(sy, sm, sd, 29);
+          endDateStr = dateToStr(endObj.year, endObj.month, endObj.day);
+        }
+      }
+
+      if (!startDateStr && endDateStr) {
+        const [ey, em, ed] = endDateStr.split('-').map(Number);
+        if (!isNaN(ey) && !isNaN(em) && !isNaN(ed)) {
+          const startObj = addDays(ey, em, ed, -29);
+          startDateStr = dateToStr(startObj.year, startObj.month, startObj.day);
+        }
+      }
+
+      if (!dueDateStr && endDateStr) {
+        const [ey, em, ed] = endDateStr.split('-').map(Number);
+        if (!isNaN(ey) && !isNaN(em) && !isNaN(ed)) {
+          const dueObj = addDays(ey, em, ed, 1);
+          dueDateStr = dateToStr(dueObj.year, dueObj.month, dueObj.day);
+        }
+      }
+
+      if (!dueDateStr && startDateStr) {
+        dueDateStr = startDateStr;
+      }
+
+      if (!dueDateStr) continue;
+      if (!startDateStr) startDateStr = dueDateStr;
+      if (!endDateStr) {
+        const [sy, sm, sd] = startDateStr.split('-').map(Number);
+        const endObj = addDays(sy, sm, sd, 29);
+        endDateStr = dateToStr(endObj.year, endObj.month, endObj.day);
+      }
+
+      const rawDue = item.originalAmountDue ?? item.amountDue ?? item.monto ?? item.total ?? item.amount ?? item.totalAmount ?? item.montoTotal;
+      const origDue = rawDue !== undefined && rawDue !== null && rawDue !== ''
+        ? Math.max(0, Number(rawDue))
+        : defaultFee;
+
+      const rawPaid = item.amountPaid ?? item.totalPaid ?? item.montoPagado ?? item.paidAmount ?? item.pagadoMonto;
+      let amountPaid = Math.max(0, Number(rawPaid || 0));
+
+      const rawRem = item.remainingBalance ?? item.saldoPendiente ?? item.saldo ?? item.balance ?? item.pendingBalance;
+      let remainingBalance = rawRem !== undefined && rawRem !== null && rawRem !== ''
+        ? Math.max(0, Number(rawRem))
+        : Math.max(0, origDue - amountPaid);
+
+      const itemPaid = isErpItemPaid(item);
+      if (itemPaid || remainingBalance === 0 || origDue <= 0) {
+        remainingBalance = 0;
+        if (origDue > 0 && amountPaid < origDue) {
+          amountPaid = origDue;
+        }
+      } else if (amountPaid > 0 && remainingBalance > Math.max(0, origDue - amountPaid)) {
+        remainingBalance = Math.max(0, origDue - amountPaid);
+      }
+
+      const status: 'paid' | 'pending' | 'partial' = remainingBalance === 0 || origDue <= 0 || itemPaid
+        ? 'paid'
+        : (amountPaid > 0 ? 'partial' : 'pending');
+
+      const daysAfterDue = diffInDays(nowArg.dateStr, dueDateStr);
+      const docId = String(item.id || item.periodId || key || `sub_${complexId}_${startDateStr}_${endDateStr}`);
+      const dedupeKey = `${startDateStr}_${endDateStr}_${dueDateStr}`;
+
+      const existing = byKey.get(dedupeKey);
+      if (!existing) {
+        byKey.set(dedupeKey, {
+          id: docId,
+          complexId,
+          complexName,
+          startDateStr,
+          endDateStr,
+          dueDateStr,
+          gmv: 0,
+          originalAmountDue: origDue,
+          amountPaid,
+          remainingBalance,
+          status,
+          daysAfterDue,
+          playedBookings: [],
+          track: 'subscription'
+        });
+      } else {
+        if (status === 'paid' || existing.status === 'paid' || remainingBalance === 0 || existing.remainingBalance === 0) {
+          existing.remainingBalance = 0;
+          existing.status = 'paid';
+          existing.originalAmountDue = Math.max(existing.originalAmountDue, origDue);
+          existing.amountPaid = Math.max(existing.amountPaid, amountPaid, existing.originalAmountDue);
+        } else {
+          existing.originalAmountDue = Math.max(existing.originalAmountDue, origDue);
+          existing.amountPaid = Math.max(existing.amountPaid, amountPaid);
+          existing.remainingBalance = Math.min(existing.remainingBalance, remainingBalance);
+          existing.status = existing.amountPaid > 0 ? 'partial' : 'pending';
+        }
+      }
+    }
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => b.dueDateStr.localeCompare(a.dueDateStr));
 }
 
 /**
@@ -621,29 +865,34 @@ export function isBookingPlayed(booking: Match, nowArg: { dateStr: string; timeS
 }
 
 /**
- * Calcula todas las obligaciones semanales del complejo activo cruzando con /bookings
- * y aplicando la prioridad del ERP sin duplicaciones ni inclusión de la semana actual.
+ * Calcula todas las obligaciones semanales del Carril B (Turnos traídos por Jogo: createdSource === 'jogo')
+ * cruzando con /bookings y aplicando la conciliación soberana con el ERP.
+ * Si una semana cerrada tuvo $0 en turnos de Jogo, no genera deuda ni se incluye como pendiente.
  */
 export function calculateWeeklyObligations(
   complexId: string,
   complexDoc: any,
   bookings: Match[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  subcollectionObligations: any[] = []
 ): WeeklyPaymentObligation[] {
   if (!complexId || !complexDoc) return [];
 
   const rawStatus = (complexDoc.clientStatus || '').toString().toLowerCase().trim();
   if (rawStatus !== 'active') {
-    // Solo complejos 'active' generan obligaciones (en trial no se generan)
     return [];
   }
 
   const activatedAt = complexDoc.activatedAt || complexDoc.activationDate || complexDoc.createdAt;
-  if (!activatedAt && !complexDoc.paymentObligations && !complexDoc.paymentPeriods) return [];
+  if (!activatedAt && !complexDoc.paymentObligations && !complexDoc.paymentPeriods && subcollectionObligations.length === 0) {
+    return [];
+  }
 
   const nowArg = getArgentinaNowComponents(now);
-  const erpMap = extractNormalizedErpObligations(complexDoc);
+  const erpMap = extractNormalizedErpObligations(complexDoc, subcollectionObligations);
   const complexName = complexDoc.name || complexDoc.company || 'Mi Complejo';
+  const commissionPercent = Number(complexDoc?.weeklyCommissionPercent) || 10;
+  const commissionRate = commissionPercent / 100;
 
   // Períodos semanales cerrados calculados desde activatedAt
   const closedPeriods = activatedAt ? computeClosedWeeklyPeriods(activatedAt, now) : [];
@@ -658,8 +907,7 @@ export function calculateWeeklyObligations(
     endDateToKey.set(p.endDateStr, key);
   }
 
-  // Incorporar períodos adicionales que estén registrados en el ERP,
-  // SIEMPRE que sean períodos cerrados (la semana actual o futura NUNCA se suma a la deuda)
+  // Incorporar períodos adicionales del ERP que ya estén cerrados
   for (const [periodKey, erpItem] of erpMap.entries()) {
     const existingKey = uniquePeriods.has(periodKey) ? periodKey : endDateToKey.get(erpItem.endDateStr);
     if (!existingKey) {
@@ -679,7 +927,6 @@ export function calculateWeeklyObligations(
         endDateToKey.set(erpItem.endDateStr, periodKey);
       }
     } else if (existingKey !== periodKey) {
-      // Si el período existía con clave diferente (ej: start date de activatedAt vs lunes de ERP), adoptar la canónica de ERP
       const old = uniquePeriods.get(existingKey)!;
       uniquePeriods.delete(existingKey);
       uniquePeriods.set(periodKey, {
@@ -697,7 +944,6 @@ export function calculateWeeklyObligations(
   const results: WeeklyPaymentObligation[] = [];
 
   for (const period of uniquePeriods.values()) {
-    // Salvaguarda obligatoria: la semana actual en curso NUNCA se suma
     if (!isPeriodClosed(period.endDateStr, now)) {
       continue;
     }
@@ -705,13 +951,16 @@ export function calculateWeeklyObligations(
     const periodKey = `${period.startDateStr}_${period.endDateStr}`;
     const periodId = `obl_${complexId}_${periodKey}`;
 
-    // Reservas jugadas que pertenecen al complejo y caen en [startDateStr, endDateStr]
+    // Filtrar ÚNICAMENTE reservas jugadas del complejo traídas por Jogo (createdSource === 'jogo')
     const playedInPeriod: Match[] = [];
     let periodGmv = 0;
 
     for (const b of bookings) {
       const bComplex = b.complexId || b.complejoId;
       if (bComplex && bComplex !== complexId) continue;
+
+      const source = b.createdSource === 'jogo' ? 'jogo' : 'complejo';
+      if (source !== 'jogo') continue;
 
       const bDate = String(b.date || '').trim();
       if (!bDate || bDate < period.startDateStr || bDate > period.endDateStr) continue;
@@ -725,8 +974,14 @@ export function calculateWeeklyObligations(
       }
     }
 
-    const calculatedCommission = Math.round(periodGmv * 0.10);
     const erpMatch = erpMap.get(periodKey) || Array.from(erpMap.values()).find(e => e.endDateStr === period.endDateStr);
+
+    // Si la semana cerrada tuvo $0 en turnos de Jogo, no generar deuda ni incluirla como obligación pendiente
+    if (periodGmv <= 0 && !erpMatch?.isExplicitTrack) {
+      continue;
+    }
+
+    const calculatedCommission = Math.round(periodGmv * commissionRate);
 
     let originalAmountDue = calculatedCommission;
     let amountPaid = 0;
@@ -738,7 +993,7 @@ export function calculateWeeklyObligations(
       amountPaid = erpMatch.amountPaid >= 0 ? erpMatch.amountPaid : 0;
     }
 
-    // Regla: Si el ERP marca la obligación como pagada o saldo pendiente 0, el saldo pendiente ES CERO.
+    // Conciliación soberana con el ERP
     let remainingBalance: number;
     if (erpMatch && (erpMatch.status === 'paid' || erpMatch.remainingBalance === 0)) {
       remainingBalance = 0;
@@ -751,13 +1006,14 @@ export function calculateWeeklyObligations(
       remainingBalance = Math.max(0, originalAmountDue - amountPaid);
     }
 
-    // Si se pagó un monto, el saldo pendiente no puede superar (originalAmountDue - amountPaid)
     if (amountPaid > 0 && remainingBalance > Math.max(0, originalAmountDue - amountPaid)) {
       remainingBalance = Math.max(0, originalAmountDue - amountPaid);
     }
 
-    // Determinación estricta del estado:
-    // Solo cuando remainingBalance === 0 (o originalAmountDue <= 0 o erpMatch.status === 'paid') se marca como 'paid'
+    if (originalAmountDue <= 0 && remainingBalance <= 0) {
+      continue;
+    }
+
     let status: 'paid' | 'pending' | 'partial';
     if (remainingBalance === 0 || originalAmountDue <= 0 || (erpMatch && erpMatch.status === 'paid')) {
       remainingBalance = 0;
@@ -783,11 +1039,12 @@ export function calculateWeeklyObligations(
       remainingBalance,
       status,
       daysAfterDue,
-      playedBookings: playedInPeriod
+      playedBookings: playedInPeriod,
+      track: 'commission',
+      commissionPercent
     });
   }
 
-  // Ordenar de más reciente a más antigua
   return results.sort((a, b) => b.startDateStr.localeCompare(a.startDateStr));
 }
 
@@ -831,21 +1088,94 @@ export function isSessionNoticeDismissed(complexId: string, obligationId: string
 }
 
 /**
- * Determina el estado actual de avisos (Prueba, Lunes, Martes, Miércoles) y de Bloqueo (Jueves+).
+ * Evalúa el modelo híbrido (Carril A: Plan Jogo mensual + Carril B: Turnos de Jogo semanales)
+ * con reglas de bloqueo cruzado al vencer el mes y avisos progresivos positivos.
  */
 export function evaluateBillingNoticeState(
   complexId: string,
   complexDoc: any,
   obligations: WeeklyPaymentObligation[],
-  now: Date = new Date()
+  now: Date = new Date(),
+  subcollectionObligations: any[] = []
 ): BillingNoticeState {
-  const unpaidObligations = obligations.filter(o => o.remainingBalance > 0);
-  const overdueObligations = unpaidObligations.filter(o => o.daysAfterDue >= 3);
+  const commissionObligations = (obligations || []).filter(o => o.track !== 'subscription');
+  const subscriptionObligations = extractSubscriptionObligations(
+    complexId,
+    complexDoc,
+    subcollectionObligations,
+    now
+  );
+
+  const nowArg = getArgentinaNowComponents(now);
+  const todayStr = nowArg.dateStr;
+  const rawStatus = (complexDoc?.clientStatus || '').toString().toLowerCase().trim();
+  const isBlockedFlag = complexDoc?.isSaaSBlockedByDebt === true;
+
+  // Obligaciones de Plan Jogo ya exigibles (daysAfterDue >= 0) y con saldo > 0
+  const unpaidSubDueOrGrace = subscriptionObligations.filter(
+    o => o.remainingBalance > 0 && o.daysAfterDue >= 0
+  );
+  // Obligaciones de Plan Jogo vencidas tras los 3 días de gracia (daysAfterDue >= 3)
+  const overdueSubscriptions = subscriptionObligations.filter(
+    o => o.remainingBalance > 0 && o.daysAfterDue >= 3
+  );
+  const unpaidCommissions = commissionObligations.filter(o => o.remainingBalance > 0);
+
+  // Bloqueo cruzado: solo cuando Plan Jogo entra en vencimiento/gracia (daysAfterDue >= 0) o isSaaSBlockedByDebt === true
+  const isPlanInDueOrGrace = unpaidSubDueOrGrace.length > 0;
+  const overdueCommissions = (isPlanInDueOrGrace || isBlockedFlag)
+    ? unpaidCommissions.filter(o => o.daysAfterDue >= 1)
+    : [];
+
+  let unpaidObligations: WeeklyPaymentObligation[] = [
+    ...unpaidSubDueOrGrace,
+    ...unpaidCommissions
+  ];
+
+  // Si está bloqueado manualmente por ERP pero la obligación mensual aún tiene daysAfterDue < 0, incluir las impagas
+  if (isBlockedFlag && unpaidSubDueOrGrace.length === 0) {
+    const anyUnpaidSubs = subscriptionObligations.filter(o => o.remainingBalance > 0);
+    if (anyUnpaidSubs.length > 0) {
+      unpaidObligations = [...anyUnpaidSubs, ...unpaidCommissions];
+    } else if (unpaidObligations.length === 0 && Number(complexDoc?.monthlySubscriptionFee || 0) > 0) {
+      const fee = Number(complexDoc.monthlySubscriptionFee);
+      const fallbackEnd = addDays(nowArg.year, nowArg.month, nowArg.day, 29);
+      unpaidObligations = [{
+        id: `sub_${complexId}_${todayStr}`,
+        complexId,
+        complexName: complexDoc?.name || complexDoc?.company || 'Mi Complejo',
+        startDateStr: todayStr,
+        endDateStr: dateToStr(fallbackEnd.year, fallbackEnd.month, fallbackEnd.day),
+        dueDateStr: todayStr,
+        gmv: 0,
+        originalAmountDue: fee,
+        amountPaid: 0,
+        remainingBalance: fee,
+        status: 'pending',
+        daysAfterDue: 3,
+        playedBookings: [],
+        track: 'subscription'
+      }];
+    }
+  }
+
+  let overdueObligations: WeeklyPaymentObligation[] = [];
+  if (isPlanInDueOrGrace || isBlockedFlag) {
+    const subItemsForOverdue = unpaidSubDueOrGrace.length > 0
+      ? unpaidSubDueOrGrace
+      : (isBlockedFlag ? subscriptionObligations.filter(o => o.remainingBalance > 0) : []);
+    overdueObligations = [...subItemsForOverdue, ...overdueCommissions];
+    if (isBlockedFlag && overdueObligations.length === 0 && unpaidObligations.length > 0) {
+      overdueObligations = [...unpaidObligations];
+    }
+  }
+
   const totalDebt = calculateTotalWeeklyDebt(unpaidObligations);
   const totalOverdueDebt = calculateTotalWeeklyDebt(overdueObligations);
 
   const result: BillingNoticeState = {
     type: null,
+    noticeTrack: null,
     obligation: null,
     trialDaysRemaining: null,
     isBlockedByDebt: false,
@@ -853,53 +1183,79 @@ export function evaluateBillingNoticeState(
     totalDebt,
     totalOverdueDebt,
     unpaidObligations,
-    overdueObligations
+    overdueObligations,
+    subscriptionObligations,
+    commissionObligations
   };
 
   if (!complexId || !complexDoc) return result;
 
-  const rawStatus = (complexDoc.clientStatus || '').toString().toLowerCase().trim();
-  const todayStr = getArgentinaNowComponents(now).dateStr;
-
-  // 1. Caso Complejo Activo con obligaciones
+  // 1. Caso Complejo Activo
   if (rawStatus === 'active') {
-    // Reglas 4, 5 y 6:
-    // E. Jueves en adelante (daysAfterDue >= 3) con saldo pendiente > 0 => BLOQUEO PERMANENTE.
-    // Mientras quede al menos una obligación vencida impaga, el acceso debe continuar bloqueado.
-    // Se restaura el acceso únicamente cuando todas las obligaciones vencidas estén saldadas.
-    if (overdueObligations.length > 0) {
+    // Regla de acceso y pausa:
+    // Durante los días 1–30 de un Plan Jogo pago, Turnos de Jogo NO pausan el acceso.
+    // Solo se pausa si isSaaSBlockedByDebt === true o si Plan Jogo tiene daysAfterDue >= 3.
+    if (isBlockedFlag || overdueSubscriptions.length > 0) {
       result.isBlockedByDebt = true;
-      // Para compatibilidad y detalle, ordenamos las vencidas de más antigua a más reciente
+      const sortedSubOverdue = [...overdueSubscriptions].sort((a, b) => a.dueDateStr.localeCompare(b.dueDateStr));
       const sortedOverdue = [...overdueObligations].sort((a, b) => a.startDateStr.localeCompare(b.startDateStr));
-      result.blockingObligation = sortedOverdue[0];
+      result.blockingObligation = sortedSubOverdue[0] || sortedOverdue[0] || unpaidObligations[0] || null;
       return result;
     }
 
-    // Si no está bloqueado por deuda vencida, evaluar avisos descartables (Lunes, Martes, Miércoles)
-    if (unpaidObligations.length > 0) {
-      const pendingWithDue = [...unpaidObligations].sort((a, b) => b.daysAfterDue - a.daysAfterDue);
-      const target = pendingWithDue[0];
-
-      if (target) {
-        if (target.daysAfterDue === 0) {
-          // B. Lunes: daysAfterDue === 0
-          if (!isDailyNoticeDismissed(complexId, 'monday', todayStr)) {
+    // Avisos progresivos Carril A (Plan Jogo: días 0, 1, 2)
+    if (unpaidSubDueOrGrace.length > 0) {
+      const subTarget = [...unpaidSubDueOrGrace].sort((a, b) => b.daysAfterDue - a.daysAfterDue)[0];
+      if (subTarget) {
+        if (subTarget.daysAfterDue === 0) {
+          if (!isDailyNoticeDismissed(complexId, 'sub_monday', todayStr)) {
             result.type = 'monday';
-            result.obligation = target;
+            result.noticeTrack = 'subscription';
+            result.obligation = subTarget;
             return result;
           }
-        } else if (target.daysAfterDue === 1) {
-          // C. Martes: daysAfterDue === 1 (por sesión de navegación)
-          if (!isSessionNoticeDismissed(complexId, target.id, todayStr)) {
+        } else if (subTarget.daysAfterDue === 1) {
+          if (!isSessionNoticeDismissed(complexId, subTarget.id, todayStr)) {
             result.type = 'tuesday';
-            result.obligation = target;
+            result.noticeTrack = 'subscription';
+            result.obligation = subTarget;
             return result;
           }
-        } else if (target.daysAfterDue === 2) {
-          // D. Miércoles: daysAfterDue === 2 (por sesión de navegación)
-          if (!isSessionNoticeDismissed(complexId, target.id, todayStr)) {
+        } else if (subTarget.daysAfterDue === 2) {
+          if (!isSessionNoticeDismissed(complexId, subTarget.id, todayStr)) {
             result.type = 'wednesday';
-            result.obligation = target;
+            result.noticeTrack = 'subscription';
+            result.obligation = subTarget;
+            return result;
+          }
+        }
+      }
+      return result;
+    }
+
+    // Avisos Carril B (Turnos de Jogo dentro del mes pago, sin amenaza de corte)
+    if (unpaidCommissions.length > 0) {
+      const commTarget = [...unpaidCommissions].sort((a, b) => b.startDateStr.localeCompare(a.startDateStr))[0];
+      if (commTarget) {
+        if (commTarget.daysAfterDue === 0) {
+          if (!isDailyNoticeDismissed(complexId, 'comm_monday', todayStr)) {
+            result.type = 'monday';
+            result.noticeTrack = 'commission';
+            result.obligation = commTarget;
+            return result;
+          }
+        } else if (commTarget.daysAfterDue === 1 || commTarget.daysAfterDue === 2) {
+          if (!isSessionNoticeDismissed(complexId, commTarget.id, todayStr)) {
+            result.type = 'tuesday';
+            result.noticeTrack = 'commission';
+            result.obligation = commTarget;
+            return result;
+          }
+        } else if (commTarget.daysAfterDue >= 3) {
+          if (!isDailyNoticeDismissed(complexId, `comm_rem_${commTarget.id}`, todayStr)) {
+            result.type = 'monday';
+            result.noticeTrack = 'commission';
+            result.obligation = commTarget;
             return result;
           }
         }
@@ -930,6 +1286,7 @@ export function evaluateBillingNoticeState(
         if (daysLeft >= 1 && daysLeft <= 3) {
           if (!isDailyNoticeDismissed(complexId, 'trial', todayStr)) {
             result.type = 'trial';
+            result.noticeTrack = null;
             result.trialDaysRemaining = daysLeft;
             return result;
           }
@@ -1019,7 +1376,7 @@ function cleanPhoneNumber(raw: string): string {
 }
 
 /**
- * Genera el enlace de WhatsApp con el mensaje oficial de pago semanal transferido.
+ * Genera el enlace de WhatsApp con el mensaje oficial de pago transferido (Plan Jogo y/o Turnos de Jogo).
  */
 export function getPaymentWhatsAppUrl(
   config: BillingConfig,
@@ -1043,29 +1400,32 @@ export function getPaymentWhatsAppUrl(
 
   let message: string;
   if (items.length > 1) {
-    const detailLines = items.map(o => 
-      `- ${formatDDMMYYYY(o.startDateStr)} al ${formatDDMMYYYY(o.endDateStr)}: ${formatCurrencyARS(o.remainingBalance)}`
-    ).join('\n');
+    const detailLines = items.map(o => {
+      const label = o.track === 'subscription' ? 'Plan Jogo' : 'Turnos de Jogo';
+      return `- ${label} (${formatDDMMYYYY(o.startDateStr)} al ${formatDDMMYYYY(o.endDateStr)}): ${formatCurrencyARS(o.remainingBalance)}`;
+    }).join('\n');
 
     message = [
       'Hola, ya realicé el pago de Jogo.',
       '',
       `Complejo: ${name}`,
-      `Total transferido: ${amount} (${items.length} semanas acumuladas)`,
-      'Detalle por semana:',
+      `Total transferido: ${amount} (${items.length} períodos)`,
+      'Detalle:',
       detailLines,
       '',
       '¿Podrían verificarlo y registrar el pago? Gracias.'
     ].join('\n');
   } else if (items.length === 1) {
     const single = items[0];
+    const label = single.track === 'subscription' ? 'Plan Jogo' : 'Turnos de Jogo';
     const start = formatDDMMYYYY(single.startDateStr);
     const end = formatDDMMYYYY(single.endDateStr);
     message = [
       'Hola, ya realicé el pago de Jogo.',
       '',
       `Complejo: ${name}`,
-      `Período liquidado: ${start} al ${end}`,
+      `Concepto: ${label}`,
+      `Período: ${start} al ${end}`,
       `Importe transferido: ${amount}`,
       '',
       '¿Podrían verificarlo y registrar el pago? Gracias.'
@@ -1139,9 +1499,12 @@ export function downloadWeeklyBillingPdf(
   doc.setFont('helvetica', 'bold');
   doc.text('JOGO SaaS', 15, 15);
 
+  const pct = obligation.commissionPercent || 10;
+  const rate = pct / 100;
+
   doc.setFontSize(10);
   doc.setFont('helvetica', 'normal');
-  doc.text('Liquidación Semanal de Servicios · 10% s/ Turnos Jugados', 15, 22);
+  doc.text(`Resumen Semanal · Turnos de Jogo (${pct}%)`, 15, 22);
 
   const todayArg = getArgentinaTodayStr();
   doc.setFontSize(9);
@@ -1156,9 +1519,9 @@ export function downloadWeeklyBillingPdf(
   doc.setFontSize(10);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(71, 85, 105); // slate-600
-  doc.text(`Período liquidado: ${startStr} al ${endStr}`, 15, 45);
+  doc.text(`Período: ${startStr} al ${endStr}`, 15, 45);
   doc.text(`Fecha de vencimiento: Lunes ${dueStr}`, 15, 51);
-  doc.text(`Identificador de obligación: ${obligation.id}`, 15, 57);
+  doc.text(`Referencia: ${obligation.id}`, 15, 57);
 
   // 3. Tarjeta Resumen Económico
   doc.setFillColor(248, 250, 252); // slate-50
@@ -1167,9 +1530,9 @@ export function downloadWeeklyBillingPdf(
 
   doc.setFontSize(9);
   doc.setTextColor(100, 116, 139); // slate-500
-  doc.text('Reservas jugadas', 22, 72);
-  doc.text('GMV Canchas (Total)', 62, 72);
-  doc.text('Comisión Jogo (10%)', 108, 72);
+  doc.text('Turnos de Jogo', 22, 72);
+  doc.text('Total Canchas', 62, 72);
+  doc.text(`Aporte Jogo (${pct}%)`, 108, 72);
   doc.text('Abonado', 148, 72);
   doc.text('Saldo Pendiente', 172, 72);
 
@@ -1193,7 +1556,7 @@ export function downloadWeeklyBillingPdf(
   doc.setFontSize(11);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(15, 23, 42);
-  doc.text('Detalle de reservas jugadas incluidas en el período', 15, 105);
+  doc.text('Detalle de turnos acercados por Jogo en el período', 15, 105);
 
   const tableRows = obligation.playedBookings.map((b) => {
     const bDate = formatDDMMYYYY(String(b.date || ''));
@@ -1201,7 +1564,7 @@ export function downloadWeeklyBillingPdf(
     const bCourt = String(b.courtName || b.court_name || 'Cancha');
     const bClient = String(b.userName || b.clientName || b.host_name || 'Particular');
     const price = Number(b.price || b.price_total || 0);
-    const comm = Math.round(price * 0.10);
+    const comm = Math.round(price * rate);
 
     return [
       bDate,
@@ -1216,7 +1579,7 @@ export function downloadWeeklyBillingPdf(
   autoTable(doc, {
     startY: 110,
     margin: { left: 15, right: 15 },
-    head: [['Fecha', 'Horario', 'Cancha', 'Cliente', 'Precio Cancha', 'Comisión 10%']],
+    head: [['Fecha', 'Horario', 'Cancha', 'Cliente', 'Precio Cancha', `Aporte (${pct}%)`]],
     body: tableRows.length > 0 ? tableRows : [['-', '-', '-', 'Sin reservas registradas', '$ 0', '$ 0']],
     theme: 'striped',
     headStyles: {
@@ -1259,13 +1622,12 @@ export function downloadWeeklyBillingPdf(
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(148, 163, 184); // slate-400
   doc.text(
-    'Documento de liquidación emitido automáticamente por Jogo SaaS. Por consultas de facturación o transferencias, contactate por WhatsApp.',
+    'Resumen emitido automáticamente por Jogo SaaS. Por consultas o transferencias, contactate por WhatsApp.',
     15,
     pageHeight - 10
   );
 
-  // Sanitizar nombre de archivo: Liquidacion_[Complejo]_[inicio]_al_[fin].pdf
   const safeName = complexName.replace(/[^a-zA-Z0-9_-]/g, '_');
-  const filename = `Liquidacion_${safeName}_${obligation.startDateStr}_al_${obligation.endDateStr}.pdf`;
+  const filename = `Resumen_Jogo_${safeName}_${obligation.startDateStr}_al_${obligation.endDateStr}.pdf`;
   doc.save(filename);
 }

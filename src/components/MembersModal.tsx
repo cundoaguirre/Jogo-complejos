@@ -17,6 +17,7 @@ import {
 import { 
   collection, 
   doc, 
+  getDoc,
   onSnapshot, 
   updateDoc, 
   deleteDoc, 
@@ -283,9 +284,38 @@ export const MembersModal: React.FC<MembersModalProps> = ({
     try {
       const targetUid = memberToDelete.uid;
 
-      // Delete from members subcollection
+      // 1. Delete from members subcollection
       const memberRef = doc(db, 'complejos', complexId, 'members', targetUid);
       await deleteDoc(memberRef);
+
+      // 2. Clean complexId from collaborators/{targetUid}
+      try {
+        const colabRef = doc(db, 'collaborators', targetUid);
+        const colabSnap = await getDoc(colabRef);
+        if (colabSnap.exists()) {
+          const data = colabSnap.data() || {};
+          const currentMemberships = Array.isArray(data.memberships) ? data.memberships : [];
+          const currentComplexIds = Array.isArray(data.complexIds)
+            ? data.complexIds
+            : currentMemberships.map((m: any) => m?.complexId).filter(Boolean);
+
+          const remainingMemberships = currentMemberships.filter((m: any) => m?.complexId !== complexId);
+          const remainingComplexIds = currentComplexIds.filter((id: string) => id && id !== complexId);
+
+          const nextActiveComplexId = remainingComplexIds.length > 0
+            ? (data.activeComplexId === complexId ? remainingComplexIds[0] : (data.activeComplexId || remainingComplexIds[0]))
+            : '';
+
+          await updateDoc(colabRef, {
+            memberships: remainingMemberships,
+            complexIds: remainingComplexIds,
+            activeComplexId: nextActiveComplexId,
+            updatedAt: serverTimestamp()
+          });
+        }
+      } catch (colabErr) {
+        console.warn('[MembersModal] Could not clean collaborators doc for removed member:', colabErr);
+      }
 
       setMemberToDelete(null);
     } catch (err: any) {
