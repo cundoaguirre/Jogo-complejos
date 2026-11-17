@@ -5,8 +5,7 @@ import {
   formatDDMM, 
   formatCurrencyARS, 
   downloadWeeklyBillingPdf,
-  getTrialActivationWhatsAppUrl,
-  markSessionNoticeDismissed
+  getTrialActivationWhatsAppUrl
 } from '../lib/weeklyBilling';
 import { downloadUnifiedWeeklyReportPdf } from '../lib/weeklyReportPdfGenerator';
 
@@ -58,23 +57,6 @@ export const BillingNoticeModal: React.FC<BillingNoticeModalProps> = ({
   );
 
   const handleDismiss = () => {
-    if (noticeType === 'trial') {
-      markSessionNoticeDismissed(complexId, 'trial');
-    } else if (resolvedTrack === 'subscription') {
-      if (noticeType === 'monday') {
-        markSessionNoticeDismissed(complexId, 'sub_monday');
-      } else if (obligation && (noticeType === 'tuesday' || noticeType === 'wednesday')) {
-        markSessionNoticeDismissed(complexId, obligation.id);
-      }
-    } else if (obligation) {
-      if (noticeType === 'tuesday') {
-        markSessionNoticeDismissed(complexId, obligation.id);
-      } else if (obligation.daysAfterDue === 0) {
-        markSessionNoticeDismissed(complexId, 'comm_monday');
-      } else {
-        markSessionNoticeDismissed(complexId, `comm_rem_${obligation.id}`);
-      }
-    }
     onClose();
   };
 

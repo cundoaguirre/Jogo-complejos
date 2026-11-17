@@ -11706,6 +11706,8 @@ export default function App() {
   const [showGlobalSupportModal, setShowGlobalSupportModal] = useState(false);
   const [showPersonalInfoModal, setShowPersonalInfoModal] = useState(false);
   const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
+  const [dismissedNoticeKey, setDismissedNoticeKey] = useState<string | null>(null);
+  const activeNoticeKeyRef = useRef<string | null>(null);
   const [isPayModalOpen, setIsPayModalOpen] = useState(false);
   const [isMembersModalOpen, setIsMembersModalOpen] = useState(false);
   const [welcomeCelebration, setWelcomeCelebration] = useState<{ userName: string; complexName: string } | null>(null);
@@ -11758,7 +11760,11 @@ export default function App() {
     if (showReportsModal) { setShowReportsModal(false); return true; }
     if (showGlobalSupportModal) { setShowGlobalSupportModal(false); return true; }
     if (showPersonalInfoModal) { setShowPersonalInfoModal(false); return true; }
-    if (isNoticeModalOpen) { setIsNoticeModalOpen(false); return true; }
+    if (isNoticeModalOpen) {
+      if (activeNoticeKeyRef.current) setDismissedNoticeKey(activeNoticeKeyRef.current);
+      setIsNoticeModalOpen(false);
+      return true;
+    }
     if (isPayModalOpen) { setIsPayModalOpen(false); return true; }
 
     // Nivel 1: Si está en otra pestaña (Agenda, Usuarios, Perfil), retrocede a Finanzas
@@ -12080,14 +12086,25 @@ export default function App() {
   // Estados de control para modales de aviso y pago
   const [payTargetObligation, setPayTargetObligation] = useState<WeeklyPaymentObligation | null>(null);
 
-  // Apertura reactiva del aviso correspondiente según regla de frecuencia
+  const activeNoticeKey = useMemo(() => {
+    if (!activeComplexId || !billingNoticeState.type || billingNoticeState.isBlockedByDebt) return null;
+    return `${activeComplexId}:${billingNoticeState.type}:${billingNoticeState.noticeTrack || 'none'}:${billingNoticeState.obligation?.id || 'trial'}`;
+  }, [activeComplexId, billingNoticeState.type, billingNoticeState.noticeTrack, billingNoticeState.obligation?.id, billingNoticeState.isBlockedByDebt]);
+
+  activeNoticeKeyRef.current = activeNoticeKey;
+
   useEffect(() => {
-    if (billingNoticeState.type && !billingNoticeState.isBlockedByDebt) {
+    setDismissedNoticeKey(null);
+  }, [activeComplexId, billingNoticeState.obligation?.id]);
+
+  // Apertura reactiva del aviso correspondiente según estado en memoria (sin storage)
+  useEffect(() => {
+    if (activeNoticeKey && dismissedNoticeKey !== activeNoticeKey) {
       setIsNoticeModalOpen(true);
     } else {
       setIsNoticeModalOpen(false);
     }
-  }, [billingNoticeState.type, billingNoticeState.noticeTrack, billingNoticeState.obligation?.id, billingNoticeState.isBlockedByDebt]);
+  }, [activeNoticeKey, dismissedNoticeKey]);
 
   const handleSidebarAction = (action: string) => {
     if (action === 'exposure') setShowExposureStats(true);
@@ -12949,7 +12966,12 @@ export default function App() {
       {/* Modal de Aviso (Plan Jogo / Turnos de Jogo / Fin de Prueba Gratuita) */}
       <BillingNoticeModal
         isOpen={isNoticeModalOpen}
-        onClose={() => setIsNoticeModalOpen(false)}
+        onClose={() => {
+          if (activeNoticeKey) {
+            setDismissedNoticeKey(activeNoticeKey);
+          }
+          setIsNoticeModalOpen(false);
+        }}
         noticeType={billingNoticeState.type}
         noticeTrack={billingNoticeState.noticeTrack}
         obligation={billingNoticeState.obligation}
