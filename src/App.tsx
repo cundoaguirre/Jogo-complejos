@@ -141,10 +141,9 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 }
 
 export function safeFormatDate(dateVal: any, formatStr: string, options?: any, fallback = '-'): string {
-  if (!dateVal) return fallback;
+  const d = safeParseDate(dateVal);
+  if (!d) return fallback;
   try {
-    const d = typeof dateVal === 'string' ? parseISO(dateVal) : (dateVal instanceof Date ? dateVal : new Date(dateVal));
-    if (isNaN(d.getTime())) return fallback;
     return format(d, formatStr, options);
   } catch (e) {
     return fallback;
@@ -154,10 +153,20 @@ export function safeFormatDate(dateVal: any, formatStr: string, options?: any, f
 export function safeParseDate(dateVal: any): Date | null {
   if (!dateVal) return null;
   try {
-    const d = typeof dateVal === 'string' ? parseISO(dateVal) : (dateVal instanceof Date ? dateVal : new Date(dateVal));
-    if (isNaN(d.getTime())) return null;
-    return d;
-  } catch (e) {
+    if (dateVal instanceof Date) return isNaN(dateVal.getTime()) ? null : dateVal;
+    if (typeof dateVal?.toDate === 'function') {
+      const d = dateVal.toDate();
+      return isNaN(d.getTime()) ? null : d;
+    }
+    if (typeof dateVal?.seconds === 'number') {
+      const d = new Date(dateVal.seconds * 1000);
+      return isNaN(d.getTime()) ? null : d;
+    }
+    const d = typeof dateVal === 'string' ? parseISO(dateVal) : new Date(dateVal);
+    if (!isNaN(d.getTime())) return d;
+    const fallback = new Date(dateVal);
+    return isNaN(fallback.getTime()) ? null : fallback;
+  } catch {
     return null;
   }
 }
@@ -2455,6 +2464,7 @@ const MatchDetailModal = ({
 
   if (!match) return null;
 
+  const isJogoCreated = Boolean(match?.createdSource === 'jogo' || (match as any)?.originalDoc?.createdSource === 'jogo');
   const now = new Date();
   const matchEnd = new Date(match.end_time);
   const isPast = now > matchEnd;
@@ -2476,7 +2486,7 @@ const MatchDetailModal = ({
       >
         <div className="bg-white p-6 text-gray-900 relative border-b border-gray-100">
           <div className="absolute top-4 right-4 flex items-center gap-1">
-            {onDeleteBooking && !isStaff && (
+            {onDeleteBooking && !isStaff && !isJogoCreated && (
               <button 
                 type="button" 
                 onClick={(e) => {
@@ -2836,7 +2846,7 @@ const MatchDetailModal = ({
           </div>
 
           <div className="flex gap-3 pt-4 border-t border-gray-100">
-            {onCancelBooking && (
+            {onCancelBooking && !isJogoCreated && (
               <button 
                 type="button"
                 onClick={() => onCancelBooking(match)}
@@ -3348,6 +3358,7 @@ const CreateMatchModal = ({
 
   if (!isOpen) return null;
 
+  const isJogoCreated = Boolean((initialData || data)?.createdSource === 'jogo' || (initialData as any)?.originalDoc?.createdSource === 'jogo');
   const selectedCourt = courts.find(c => String(c.id) === String(data.court_id)) || (courts.length > 0 ? courts[0] : null);
   const priceTotal = Number(selectedCourt?.price_per_hour ?? selectedCourt?.price ?? 0);
 
@@ -3827,7 +3838,7 @@ const CreateMatchModal = ({
                 </div>
 
                 <div className="flex items-center gap-1">
-                  {data.id && onDeleteBooking && !isStaff && (
+                  {data.id && onDeleteBooking && !isStaff && !isJogoCreated && (
                     <button 
                       type="button" 
                       onClick={() => onDeleteBooking(initialData || data)}
@@ -4088,7 +4099,7 @@ const CreateMatchModal = ({
 
             {/* Botones de Acción al Pie para Paso 1 */}
             <div className="flex items-center justify-between gap-2.5 px-4 sm:px-5 py-3 border-t border-gray-100 dark:border-slate-800 shrink-0 bg-white dark:bg-slate-900">
-              {data.id && (data.status !== 'cancelado' && data.status !== 'cancelled') && onCancelBooking ? (
+              {data.id && (data.status !== 'cancelado' && data.status !== 'cancelled') && onCancelBooking && !isJogoCreated ? (
                 <button 
                   type="button" 
                   onClick={() => onCancelBooking(initialData || data)}
@@ -8117,8 +8128,10 @@ function formatPaymentMethodName(method?: string): string {
   const m = method.toLowerCase().trim();
   if (m === 'cash' || m.includes('efectivo')) return 'Efectivo';
   if (m === 'transfer' || m.includes('transferencia') || m.includes('transf')) return 'Transferencia';
-  if (m === 'credit' || m.includes('tarjeta') || m.includes('crédito') || m.includes('credito') || m.includes('debito') || m.includes('débito')) return 'Tarjeta';
+  if (m === 'mercado_pago' || m === 'mercadopago' || m === 'mp') return 'Mercado Pago';
+  if (m === 'credit' || m === 'debit' || m === 'card' || m.includes('tarjeta') || m.includes('crédito') || m.includes('credito') || m.includes('debito') || m.includes('débito')) return 'Tarjeta';
   if (m === 'fiado' || m.includes('pendiente') || m === 'pending') return 'Pendiente';
+  if (m === 'mixed' || m === 'mixto') return 'Mixto';
   return method.charAt(0).toUpperCase() + method.slice(1);
 }
 
@@ -8406,9 +8419,7 @@ const FinanceView = ({
     });
 
     const parsedMovs = filteredMovs.map(m => {
-      const d = m.effectiveDate?.toDate 
-        ? m.effectiveDate.toDate() 
-        : (m.createdAt?.toDate ? m.createdAt.toDate() : (m.createdAt ? new Date(m.createdAt) : new Date()));
+      const d = safeParseDate(m.paidAt) || safeParseDate(m.effectiveDate) || safeParseDate(m.createdAt) || safeParseDate((m as any).updatedAt) || new Date();
       return { ...m, _parsedDate: d };
     });
 
@@ -8451,8 +8462,15 @@ const FinanceView = ({
       if (firstM.ticketCode) processedMovOperationIds.add(firstM.ticketCode);
 
       const totalAmount = g.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-      const rawMethods = g.items.map(item => formatPaymentMethodName(item.paymentMethod));
-      const uniqueMethods = Array.from(new Set(rawMethods));
+      const rawMethods = g.items.flatMap((item: any) => {
+        if (item.paymentMethod === 'mixed' && Array.isArray(item.paymentLines) && item.paymentLines.length > 0) {
+          const nonZero = item.paymentLines.filter((l: any) => Number(l?.amount || 0) > 0);
+          const lines = nonZero.length > 0 ? nonZero : item.paymentLines;
+          return lines.map((l: any) => formatPaymentMethodName(l.method || l.paymentMethod));
+        }
+        return [formatPaymentMethodName(item.paymentMethod)];
+      });
+      const uniqueMethods = Array.from(new Set(rawMethods.filter(Boolean)));
       const combinedPaymentMethod = uniqueMethods.join(' + ') || 'Efectivo';
 
       const linkedDoc = (firstM.operationId ? operationsMap.get(firstM.operationId) : null) ||
@@ -8495,9 +8513,12 @@ const FinanceView = ({
       if (op.ticketCode) processedMovOperationIds.add(op.ticketCode);
 
       const isExp = Boolean((op as any).isExpense || op.operationType === 'expense' || op.operationType === 'purchase' || op.metadata?.isExpense);
-      const d = op.createdAt?.toDate ? op.createdAt.toDate() : (op.createdAt ? new Date(op.createdAt) : new Date());
+      const d = safeParseDate((op as any).paidAt) || safeParseDate((op as any).effectiveDate) || safeParseDate(op.createdAt) || safeParseDate(op.updatedAt) || new Date();
       const linkedDoc = (op.bookingId ? bookingsMap.get(String(op.bookingId)) : null) || bookingsMap.get(op.id.replace('-booking', ''));
       const resolvedName = resolveClientName(op, users, linkedDoc);
+      const opPaymentMethod = (op as any).paymentMethod === 'mixed' && Array.isArray((op as any).paymentLines) && (op as any).paymentLines.length > 0
+        ? Array.from(new Set((op as any).paymentLines.map((l: any) => formatPaymentMethodName(l.method || l.paymentMethod)).filter(Boolean))).join(' + ') || 'Efectivo'
+        : formatPaymentMethodName((op as any).paymentMethod);
 
       list.push({
         id: `${op.id}_mov_auto`,
@@ -8505,11 +8526,12 @@ const FinanceView = ({
         flow: isExp ? 'expense' : 'income',
         category: isExp ? 'Pago Gasto' : (op.operationType === 'court_booking' || op.operationType === 'booking' ? 'Cobro Alquiler Cancha' : 'Cobro Venta Mostrador'),
         amount: collected,
-        paymentMethod: (op as any).paymentMethod || 'Efectivo',
+        paymentMethod: opPaymentMethod,
         responsibleName: resolvedName,
         operationId: op.id,
         ticketCode: op.ticketCode || op.id.slice(0, 8).toUpperCase(),
-        notes: op.notes || 'Cobro registrado'
+        notes: op.notes || 'Cobro registrado',
+        originalDoc: op
       });
     });
 
@@ -8528,7 +8550,7 @@ const FinanceView = ({
         return;
       }
 
-      const d = t.createdAt?.toDate ? t.createdAt.toDate() : (t.date ? safeParseDate(t.date) || new Date() : new Date());
+      const d = safeParseDate(t.paidAt) || safeParseDate(t.createdAt) || safeParseDate(t.date) || new Date();
       const isVenta = t.type === 'venta' || t.type === 'income';
       const isGasto = t.type === 'expense' || t.type === 'gasto' || t.type === 'egreso' || t.type === 'purchase' || t.type === 'compra';
       const flow: 'income' | 'expense' = isGasto ? 'expense' : 'income';
@@ -8664,7 +8686,7 @@ const FinanceView = ({
 
       const d = bookingDateRaw
         ? (safeParseDate(bookingDateRaw + 'T12:00:00') || safeParseDate(bookingDateRaw) || new Date())
-        : (op.createdAt?.toDate ? op.createdAt.toDate() : (op.createdAt ? new Date(op.createdAt) : new Date()));
+        : (safeParseDate((op as any).paidAt) || safeParseDate((op as any).effectiveDate) || safeParseDate(op.createdAt) || safeParseDate(op.updatedAt) || new Date());
 
       let concept = 'Venta Mostrador';
       if (op.operationType === 'court_booking' || op.operationType === 'booking') concept = op.notes || 'Alquiler de Cancha';
@@ -8723,7 +8745,7 @@ const FinanceView = ({
 
       if (processedOpIds.has(t.id) || processedLegacyIds.has(t.id)) return;
 
-      const d = t.createdAt?.toDate ? t.createdAt.toDate() : (t.date ? safeParseDate(t.date) || new Date() : new Date());
+      const d = safeParseDate(t.paidAt) || safeParseDate(t.createdAt) || safeParseDate(t.date) || new Date();
       const isGasto = t.type === 'expense' || t.type === 'gasto' || t.type === 'egreso' || t.type === 'purchase' || t.type === 'compra';
       const tot = Number(t.total ?? t.amount ?? 0);
       
@@ -9050,6 +9072,8 @@ const FinanceView = ({
         flow: m.flow,
         category: m.category,
         amount: m.amount,
+        paymentMethod: m.originalDoc?.paymentMethod || m.paymentMethod,
+        paymentLines: m.originalDoc?.paymentLines,
         operationId: m.operationId
       }))
     });
@@ -9079,6 +9103,8 @@ const FinanceView = ({
         flow: m.flow,
         category: m.category,
         amount: m.amount,
+        paymentMethod: m.originalDoc?.paymentMethod || m.paymentMethod,
+        paymentLines: m.originalDoc?.paymentLines,
         operationId: m.operationId
       }))
     });
@@ -9207,7 +9233,7 @@ const FinanceView = ({
 
     if (activeSection === 'movements') {
       filteredCombinedMovements.forEach(m => {
-        const d = m.date instanceof Date ? m.date : new Date(m.date);
+        const d = safeParseDate(m.date) || new Date();
         const { key, label } = formatTimelineGroupDate(d);
         if (!groupMap.has(key)) {
           const groupObj = { key, label, items: [] };
@@ -9255,7 +9281,7 @@ const FinanceView = ({
       });
     } else {
       filteredCombinedOperations.forEach(op => {
-        const d = op.date instanceof Date ? op.date : new Date(op.date);
+        const d = safeParseDate(op.date) || new Date();
         const { key, label } = formatTimelineGroupDate(d);
         if (!groupMap.has(key)) {
           const groupObj = { key, label, items: [] };

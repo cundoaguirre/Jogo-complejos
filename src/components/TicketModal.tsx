@@ -269,10 +269,18 @@ export const TicketModal: React.FC<TicketModalProps> = ({
     };
 
     if (effectiveMovements.length > 0) {
-      return effectiveMovements.map(m => ({
-        method: formatPaymentMethod(m.paymentMethod),
-        amount: Number(m.amount || 0)
-      }));
+      return effectiveMovements.flatMap((m: any) => {
+        if (m.paymentMethod === 'mixed' && Array.isArray(m.paymentLines) && m.paymentLines.length > 0) {
+          return m.paymentLines.map((l: any) => ({
+            method: formatPaymentMethod(l.method || l.paymentMethod),
+            amount: Number(l.amount || 0)
+          }));
+        }
+        return [{
+          method: formatPaymentMethod(m.paymentMethod),
+          amount: Number(m.amount || 0)
+        }];
+      });
     }
 
     if (Array.isArray((operation as any).payments) && (operation as any).payments.length > 0) {

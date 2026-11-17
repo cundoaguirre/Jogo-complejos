@@ -99,6 +99,130 @@ export function cleanFirestoreDocument<T extends Record<string, any>>(obj: T): T
   return result;
 }
 
+function formatMethodLabel(method?: string): string {
+  const m = String(method || '').toLowerCase().trim();
+  if (m === 'transfer' || m.includes('transf')) return 'Transferencia';
+  if (m === 'mercado_pago' || m === 'mercadopago' || m === 'mp') return 'Mercado Pago';
+  if (
+    m === 'debit' ||
+    m === 'credit' ||
+    m === 'card' ||
+    m.includes('tarj') ||
+    m.includes('débit') ||
+    m.includes('debit') ||
+    m.includes('crédit') ||
+    m.includes('credit')
+  ) {
+    return 'Tarjeta';
+  }
+  if (m === 'other' || m === 'otro') return 'Otro';
+  return 'Efectivo';
+}
+
+function buildSingleMovementPayload(params: {
+  payments: Array<{ amount: number; paymentMethod?: FinancialPaymentMethod | string; method?: string; notes?: string }>;
+  complexId: string;
+  operationId?: string | null;
+  ticketCode: string;
+  flow: FinancialMovementFlow;
+  category: FinancialMovementCategory;
+  responsibleName: string;
+  userId?: string | null;
+  userPhone?: string;
+  bookingId?: string | null;
+  operatorId: string;
+  notes?: string;
+  idempotencyKey: string;
+  clearedCurrentAccountDebt?: number;
+  expenseCategoryId?: string | null;
+  expenseCategoryName?: string | null;
+  expenseConceptId?: string | null;
+  expenseConceptName?: string | null;
+  entityId?: string | null;
+  entityName?: string | null;
+  entityType?: string | null;
+}): {
+  movId: string;
+  totalAmount: number;
+  paymentMethod: FinancialPaymentMethod;
+  movDocData: FinancialMovementDocument;
+} | null {
+  const realPayments = (Array.isArray(params.payments) ? params.payments : [])
+    .map(p => ({
+      amount: Math.max(0, Number(p?.amount) || 0),
+      paymentMethod: (p?.paymentMethod || p?.method || 'cash') as FinancialPaymentMethod,
+      notes: p?.notes
+    }))
+    .filter(p => {
+      const m = String(p.paymentMethod || '').toLowerCase().trim();
+      return p.amount > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado' && m !== 'cuenta corriente';
+    });
+
+  if (realPayments.length === 0) {
+    return null;
+  }
+
+  const totalAmount = realPayments.reduce((sum, p) => sum + Number(p.amount), 0);
+  const paymentMethod: FinancialPaymentMethod = realPayments.length === 1
+    ? realPayments[0].paymentMethod
+    : 'mixed';
+  const paymentLines = realPayments.map(p => ({
+    method: formatMethodLabel(p.paymentMethod),
+    paymentMethod: p.paymentMethod,
+    amount: Number(p.amount)
+  }));
+
+  const nowIso = new Date().toISOString();
+  const movId = generateUUID();
+  const cleanUserId = params.userId && String(params.userId).trim() !== '' && String(params.userId) !== '0'
+    ? String(params.userId).trim()
+    : null;
+  const cleanName = params.responsibleName || 'NN';
+  const cleanPhone = params.userPhone || '';
+  const resolvedNotes = params.notes || (realPayments.length === 1 ? realPayments[0].notes : '') || '';
+
+  const movDocData: FinancialMovementDocument = {
+    id: movId,
+    complexId: params.complexId,
+    complejoId: params.complexId,
+    operationId: params.operationId ?? null,
+    ...(params.bookingId ? { bookingId: String(params.bookingId) } : {}),
+    ticketCode: params.ticketCode,
+    idempotencyKey: params.idempotencyKey,
+    flow: params.flow,
+    category: params.category,
+    amount: totalAmount,
+    paymentMethod,
+    paymentLines,
+    effectiveDate: nowIso,
+    userId: cleanUserId,
+    clientId: cleanUserId,
+    responsibleName: cleanName,
+    userName: cleanName,
+    clientName: cleanName,
+    userPhone: cleanPhone,
+    clientPhone: cleanPhone,
+    clearedCurrentAccountDebt: Number(params.clearedCurrentAccountDebt || 0),
+    ...(params.expenseCategoryId !== undefined ? { expenseCategoryId: params.expenseCategoryId } : {}),
+    ...(params.expenseCategoryName !== undefined ? { expenseCategoryName: params.expenseCategoryName } : {}),
+    ...(params.expenseConceptId !== undefined ? { expenseConceptId: params.expenseConceptId } : {}),
+    ...(params.expenseConceptName !== undefined ? { expenseConceptName: params.expenseConceptName } : {}),
+    ...(params.entityId !== undefined ? { entityId: params.entityId } : {}),
+    ...(params.entityName !== undefined ? { entityName: params.entityName } : {}),
+    ...(params.entityType !== undefined ? { entityType: params.entityType as any } : {}),
+    notes: resolvedNotes,
+    operatorId: params.operatorId || 'pos_operator',
+    createdAt: nowIso
+  };
+
+  return {
+    movId,
+    totalAmount,
+    paymentMethod,
+    movDocData
+  };
+}
+
 /**
  * Calculates duration in minutes between two "HH:mm" strings
  */
@@ -1154,67 +1278,49 @@ export async function createBookingInFirestore(data: {
         createdBy: auth.currentUser?.uid || payload.ownerId || 'pos_operator'
       });
 
-      const rawPayments: Array<{ amount: number; paymentMethod: FinancialPaymentMethod; notes?: string }> = 
-        ((Array.isArray(data.payments) && data.payments.length > 0)
+      const rawPayments: Array<{ amount: number; paymentMethod: FinancialPaymentMethod; notes?: string }> =
+        (Array.isArray(data.payments) && data.payments.length > 0)
           ? data.payments
-          : (deposit > 0 ? [{ amount: deposit, paymentMethod: (data.paymentMethod as FinancialPaymentMethod) || 'cash' }] : [])
-        ).filter((pay: any) => {
-          const m = String(pay?.paymentMethod || pay?.method || '').toLowerCase();
-          const amt = Number(pay?.amount || 0);
-          return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado';
-        });
+          : (deposit > 0 ? [{ amount: deposit, paymentMethod: (data.paymentMethod as FinancialPaymentMethod) || 'cash' }] : []);
 
-      rawPayments.forEach((pay, idx) => {
-        const pAmt = Number(pay.amount) || 0;
-        if (pAmt > 0) {
-          const movId = generateUUID();
-          const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
-          const movCategory: FinancialMovementCategory = deposit >= price ? 'booking_settlement' : 'booking_deposit';
-          const idemKey = `booking_dep_${newBookingId}_${idx}`;
-
-          transaction.set(movRef, {
-            id: movId,
-            complexId: targetComplexId,
-            complejoId: targetComplexId,
-            operationId: `${newBookingId}-booking`,
-            bookingId: newBookingId,
-            ticketCode,
-            idempotencyKey: idemKey,
-            flow: 'income',
-            category: movCategory,
-            amount: pAmt,
-            paymentMethod: pay.paymentMethod || 'cash',
-            effectiveDate: serverTimestamp(),
-            userId: bookingClientId,
-            clientId: bookingClientId,
-            responsibleName: resolvedUserName,
-            userName: resolvedUserName,
-            clientName: resolvedUserName,
-            userPhone: bookingPhone,
-            clientPhone: bookingPhone,
-            clearedCurrentAccountDebt: 0,
-            notes: pay.notes || `Cobro reserva ${resolvedCourtName} ${data.date} ${startTime} (${pay.paymentMethod || 'cash'})`,
-            operatorId: auth.currentUser?.uid || payload.ownerId || 'pos_operator',
-            createdAt: serverTimestamp()
-          });
-
-          const idemRef = doc(db, IDEMPOTENCY_COLLECTION, idemKey);
-          transaction.set(idemRef, {
-            idempotencyKey: idemKey,
-            complexId: targetComplexId,
-            complejoId: targetComplexId,
-            operationId: `${newBookingId}-booking`,
-            bookingId: newBookingId,
-            amount: pAmt,
-            paymentMethod: pay.paymentMethod || 'cash',
-            flow: 'income',
-            status: 'completed',
-            movementId: movId,
-            createdAt: serverTimestamp(),
-            completedAt: serverTimestamp()
-          });
-        }
+      const movCategory: FinancialMovementCategory = deposit >= price ? 'booking_settlement' : 'booking_deposit';
+      const idemKey = `booking_dep_${newBookingId}`;
+      const built = buildSingleMovementPayload({
+        payments: rawPayments,
+        complexId: targetComplexId,
+        operationId: `${newBookingId}-booking`,
+        bookingId: newBookingId,
+        ticketCode,
+        flow: 'income',
+        category: movCategory,
+        responsibleName: resolvedUserName,
+        userId: bookingClientId,
+        userPhone: bookingPhone,
+        operatorId: auth.currentUser?.uid || payload.ownerId || 'pos_operator',
+        notes: payload.notes || `Cobro reserva ${resolvedCourtName} ${data.date} ${startTime}`,
+        idempotencyKey: idemKey
       });
+
+      if (built) {
+        const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, built.movId);
+        transaction.set(movRef, built.movDocData);
+
+        const idemRef = doc(db, IDEMPOTENCY_COLLECTION, idemKey);
+        transaction.set(idemRef, {
+          idempotencyKey: idemKey,
+          complexId: targetComplexId,
+          complejoId: targetComplexId,
+          operationId: `${newBookingId}-booking`,
+          bookingId: newBookingId,
+          amount: built.totalAmount,
+          paymentMethod: built.paymentMethod,
+          flow: 'income',
+          status: 'completed',
+          movementId: built.movId,
+          createdAt: serverTimestamp(),
+          completedAt: serverTimestamp()
+        });
+      }
     }
   });
 
@@ -1284,6 +1390,9 @@ export async function updateBookingInFirestore(
 
       // If cancelling: release from lock and update booking
       if (isCancelled) {
+        if (curr.createdSource === 'jogo') {
+          throw new Error('Las reservas generadas por Jogo no pueden cancelarse ni eliminarse desde el complejo.');
+        }
         for (let i = 0; i < oldAffectedCourts.length; i++) {
           const snap = oldLockSnaps[i];
           if (snap.exists()) {
@@ -1386,12 +1495,24 @@ export async function updateBookingInFirestore(
   } else {
     // Pure metadata update (e.g. payment, deposit, notes)
     const sanitizedPatch: Record<string, any> = { ...patch };
-    if (sanitizedPatch.createdSource !== undefined && sanitizedPatch.createdSource !== 'jogo') {
+    const isCancelPatch =
+      sanitizedPatch.status === 'cancelado' ||
+      sanitizedPatch.status === 'cancelled' ||
+      sanitizedPatch.paymentStatus === 'cancelled' ||
+      sanitizedPatch.payment_status === 'cancelled';
+
+    if (isCancelPatch || (sanitizedPatch.createdSource !== undefined && sanitizedPatch.createdSource !== 'jogo')) {
       const existingSnap = await getDoc(docRef);
-      if (existingSnap.exists() && existingSnap.data()?.createdSource === 'jogo') {
-        sanitizedPatch.createdSource = 'jogo';
-      } else {
-        sanitizedPatch.createdSource = 'complejo';
+      const existingData = existingSnap.exists() ? existingSnap.data() : null;
+      if (isCancelPatch && existingData?.createdSource === 'jogo') {
+        throw new Error('Las reservas generadas por Jogo no pueden cancelarse ni eliminarse desde el complejo.');
+      }
+      if (sanitizedPatch.createdSource !== undefined && sanitizedPatch.createdSource !== 'jogo') {
+        if (existingData?.createdSource === 'jogo') {
+          sanitizedPatch.createdSource = 'jogo';
+        } else {
+          sanitizedPatch.createdSource = 'complejo';
+        }
       }
     }
     await updateDoc(docRef, cleanFirestoreDocument({
@@ -1460,6 +1581,9 @@ export async function permanentlyDeleteBookingInFirestore(bookingId: string | nu
   }
   
   const bData = bookingSnap.data();
+  if (bData?.createdSource === 'jogo') {
+    throw new Error('Las reservas generadas por Jogo no pueden cancelarse ni eliminarse desde el complejo.');
+  }
   const userId = bData.userId || bData.host_id || null;
   const targetComplexId = bData.complejoId || bData.complexId || 'B';
   const courtId = String(bData.courtId || bData.court_id || 'c_1');
@@ -3064,58 +3188,33 @@ export async function executeExpenseOperation(params: {
       updatedAt: serverTimestamp()
     }, { merge: true });
 
-    // 4. Crear movimientos financieros en /financial_movements por cada pago efectivamente desembolsado
-    for (let i = 0; i < validPayments.length; i++) {
-      const pay = validPayments[i];
-      const pAmt = Number(pay.amount);
-      const movId = generateUUID();
-      const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
-      const movDocData: FinancialMovementDocument = {
-        id: movId,
-        complexId: targetId,
-        complejoId: targetId,
-        operationId,
-        ticketCode,
-        idempotencyKey: `${idemKey}_pay_${i}`,
-        flow: 'expense',
-        category: 'expense_payment',
-        amount: pAmt,
-        paymentMethod: pay.paymentMethod,
-        effectiveDate: serverTimestamp(),
-        responsibleName: cleanSupplier,
-        userName: cleanSupplier,
-        clientName: cleanSupplier,
-        clearedCurrentAccountDebt: 0,
-        expenseCategoryId: params.categoryId || null,
-        expenseCategoryName: cleanCategory,
-        expenseConceptId: params.conceptId || null,
-        expenseConceptName: cleanConcept,
-        entityId: params.entityId || null,
-        entityName: params.entityName || null,
-        entityType: (params.entityType as any) || null,
-        notes: pay.notes || `Pago gasto: ${cleanConcept} (${pay.paymentMethod})`,
-        operatorId: params.operatorId,
-        createdAt: serverTimestamp()
-      };
-      t.set(movRef, movDocData);
+    // 4. Crear movimiento financiero único en /financial_movements por los pagos efectivamente desembolsados
+    const builtExpenseMov = buildSingleMovementPayload({
+      payments: validPayments,
+      complexId: targetId,
+      operationId,
+      ticketCode,
+      flow: 'expense',
+      category: 'expense_payment',
+      responsibleName: cleanSupplier,
+      operatorId: params.operatorId,
+      notes: params.notes || `Pago gasto: ${cleanConcept}`,
+      idempotencyKey: idemKey,
+      expenseCategoryId: params.categoryId || null,
+      expenseCategoryName: cleanCategory,
+      expenseConceptId: params.conceptId || null,
+      expenseConceptName: cleanConcept,
+      entityId: params.entityId || null,
+      entityName: params.entityName || null,
+      entityType: params.entityType || null
+    });
 
-      const pIdemRef = doc(db, IDEMPOTENCY_COLLECTION, `${idemKey}_pay_${i}`);
-      t.set(pIdemRef, {
-        idempotencyKey: `${idemKey}_pay_${i}`,
-        complexId: targetId,
-        complejoId: targetId,
-        operationId,
-        amount: pAmt,
-        paymentMethod: pay.paymentMethod,
-        flow: 'expense',
-        status: 'completed',
-        movementId: movId,
-        createdAt: serverTimestamp(),
-        completedAt: serverTimestamp()
-      });
+    if (builtExpenseMov) {
+      const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtExpenseMov.movId);
+      t.set(movRef, builtExpenseMov.movDocData);
     }
 
-    // 5. Clave de idempotencia principal
+    // 5. Clave de idempotencia única por acto de pago/operación
     t.set(idemRef, {
       idempotencyKey: idemKey,
       complexId: targetId,
@@ -3123,9 +3222,10 @@ export async function executeExpenseOperation(params: {
       operationId,
       ticketCode,
       amount,
-      paymentMethod: validPayments[0]?.paymentMethod || 'cash',
+      paymentMethod: builtExpenseMov?.paymentMethod || 'cash',
       flow: 'expense',
       status: 'completed',
+      movementId: builtExpenseMov?.movId || null,
       createdAt: serverTimestamp(),
       completedAt: serverTimestamp()
     });
@@ -3710,70 +3810,43 @@ export async function registerMerchandisePurchaseInFirestore(params: {
       createdAt: serverTimestamp()
     });
 
-    // 5. Crear movimientos financieros en /financial_movements
-    for (let i = 0; i < rawPayments.length; i++) {
-      const pay = rawPayments[i];
-      const pAmt = Math.max(0, Number(pay.amount) || 0);
-      if (pAmt > 0) {
-        const movId = generateUUID();
-        const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
-        const movDocData: FinancialMovementDocument = {
-          id: movId,
-          complexId: targetId,
-          complejoId: targetId,
-          operationId,
-          ticketCode,
-          idempotencyKey: pay.idempotencyKey || `${idemKey}_pay_${i}`,
-          flow: 'expense',
-          category: 'expense_payment',
-          amount: pAmt,
-          paymentMethod: pay.paymentMethod,
-          effectiveDate: serverTimestamp(),
-          responsibleName: cleanPurchasePlace,
-          userName: cleanPurchasePlace,
-          clientName: cleanPurchasePlace,
-          clearedCurrentAccountDebt: 0,
-          expenseCategoryId: cleanExpenseCategoryId,
-          expenseCategoryName: cleanExpenseCategory || null,
-          expenseConceptId: cleanExpenseConceptId,
-          expenseConceptName: cleanPurchasePlace,
-          entityId: cleanEntityId,
-          entityName: cleanEntityName,
-          entityType: cleanEntityType as any,
-          notes: pay.notes || `Pago compra mercadería (${pay.paymentMethod}) · ${cleanPurchasePlace}${cleanExpenseCategory ? ` · ${cleanExpenseCategory}` : ''}`,
-          operatorId: params.operatorId || 'administrador',
-          createdAt: serverTimestamp()
-        };
-        t.set(movRef, movDocData);
+    // 5. Crear movimiento financiero único en /financial_movements
+    const builtPurchaseMov = buildSingleMovementPayload({
+      payments: rawPayments,
+      complexId: targetId,
+      operationId,
+      ticketCode,
+      flow: 'expense',
+      category: 'expense_payment',
+      responsibleName: cleanPurchasePlace,
+      operatorId: params.operatorId || 'administrador',
+      notes: params.notes || `Pago compra mercadería · ${cleanPurchasePlace}${cleanExpenseCategory ? ` · ${cleanExpenseCategory}` : ''}`,
+      idempotencyKey: idemKey,
+      expenseCategoryId: cleanExpenseCategoryId,
+      expenseCategoryName: cleanExpenseCategory || null,
+      expenseConceptId: cleanExpenseConceptId,
+      expenseConceptName: cleanPurchasePlace,
+      entityId: cleanEntityId,
+      entityName: cleanEntityName,
+      entityType: cleanEntityType
+    });
 
-        const pIdemRef = doc(db, IDEMPOTENCY_COLLECTION, movDocData.idempotencyKey);
-        t.set(pIdemRef, {
-          idempotencyKey: movDocData.idempotencyKey,
-          complexId: targetId,
-          complejoId: targetId,
-          operationId,
-          amount: pAmt,
-          paymentMethod: pay.paymentMethod,
-          flow: 'expense',
-          status: 'completed',
-          movementId: movId,
-          ticketCode,
-          createdAt: serverTimestamp(),
-          completedAt: serverTimestamp()
-        });
-      }
+    if (builtPurchaseMov) {
+      const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtPurchaseMov.movId);
+      t.set(movRef, builtPurchaseMov.movDocData);
     }
 
-    // 6. Idempotencia de la compra
+    // 6. Idempotencia única de la compra
     t.set(idemRef, {
       idempotencyKey: idemKey,
       complexId: targetId,
       complejoId: targetId,
       operationId,
       amount: totalPurchase,
-      paymentMethod: rawPayments[0]?.paymentMethod || 'cash',
+      paymentMethod: builtPurchaseMov?.paymentMethod || 'cash',
       flow: 'expense',
       status: 'completed',
+      movementId: builtPurchaseMov?.movId || null,
       ticketCode,
       createdAt: serverTimestamp(),
       completedAt: serverTimestamp()
@@ -4185,10 +4258,14 @@ export async function createOperationWithInitialPayment(
       if (pSnap.exists()) {
         const existingPIdem = pSnap.data() as IdempotencyRecord;
         if (existingPIdem.status === 'completed') {
+          const expectedAmt = existingPIdem.paymentMethod === 'mixed'
+            ? rawPayments.reduce((s, p) => s + Math.max(0, Number(p.amount) || 0), 0)
+            : Number(pItem.amount);
+          const expectedMethod = existingPIdem.paymentMethod === 'mixed' ? 'mixed' : pItem.paymentMethod;
           if (
             existingPIdem.complexId === params.complexId &&
-            Math.abs(Number(existingPIdem.amount) - Number(pItem.amount)) < 0.01 &&
-            existingPIdem.paymentMethod === pItem.paymentMethod
+            Math.abs(Number(existingPIdem.amount) - expectedAmt) < 0.01 &&
+            existingPIdem.paymentMethod === expectedMethod
           ) {
             return {
               success: true,
@@ -4339,68 +4416,37 @@ export async function createOperationWithInitialPayment(
     };
     t.set(opRef, opDocData);
 
-    // 3.3 Crear movimientos financieros y registros de idempotencia para cobros reales
+    // 3.3 Crear movimiento financiero único y registro único de idempotencia para cobros reales
+    let movementCategory: FinancialMovementCategory = 'sale_collection';
+    if (params.operationType === 'court_booking') {
+      movementCategory = balances.paymentStatus === 'paid' ? 'booking_settlement' : 'booking_deposit';
+    }
+    const singleIdemKey = params.idempotencyKey || rawPayments[0]?.idempotencyKey || `${operationId}_mov`;
+
+    const builtOpMov = buildSingleMovementPayload({
+      payments: rawPayments,
+      complexId: params.complexId,
+      operationId,
+      bookingId: params.bookingId || null,
+      ticketCode,
+      flow: 'income',
+      category: movementCategory,
+      responsibleName: resolvedUserName,
+      userId: effectiveUserId,
+      userPhone: resolvedUserPhone,
+      operatorId: params.operatorId,
+      notes: params.notes || '',
+      idempotencyKey: singleIdemKey
+    });
+
     const createdMovementIds: string[] = [];
-    for (let i = 0; i < rawPayments.length; i++) {
-      const payment = rawPayments[i];
-      const payAmt = Math.max(0, Number(payment.amount) || 0);
-      if (payAmt > 0) {
-        const movId = generateUUID();
-        createdMovementIds.push(movId);
-        const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
-        let movementCategory: FinancialMovementCategory = 'sale_collection';
-        if (params.operationType === 'court_booking') {
-          movementCategory = balances.paymentStatus === 'paid' ? 'booking_settlement' : 'booking_deposit';
-        }
-
-        const movDocData: FinancialMovementDocument = {
-          id: movId,
-          complexId: params.complexId,
-          complejoId: params.complexId,
-          operationId,
-          ...(params.bookingId ? { bookingId: params.bookingId } : {}),
-          ticketCode,
-          idempotencyKey: payment.idempotencyKey || `${params.idempotencyKey || operationId}_pay_${i}`,
-          flow: 'income',
-          category: movementCategory,
-          amount: payAmt,
-          paymentMethod: payment.paymentMethod,
-          effectiveDate: serverTimestamp(),
-          userId: effectiveUserId,
-          clientId: effectiveUserId,
-          responsibleName: resolvedUserName,
-          userName: resolvedUserName,
-          clientName: resolvedUserName,
-          userPhone: resolvedUserPhone,
-          clientPhone: resolvedUserPhone,
-          clearedCurrentAccountDebt: 0,
-          notes: payment.notes || params.notes || '',
-          operatorId: params.operatorId,
-          createdAt: serverTimestamp()
-        };
-        t.set(movRef, movDocData);
-
-        if (payment.idempotencyKey) {
-          const pIdemRef = doc(db, IDEMPOTENCY_COLLECTION, payment.idempotencyKey);
-          t.set(pIdemRef, {
-            idempotencyKey: payment.idempotencyKey,
-            complexId: params.complexId,
-            complejoId: params.complexId,
-            operationId,
-            amount: payAmt,
-            paymentMethod: payment.paymentMethod,
-            flow: 'income',
-            status: 'completed',
-            movementId: movId,
-            ticketCode,
-            createdAt: serverTimestamp(),
-            completedAt: serverTimestamp()
-          });
-        }
-      }
+    if (builtOpMov) {
+      createdMovementIds.push(builtOpMov.movId);
+      const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtOpMov.movId);
+      t.set(movRef, builtOpMov.movDocData);
     }
 
-    // Registro de idempotencia a nivel operación
+    // Registro único de idempotencia por operación/acto de pago apuntando al movId único
     if (opIdemRef && params.idempotencyKey) {
       t.set(opIdemRef, {
         idempotencyKey: params.idempotencyKey,
@@ -4408,13 +4454,29 @@ export async function createOperationWithInitialPayment(
         complejoId: params.complexId,
         operationId,
         amount: balances.contractualAmount,
-        paymentMethod: rawPayments[0]?.paymentMethod || 'efectivo',
+        paymentMethod: builtOpMov?.paymentMethod || 'efectivo',
         flow: 'income',
         status: 'completed',
-        movementId: createdMovementIds[0] || null,
+        movementId: builtOpMov?.movId || null,
         ticketCode,
         paymentStatus: balances.paymentStatus,
         currentAccountDebtAmount,
+        createdAt: serverTimestamp(),
+        completedAt: serverTimestamp()
+      });
+    } else if (builtOpMov && rawPayments[0]?.idempotencyKey) {
+      const pIdemRef = doc(db, IDEMPOTENCY_COLLECTION, rawPayments[0].idempotencyKey);
+      t.set(pIdemRef, {
+        idempotencyKey: rawPayments[0].idempotencyKey,
+        complexId: params.complexId,
+        complejoId: params.complexId,
+        operationId,
+        amount: builtOpMov.totalAmount,
+        paymentMethod: builtOpMov.paymentMethod,
+        flow: 'income',
+        status: 'completed',
+        movementId: builtOpMov.movId,
+        ticketCode,
         createdAt: serverTimestamp(),
         completedAt: serverTimestamp()
       });
@@ -4627,33 +4689,29 @@ export async function registerOperationPayment(
       (isExpense ? 'expense_payment' : (opData.operationType === 'court_booking' ? 'booking_settlement' : 'sale_collection'));
 
     // --- FASE 3: ESCRITURAS ATÓMICAS (DESPUÉS DE TODAS LAS LECTURAS) ---
-    // 3.1 Registrar movimiento financiero
-    const movementId = generateUUID();
-    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movementId);
-    const movDocData: FinancialMovementDocument = {
-      id: movementId,
+    // 3.1 Registrar movimiento financiero único
+    const builtPayMov = buildSingleMovementPayload({
+      payments: [{ amount: params.amount, paymentMethod: params.paymentMethod }],
       complexId: params.complexId,
       operationId: params.operationId,
+      bookingId: opData.bookingId || null,
       ticketCode: opData.ticketCode,
-      idempotencyKey: params.idempotencyKey,
       flow: movementFlow,
       category,
-      amount: params.amount,
-      paymentMethod: params.paymentMethod,
-      effectiveDate: serverTimestamp(),
-      userId: opData.userId || opData.clientId || null,
-      clientId: opData.clientId || opData.userId || null,
       responsibleName: opData.userName || opData.clientName || 'NN',
-      userName: opData.userName || opData.clientName || 'NN',
-      clientName: opData.clientName || opData.userName || 'NN',
+      userId: opData.userId || opData.clientId || null,
       userPhone: opData.userPhone || opData.clientPhone || '',
-      clientPhone: opData.clientPhone || opData.userPhone || '',
       clearedCurrentAccountDebt: clearedDebt,
       notes: params.notes || '',
       operatorId: params.operatorId,
-      createdAt: serverTimestamp()
-    };
-    t.set(movRef, movDocData);
+      idempotencyKey: params.idempotencyKey
+    });
+    if (!builtPayMov) {
+      throw new Error('El importe a cobrar debe ser mayor a 0.');
+    }
+    const movementId = builtPayMov.movId;
+    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movementId);
+    t.set(movRef, builtPayMov.movDocData);
 
     // 3.2 Registrar clave de idempotencia completada
     t.set(idemRef, {
@@ -4661,7 +4719,7 @@ export async function registerOperationPayment(
       complexId: params.complexId,
       operationId: params.operationId,
       amount: params.amount,
-      paymentMethod: params.paymentMethod,
+      paymentMethod: builtPayMov.paymentMethod,
       flow: movementFlow,
       status: 'completed',
       movementId,
@@ -4809,27 +4867,27 @@ export async function registerHistoricalDebtPayment(
     }, { merge: true });
 
     // 3.2 Crear movimiento financiero con categoría canónica 'historical_debt_payment' y operationId = null
-    const movementId = generateUUID();
-    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movementId);
-    const movDocData: FinancialMovementDocument = {
-      id: movementId,
+    const builtHistMov = buildSingleMovementPayload({
+      payments: [{ amount: settle.clearedAmount, paymentMethod: params.paymentMethod }],
       complexId: params.complexId,
-      operationId: null, // Sin operación ficticia
+      operationId: null,
       ticketCode,
-      idempotencyKey: params.idempotencyKey,
       flow: 'income',
-      category: 'historical_debt_payment', // Categoría canónica unificada
-      amount: settle.clearedAmount,
-      paymentMethod: params.paymentMethod,
-      effectiveDate: serverTimestamp(),
-      userId: params.userId,
+      category: 'historical_debt_payment',
       responsibleName: userData.name || userData.clientName || 'Cliente',
+      userId: params.userId,
+      userPhone: userData.phone || '',
       clearedCurrentAccountDebt: settle.clearedAmount,
       notes: params.notes || 'Abono directo a cuenta corriente histórica',
       operatorId: params.operatorId,
-      createdAt: serverTimestamp()
-    };
-    t.set(movRef, movDocData);
+      idempotencyKey: params.idempotencyKey
+    });
+    if (!builtHistMov) {
+      throw new Error('El importe del abono debe ser mayor a 0.');
+    }
+    const movementId = builtHistMov.movId;
+    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movementId);
+    t.set(movRef, builtHistMov.movDocData);
 
     // 3.3 Registrar clave de idempotencia completada
     t.set(idemRef, {
@@ -4837,7 +4895,7 @@ export async function registerHistoricalDebtPayment(
       complexId: params.complexId,
       operationId: null,
       amount: settle.clearedAmount,
-      paymentMethod: params.paymentMethod,
+      paymentMethod: builtHistMov.paymentMethod,
       flow: 'income',
       status: 'completed',
       movementId,
@@ -4890,6 +4948,9 @@ export async function cancelOperationWithSettlement(
     const idemSnap = idemRef ? await t.get(idemRef) : null;
 
     // --- FASE 2: VALIDACIONES Y CÁLCULOS DETERMINISTAS ---
+    if ((opData as any)?.createdSource === 'jogo' || (bookingSnap && bookingSnap.exists() && bookingSnap.data()?.createdSource === 'jogo')) {
+      throw new Error('Las reservas generadas por Jogo no pueden cancelarse ni eliminarse desde el complejo.');
+    }
     if (opData.complexId !== params.complexId) {
       throw new Error('La operación no pertenece al complejo activo.');
     }
@@ -5431,28 +5492,36 @@ export async function registerOperationPaymentsBatch(params: {
     notes?: string;
   }>;
   notes?: string;
+  idempotencyKey?: string;
 }): Promise<PaymentRegistrationResult> {
-  const totalAmount = params.payments.reduce((s, p) => s + (Math.max(0, Number(p.amount) || 0)), 0);
-  if (totalAmount <= 0) {
+  const realPayments = (Array.isArray(params.payments) ? params.payments : []).filter(p => {
+    const m = String(p?.paymentMethod || (p as any)?.method || '').toLowerCase().trim();
+    const amt = Math.max(0, Number(p?.amount) || 0);
+    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado' && m !== 'cuenta corriente';
+  });
+
+  const totalAmount = realPayments.reduce((s, p) => s + (Math.max(0, Number(p.amount) || 0)), 0);
+  if (totalAmount <= 0 || realPayments.length === 0) {
     throw new Error('El importe total a cobrar debe ser mayor a 0.');
   }
 
-  // Si es un solo método, ejecutar registerOperationPayment estándar
-  if (params.payments.length === 1) {
-    const single = params.payments[0];
+  // Si es un solo método real, ejecutar registerOperationPayment estándar
+  if (realPayments.length === 1) {
+    const single = realPayments[0];
     return await registerOperationPayment({
       complexId: params.complexId,
       operationId: params.operationId,
       amount: single.amount,
       paymentMethod: single.paymentMethod,
-      idempotencyKey: single.idempotencyKey,
+      idempotencyKey: params.idempotencyKey || single.idempotencyKey,
       operatorId: params.operatorId,
       notes: single.notes || params.notes
     });
   }
 
-  // Para pagos divididos sobre la misma operación, ejecutar atómicamente en una transacción
+  // Para pagos divididos sobre la misma operación, ejecutar atómicamente en una transacción generando 1 único movimiento
   const opRef = doc(db, OPERATIONS_COLLECTION, params.operationId);
+  const batchIdemKey = params.idempotencyKey || realPayments[0].idempotencyKey;
 
   return await runTransaction(db, async (t) => {
     // 1. Lecturas
@@ -5468,9 +5537,11 @@ export async function registerOperationPaymentsBatch(params: {
     if (userRef) await t.get(userRef);
     if (bookingRef) await t.get(bookingRef);
 
-    // Lectura de idempotencia para cada pago
+    // Lectura de idempotencia del acto de cobro
     const idemSnaps = await Promise.all(
-      params.payments.map(p => t.get(doc(db, IDEMPOTENCY_COLLECTION, p.idempotencyKey)))
+      [batchIdemKey, ...realPayments.map(p => p.idempotencyKey)]
+        .filter((k, idx, arr) => Boolean(k) && arr.indexOf(k) === idx)
+        .map(k => t.get(doc(db, IDEMPOTENCY_COLLECTION, k)))
     );
 
     // 2. Validaciones
@@ -5484,13 +5555,13 @@ export async function registerOperationPaymentsBatch(params: {
       throw new Error('La operación ya se encuentra totalmente saldada.');
     }
 
-    // Si algún pago ya fue completado, detectar idempotencia
-    const allCompleted = idemSnaps.every(s => s.exists() && (s.data() as IdempotencyRecord).status === 'completed');
-    if (allCompleted) {
+    // Si el acto de cobro ya fue completado, detectar idempotencia
+    const completedSnap = idemSnaps.find(s => s.exists() && (s.data() as IdempotencyRecord).status === 'completed');
+    if (completedSnap) {
       return {
         success: true,
         operationId: params.operationId,
-        movementId: (idemSnaps[0]?.data() as IdempotencyRecord)?.movementId || null,
+        movementId: (completedSnap.data() as IdempotencyRecord)?.movementId || null,
         ticketCode: opData.ticketCode,
         paymentStatus: opData.paymentStatus,
         amountPending: opData.amountPending,
@@ -5524,57 +5595,45 @@ export async function registerOperationPaymentsBatch(params: {
     const movementFlow: 'income' | 'expense' = isExpense ? 'expense' : 'income';
     const category: FinancialMovementCategory = isExpense ? 'expense_payment' : (opData.operationType === 'court_booking' ? 'booking_settlement' : 'sale_collection');
 
-    // 3. Escrituras
-    const createdMovementIds: string[] = [];
-    for (let i = 0; i < params.payments.length; i++) {
-      const p = params.payments[i];
-      const pAmt = Math.max(0, Number(p.amount) || 0);
-      if (pAmt > 0) {
-        const movId = generateUUID();
-        createdMovementIds.push(movId);
-        const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
-        const movDocData: FinancialMovementDocument = {
-          id: movId,
-          complexId: params.complexId,
-          complejoId: params.complexId,
-          operationId: params.operationId,
-          ticketCode: opData.ticketCode,
-          idempotencyKey: p.idempotencyKey,
-          flow: movementFlow,
-          category,
-          amount: pAmt,
-          paymentMethod: p.paymentMethod,
-          effectiveDate: serverTimestamp(),
-          userId: opData.userId || opData.clientId || null,
-          clientId: opData.clientId || opData.userId || null,
-          responsibleName: opData.userName || opData.clientName || 'NN',
-          userName: opData.userName || opData.clientName || 'NN',
-          clientName: opData.clientName || opData.userName || 'NN',
-          userPhone: opData.userPhone || opData.clientPhone || '',
-          clientPhone: opData.clientPhone || opData.userPhone || '',
-          clearedCurrentAccountDebt: 0, // se descuenta del total consolidado
-          notes: p.notes || params.notes || '',
-          operatorId: params.operatorId,
-          createdAt: serverTimestamp()
-        };
-        t.set(movRef, movDocData);
+    // 3. Escrituras: 1 ÚNICO documento en /financial_movements y 1 registro de idempotencia
+    const builtBatchMov = buildSingleMovementPayload({
+      payments: realPayments,
+      complexId: params.complexId,
+      operationId: params.operationId,
+      bookingId: opData.bookingId || null,
+      ticketCode: opData.ticketCode,
+      flow: movementFlow,
+      category,
+      responsibleName: opData.userName || opData.clientName || 'NN',
+      userId: opData.userId || opData.clientId || null,
+      userPhone: opData.userPhone || opData.clientPhone || '',
+      clearedCurrentAccountDebt: clearedDebt,
+      notes: params.notes || '',
+      operatorId: params.operatorId,
+      idempotencyKey: batchIdemKey
+    });
 
-        const pIdemRef = doc(db, IDEMPOTENCY_COLLECTION, p.idempotencyKey);
-        t.set(pIdemRef, {
-          idempotencyKey: p.idempotencyKey,
-          complexId: params.complexId,
-          complejoId: params.complexId,
-          operationId: params.operationId,
-          amount: pAmt,
-          paymentMethod: p.paymentMethod,
-          flow: movementFlow,
-          status: 'completed',
-          movementId: movId,
-          createdAt: serverTimestamp(),
-          completedAt: serverTimestamp()
-        });
-      }
+    if (!builtBatchMov) {
+      throw new Error('El importe total a cobrar debe ser mayor a 0.');
     }
+
+    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtBatchMov.movId);
+    t.set(movRef, builtBatchMov.movDocData);
+
+    const pIdemRef = doc(db, IDEMPOTENCY_COLLECTION, batchIdemKey);
+    t.set(pIdemRef, {
+      idempotencyKey: batchIdemKey,
+      complexId: params.complexId,
+      complejoId: params.complexId,
+      operationId: params.operationId,
+      amount: builtBatchMov.totalAmount,
+      paymentMethod: builtBatchMov.paymentMethod,
+      flow: movementFlow,
+      status: 'completed',
+      movementId: builtBatchMov.movId,
+      createdAt: serverTimestamp(),
+      completedAt: serverTimestamp()
+    });
 
     // Actualizar operación
     t.update(opRef, {
@@ -5608,7 +5667,7 @@ export async function registerOperationPaymentsBatch(params: {
     return {
       success: true,
       operationId: params.operationId,
-      movementId: createdMovementIds[0] || null,
+      movementId: builtBatchMov.movId,
       ticketCode: opData.ticketCode,
       paymentStatus: balances.paymentStatus,
       amountPending: balances.amountPending,
@@ -5620,7 +5679,7 @@ export async function registerOperationPaymentsBatch(params: {
 
 /**
  * Liquida cobros sobre transacciones históricas (/transactions) o reservas virtuales
- * registrando los movimientos financieros individuales en /financial_movements y actualizando
+ * registrando un único movimiento financiero en /financial_movements y actualizando
  * el estado y la deuda de los clientes de forma atómica y consistente.
  */
 export async function settleLegacyOrVirtualDebt(params: {
@@ -5641,8 +5700,14 @@ export async function settleLegacyOrVirtualDebt(params: {
   notes?: string;
   isExpense?: boolean;
 }): Promise<void> {
-  const totalAmount = params.payments.reduce((s, p) => s + (Math.max(0, Number(p.amount) || 0)), 0);
-  if (totalAmount <= 0) {
+  const realPayments = (Array.isArray(params.payments) ? params.payments : []).filter(p => {
+    const m = String(p?.paymentMethod || (p as any)?.method || '').toLowerCase().trim();
+    const amt = Math.max(0, Number(p?.amount) || 0);
+    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado' && m !== 'cuenta corriente';
+  });
+
+  const totalAmount = realPayments.reduce((s, p) => s + (Math.max(0, Number(p.amount) || 0)), 0);
+  if (totalAmount <= 0 || realPayments.length === 0) {
     throw new Error(params.isExpense ? 'El importe a pagar debe ser mayor a 0.' : 'El importe a cobrar debe ser mayor a 0.');
   }
 
@@ -5651,54 +5716,43 @@ export async function settleLegacyOrVirtualDebt(params: {
   const settleClientId = (params.userId && String(params.userId) !== '0') ? String(params.userId) : null;
   const isExp = Boolean(params.isExpense);
   const movFlow: 'income' | 'expense' = isExp ? 'expense' : 'income';
+  const category: FinancialMovementCategory = isExp
+    ? 'expense_payment'
+    : (params.bookingId ? 'booking_settlement' : 'historical_debt_payment');
+  const settleIdemKey = realPayments[0].idempotencyKey;
 
-  // 1. Registrar movimientos financieros para cada pago
-  for (const p of params.payments) {
-    const pAmt = Number(p.amount) || 0;
-    if (pAmt <= 0) continue;
+  // 1. Registrar 1 único movimiento financiero y 1 registro de idempotencia
+  const builtSettleMov = buildSingleMovementPayload({
+    payments: realPayments,
+    complexId: params.complexId,
+    operationId: params.operationId,
+    bookingId: params.bookingId || null,
+    ticketCode: params.ticketCode || params.operationId.slice(0, 8),
+    flow: movFlow,
+    category,
+    responsibleName: resolvedSettleName,
+    userId: settleClientId,
+    userPhone: resolvedSettlePhone,
+    notes: params.notes || (isExp ? 'Pago saldo pendiente proveedor' : 'Cobro saldo pendiente'),
+    operatorId: params.operatorId,
+    idempotencyKey: settleIdemKey
+  });
 
-    const movId = generateUUID();
-    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
-    const category: FinancialMovementCategory = isExp 
-      ? 'expense_payment' 
-      : (params.bookingId ? 'booking_settlement' : 'historical_debt_payment');
+  if (builtSettleMov) {
+    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtSettleMov.movId);
+    await setDoc(movRef, builtSettleMov.movDocData);
 
-    await setDoc(movRef, {
-      id: movId,
-      complexId: params.complexId,
-      complejoId: params.complexId,
-      operationId: params.operationId,
-      ticketCode: params.ticketCode || params.operationId.slice(0, 8),
-      idempotencyKey: p.idempotencyKey,
-      flow: movFlow,
-      category,
-      amount: pAmt,
-      paymentMethod: p.paymentMethod,
-      effectiveDate: serverTimestamp(),
-      userId: settleClientId,
-      clientId: settleClientId,
-      responsibleName: resolvedSettleName,
-      userName: resolvedSettleName,
-      clientName: resolvedSettleName,
-      userPhone: resolvedSettlePhone,
-      clientPhone: resolvedSettlePhone,
-      notes: p.notes || params.notes || (isExp ? 'Pago saldo pendiente proveedor' : 'Cobro saldo pendiente'),
-      operatorId: params.operatorId,
-      createdAt: serverTimestamp()
-    });
-
-    // Registrar idempotencia
-    const idemRef = doc(db, IDEMPOTENCY_COLLECTION, p.idempotencyKey);
+    const idemRef = doc(db, IDEMPOTENCY_COLLECTION, settleIdemKey);
     await setDoc(idemRef, {
-      idempotencyKey: p.idempotencyKey,
+      idempotencyKey: settleIdemKey,
       complexId: params.complexId,
       complejoId: params.complexId,
       operationId: params.operationId,
-      amount: pAmt,
-      paymentMethod: p.paymentMethod,
+      amount: builtSettleMov.totalAmount,
+      paymentMethod: builtSettleMov.paymentMethod,
       flow: movFlow,
       status: 'completed',
-      movementId: movId,
+      movementId: builtSettleMov.movId,
       createdAt: serverTimestamp(),
       completedAt: serverTimestamp()
     });
@@ -5846,11 +5900,9 @@ export async function registerBookingPaymentInFirestore(params: {
     const paymentStatusEs = isFullyPaid ? 'pagado' : 'seña';
     const paymentStatusEn = isFullyPaid ? 'paid' : 'partial';
 
-    // Generar movimiento financiero independiente
-    const movId = generateUUID();
-    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
-    const ticketCode = (opSnap.exists() && opSnap.data()?.ticketCode) 
-      ? opSnap.data().ticketCode 
+    // Generar movimiento financiero único mediante helper unificado
+    const ticketCode = (opSnap.exists() && opSnap.data()?.ticketCode)
+      ? opSnap.data().ticketCode
       : `B-${strBookingId.slice(0, 6).toUpperCase()}`;
 
     const movCategory: FinancialMovementCategory = isFullyPaid ? 'booking_settlement' : 'booking_deposit';
@@ -5859,33 +5911,32 @@ export async function registerBookingPaymentInFirestore(params: {
     const resolvedBookingPhone = resolveClientPhone(bData, null, opSnap.exists() ? opSnap.data() : null);
     const bookingClientId = bData.userId || bData.host_id || (opSnap.exists() ? opSnap.data().userId : null) || null;
 
-    // 2. Escrituras atómicas
-    // 2.1 Movimiento financiero en /financial_movements
-    t.set(movRef, {
-      id: movId,
+    const builtBookingPayMov = buildSingleMovementPayload({
+      payments: [{ amount: payAmt, paymentMethod: params.paymentMethod || 'cash' }],
       complexId: targetComplexId,
-      complejoId: targetComplexId,
       operationId: `${strBookingId}-booking`,
       bookingId: strBookingId,
       ticketCode,
-      idempotencyKey: idemKey,
       flow: 'income',
       category: movCategory,
-      amount: payAmt,
-      paymentMethod: params.paymentMethod || 'cash',
-      effectiveDate: serverTimestamp(),
-      userId: bookingClientId,
-      clientId: bookingClientId,
       responsibleName: resolvedBookingClient,
-      userName: resolvedBookingClient,
-      clientName: resolvedBookingClient,
+      userId: bookingClientId,
       userPhone: resolvedBookingPhone,
-      clientPhone: resolvedBookingPhone,
-      clearedCurrentAccountDebt: 0,
       notes: params.notes || `Cobro seña/saldo reserva ${bData.courtName || bData.court_name || 'Cancha'}`,
       operatorId: params.operatorId || 'pos_operator',
-      createdAt: serverTimestamp()
+      idempotencyKey: idemKey
     });
+
+    if (!builtBookingPayMov) {
+      throw new Error('El importe a cobrar debe ser mayor a $0.');
+    }
+
+    const movId = builtBookingPayMov.movId;
+    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
+
+    // 2. Escrituras atómicas
+    // 2.1 Movimiento financiero en /financial_movements
+    t.set(movRef, builtBookingPayMov.movDocData);
 
     // 2.2 Registro de idempotencia
     t.set(idemRef, {
@@ -5895,7 +5946,7 @@ export async function registerBookingPaymentInFirestore(params: {
       operationId: `${strBookingId}-booking`,
       bookingId: strBookingId,
       amount: payAmt,
-      paymentMethod: params.paymentMethod || 'cash',
+      paymentMethod: builtBookingPayMov.paymentMethod,
       flow: 'income',
       status: 'completed',
       movementId: movId,
@@ -5994,6 +6045,9 @@ export async function cancelBookingWithPolicy(
     }
 
     const bData = bSnap.data();
+    if (bData?.createdSource === 'jogo') {
+      throw new Error('Las reservas generadas por Jogo no pueden cancelarse ni eliminarse desde el complejo.');
+    }
     const isAlreadyCancelled = bData.status === 'cancelado' || bData.status === 'cancelled';
 
     // Idempotencia

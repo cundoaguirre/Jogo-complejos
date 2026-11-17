@@ -333,6 +333,11 @@ export interface ComplexFinancialSummary {
   cashOutflows: number;
   cashAvailable: number;
   cashBalance: number;
+  cashByMethod: {
+    Efectivo: number;
+    Transferencia: number;
+    Tarjeta: number;
+  };
   pendingToCollect: number;
   pendingToPay: number;
 }
@@ -359,6 +364,11 @@ export interface UnifiedFinancialMovementInput {
   flow: 'income' | 'expense';
   category?: string;
   amount: number;
+  paymentMethod?: FinancialPaymentMethod | string;
+  paymentLines?: Array<{
+    method: FinancialPaymentMethod | string;
+    amount: number;
+  }>;
   operationId?: string | null;
   bookingId?: string | number | null;
   status?: string;
@@ -448,11 +458,36 @@ export function computeComplexFinancialSummary(params: {
   let cashOutflows = 0;
   let totalRefunds = 0;
   let totalCollectedIncome = 0;
+  const cashByMethod = {
+    Efectivo: 0,
+    Transferencia: 0,
+    Tarjeta: 0
+  };
+
+  const resolveArqueoBucket = (rawMethod?: string): keyof typeof cashByMethod => {
+    const m = String(rawMethod || '').toLowerCase().trim();
+    if (m === 'transfer' || m.includes('transf')) return 'Transferencia';
+    if (
+      m === 'credit' ||
+      m === 'debit' ||
+      m === 'mercado_pago' ||
+      m === 'mercadopago' ||
+      m.includes('tarj') ||
+      m.includes('credit') ||
+      m.includes('crédit') ||
+      m.includes('debit') ||
+      m.includes('débit')
+    ) {
+      return 'Tarjeta';
+    }
+    return 'Efectivo';
+  };
 
   for (const mov of complexMovs) {
     const amt = Math.max(0, Number(mov.amount) || 0);
     const cat = String(mov.category || '').toLowerCase();
     const isRefund = cat.includes('reintegro') || cat.includes('refund') || cat.includes('devolución') || cat.includes('devolucion');
+    const sign = mov.flow === 'expense' ? -1 : 1;
 
     if (mov.flow === 'income') {
       cashInflows += amt;
@@ -462,6 +497,19 @@ export function computeComplexFinancialSummary(params: {
       if (isRefund) {
         totalRefunds += amt;
       }
+    }
+
+    if (mov.paymentMethod === 'mixed' && Array.isArray(mov.paymentLines) && mov.paymentLines.length > 0) {
+      for (const line of mov.paymentLines) {
+        const lineAmt = Math.max(0, Number(line?.amount) || 0);
+        if (lineAmt > 0) {
+          const bucket = resolveArqueoBucket(line?.method);
+          cashByMethod[bucket] += sign * lineAmt;
+        }
+      }
+    } else if (amt > 0) {
+      const bucket = resolveArqueoBucket(mov.paymentMethod);
+      cashByMethod[bucket] += sign * amt;
     }
   }
 
@@ -486,6 +534,7 @@ export function computeComplexFinancialSummary(params: {
     cashOutflows,
     cashAvailable,
     cashBalance: cashAvailable,
+    cashByMethod,
     pendingToCollect,
     pendingToPay
   };

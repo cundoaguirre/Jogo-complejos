@@ -189,6 +189,13 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
       (operation as any)?.status === 'cancelled'
     )
   );
+  const isJogoBooking = Boolean(
+    isBooking && (
+      associatedBooking?.createdSource === 'jogo' ||
+      (operation as any)?.originalDoc?.createdSource === 'jogo' ||
+      (operation as any)?.createdSource === 'jogo'
+    )
+  );
 
   // Block color & hex
   // Mostrador: #1d63b8 | Gastos/Compras: #7c12e8 | Reservas: #129D44
@@ -449,17 +456,28 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
     );
 
     // Format movement methods for receipt
-    const formattedMovements = effectiveMovements.map(m => {
+    const formatReceiptMethod = (raw?: string) => {
       let mLabel = 'Efectivo';
-      const rawM = (m.paymentMethod || '').toLowerCase();
+      const rawM = (raw || '').toLowerCase();
       if (rawM.includes('transf')) mLabel = 'Transferencia';
-      else if (rawM.includes('tarj') || rawM.includes('credit') || rawM.includes('debit')) mLabel = 'Tarjeta';
+      else if (rawM.includes('tarj') || rawM.includes('credit') || rawM.includes('debit') || rawM.includes('débit')) mLabel = 'Tarjeta';
       else if (rawM.includes('fiado') || rawM.includes('pend')) mLabel = 'Cuenta Corriente';
-      return {
-        method: mLabel,
+      return mLabel;
+    };
+
+    const formattedMovements = effectiveMovements.flatMap((m: any) => {
+      if (m.paymentMethod === 'mixed' && Array.isArray(m.paymentLines) && m.paymentLines.length > 0) {
+        return m.paymentLines.map((l: any) => ({
+          method: formatReceiptMethod(l.method || l.paymentMethod),
+          date: (m as any).date || m.createdAt,
+          amount: Number(l.amount || 0)
+        }));
+      }
+      return [{
+        method: formatReceiptMethod(m.paymentMethod),
         date: (m as any).date || m.createdAt,
         amount: Number(m.amount || 0)
-      };
+      }];
     });
 
     const ticketData: TicketImageData = {
@@ -591,7 +609,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                               <span>Editar reserva</span>
                             </button>
                           )}
-                          {!isStaff && (
+                          {!isStaff && !isJogoBooking && (
                             <button
                               type="button"
                               onClick={() => {

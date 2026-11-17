@@ -424,7 +424,7 @@ export type OperationPaymentStatus =
 
 export type FinancialMovementFlow = 'income' | 'expense';
 
-export type FinancialPaymentMethod = 'cash' | 'transfer' | 'debit' | 'credit' | 'mercado_pago' | 'other';
+export type FinancialPaymentMethod = 'cash' | 'transfer' | 'debit' | 'credit' | 'mercado_pago' | 'other' | 'mixed';
 
 export type FinancialMovementCategory = 
   | 'sale_collection'
@@ -508,7 +508,13 @@ export interface FinancialMovementDocument {
   category: FinancialMovementCategory;
   amount: number;                     // Monto positivo estricto (> 0)
   paymentMethod: FinancialPaymentMethod;
+  paymentLines?: Array<{
+    method: FinancialPaymentMethod | string;
+    paymentMethod?: FinancialPaymentMethod | string;
+    amount: number;
+  }>;
   effectiveDate: any;                 // Fecha real en que se produjo el movimiento en caja
+  paidAt?: any;
 
   userId?: string | null;
   clientId?: string | null;

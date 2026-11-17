@@ -1208,7 +1208,7 @@ export function evaluateBillingNoticeState(
       const subTarget = [...unpaidSubDueOrGrace].sort((a, b) => b.daysAfterDue - a.daysAfterDue)[0];
       if (subTarget) {
         if (subTarget.daysAfterDue === 0) {
-          if (!isDailyNoticeDismissed(complexId, 'sub_monday', todayStr)) {
+          if (!isSessionNoticeDismissed(complexId, 'sub_monday', todayStr)) {
             result.type = 'monday';
             result.noticeTrack = 'subscription';
             result.obligation = subTarget;
@@ -1238,7 +1238,7 @@ export function evaluateBillingNoticeState(
       const commTarget = [...unpaidCommissions].sort((a, b) => b.startDateStr.localeCompare(a.startDateStr))[0];
       if (commTarget) {
         if (commTarget.daysAfterDue === 0) {
-          if (!isDailyNoticeDismissed(complexId, 'comm_monday', todayStr)) {
+          if (!isSessionNoticeDismissed(complexId, 'comm_monday', todayStr)) {
             result.type = 'monday';
             result.noticeTrack = 'commission';
             result.obligation = commTarget;
@@ -1252,7 +1252,7 @@ export function evaluateBillingNoticeState(
             return result;
           }
         } else if (commTarget.daysAfterDue >= 3) {
-          if (!isDailyNoticeDismissed(complexId, `comm_rem_${commTarget.id}`, todayStr)) {
+          if (!isSessionNoticeDismissed(complexId, `comm_rem_${commTarget.id}`, todayStr)) {
             result.type = 'monday';
             result.noticeTrack = 'commission';
             result.obligation = commTarget;
@@ -1284,7 +1284,7 @@ export function evaluateBillingNoticeState(
 
         // Últimos 3 días: quedan 3, 2 o 1 día
         if (daysLeft >= 1 && daysLeft <= 3) {
-          if (!isDailyNoticeDismissed(complexId, 'trial', todayStr)) {
+          if (!isSessionNoticeDismissed(complexId, 'trial', todayStr)) {
             result.type = 'trial';
             result.noticeTrack = null;
             result.trialDaysRemaining = daysLeft;
