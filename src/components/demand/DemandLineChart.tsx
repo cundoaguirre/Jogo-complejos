@@ -1,0 +1,384 @@
+import React, { useMemo, useRef, useState } from 'react';
+import { ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import {
+  DAYS_OF_WEEK,
+  computeNiceYAxis,
+  type ChartAxisMode,
+  type ChartPoint,
+} from './demandAnalytics';
+
+interface DemandLineChartProps {
+  chartAxisMode: ChartAxisMode;
+  onChangeAxisMode: (mode: ChartAxisMode) => void;
+  hourRows: number[];
+  hourTotals: Map<number, number>;
+  hourRevenues: Map<number, number>;
+  dayTotals: Map<number, number>;
+  dayRevenues: Map<number, number>;
+  selectedPoint: number | null;
+  onSelectPoint: (idx: number | null) => void;
+}
+
+const ZOOM_STEPS = [1, 1.6, 2.4, 3.2];
+
+export const DemandLineChart: React.FC<DemandLineChartProps> = ({
+  chartAxisMode,
+  onChangeAxisMode,
+  hourRows,
+  hourTotals,
+  hourRevenues,
+  dayTotals,
+  dayRevenues,
+  selectedPoint,
+  onSelectPoint,
+}) => {
+  const [zoomIdx, setZoomIdx] = useState(0);
+  const chartAreaRef = useRef<HTMLDivElement>(null);
+  const zoomScale = ZOOM_STEPS[zoomIdx];
+
+  const { chartPoints, yAxis, linePath, areaPath } = useMemo(() => {
+    const pts: ChartPoint[] =
+      chartAxisMode === 'hour'
+        ? hourRows.map((h) => ({
+            key: `h_${h}`,
+            shortLabel: String(h % 24).padStart(2, '0'),
+            fullLabel: `${String(h % 24).padStart(2, '0')}:00 hs`,
+            count: hourTotals.get(h) || 0,
+            revenue: hourRevenues.get(h) || 0,
+          }))
+        : DAYS_OF_WEEK.map((d) => ({
+            key: `d_${d.key}`,
+            shortLabel: d.label,
+            fullLabel: d.full,
+            count: dayTotals.get(d.key) || 0,
+            revenue: dayRevenues.get(d.key) || 0,
+          }));
+
+    const maxVal = pts.reduce((m, p) => (p.count > m ? p.count : m), 0);
+    const axis = computeNiceYAxis(maxVal);
+
+    const n = pts.length;
+    const coords = pts.map((p, idx) => {
+      const x = n > 0 ? ((idx + 0.5) / n) * 1000 : 500;
+      const ratio = axis.maxTick > 0 ? p.count / axis.maxTick : 0;
+      const y = 94 - Math.min(1, Math.max(0, ratio)) * 88;
+      return { x, y };
+    });
+
+    const line =
+      coords.length > 0
+        ? coords
+            .map(
+              (pt, i) =>
+                `${i === 0 ? 'M' : 'L'} ${pt.x.toFixed(2)} ${pt.y.toFixed(2)}`
+            )
+            .join(' ')
+        : '';
+
+    const area =
+      coords.length > 0
+        ? `${line} L ${coords[coords.length - 1].x.toFixed(2)} 94 L ${coords[0].x.toFixed(2)} 94 Z`
+        : '';
+
+    return { chartPoints: pts, yAxis: axis, linePath: line, areaPath: area };
+  }, [
+    chartAxisMode,
+    hourRows,
+    hourTotals,
+    hourRevenues,
+    dayTotals,
+    dayRevenues,
+  ]);
+
+  const updateActivePointFromClientX = (clientX: number) => {
+    if (!chartAreaRef.current || chartPoints.length === 0) return;
+    const rect = chartAreaRef.current.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const relX = Math.min(rect.width - 0.01, Math.max(0, clientX - rect.left));
+    const idx = Math.min(
+      chartPoints.length - 1,
+      Math.max(0, Math.floor((relX / rect.width) * chartPoints.length))
+    );
+    onSelectPoint(idx);
+  };
+
+  const activePoint =
+    selectedPoint !== null && chartPoints[selectedPoint]
+      ? chartPoints[selectedPoint]
+      : null;
+
+  const activePointLayout = useMemo(() => {
+    if (selectedPoint === null || !activePoint || chartPoints.length === 0) {
+      return null;
+    }
+    const xPct = ((selectedPoint + 0.5) / chartPoints.length) * 100;
+    const ratio =
+      yAxis.maxTick > 0
+        ? Math.min(1, Math.max(0, activePoint.count / yAxis.maxTick))
+        : 0;
+    const yPct = 94 - ratio * 88;
+
+    const horizontalStyle: React.CSSProperties =
+      xPct < 24
+        ? { left: `${Math.max(1, xPct)}%`, transform: 'translateX(0)' }
+        : xPct > 76
+        ? { right: `${Math.max(1, 100 - xPct)}%`, transform: 'translateX(0)' }
+        : { left: `${xPct}%`, transform: 'translateX(-50%)' };
+
+    const verticalStyle: React.CSSProperties =
+      yPct < 36
+        ? { top: `${Math.min(78, yPct + 11)}%` }
+        : { bottom: `${Math.min(76, 100 - yPct + 9)}%` };
+
+    return { ...horizontalStyle, ...verticalStyle };
+  }, [selectedPoint, activePoint, chartPoints.length, yAxis.maxTick]);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <h4 className="text-xs font-medium text-gray-500 dark:text-slate-400">
+          Reservas
+        </h4>
+
+        <div className="flex items-center gap-1.5">
+          <div className="inline-flex items-center rounded-xl bg-slate-100 dark:bg-slate-800 p-0.5 text-slate-600 dark:text-slate-300">
+            <button
+              type="button"
+              disabled={zoomIdx === 0}
+              onClick={(e) => {
+                e.stopPropagation();
+                setZoomIdx((z) => Math.max(0, z - 1));
+              }}
+              aria-label="Alejar zoom"
+              className="p-1 rounded-lg disabled:opacity-35 hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-pointer"
+            >
+              <ZoomOut size={13} />
+            </button>
+            <button
+              type="button"
+              disabled={zoomIdx === ZOOM_STEPS.length - 1}
+              onClick={(e) => {
+                e.stopPropagation();
+                setZoomIdx((z) => Math.min(ZOOM_STEPS.length - 1, z + 1));
+              }}
+              aria-label="Acercar zoom"
+              className="p-1 rounded-lg disabled:opacity-35 hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-pointer"
+            >
+              <ZoomIn size={13} />
+            </button>
+            {zoomIdx > 0 && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setZoomIdx(0);
+                }}
+                aria-label="Restablecer zoom"
+                className="p-1 rounded-lg hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-pointer"
+              >
+                <RotateCcw size={12} />
+              </button>
+            )}
+          </div>
+
+          <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-0.5 text-[11px] font-bold">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onChangeAxisMode('hour');
+                onSelectPoint(null);
+                setZoomIdx(0);
+              }}
+              className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                chartAxisMode === 'hour'
+                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
+                  : 'text-slate-500'
+              }`}
+            >
+              Por horario
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onChangeAxisMode('day');
+                onSelectPoint(null);
+                setZoomIdx(0);
+              }}
+              className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                chartAxisMode === 'day'
+                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
+                  : 'text-slate-500'
+              }`}
+            >
+              Por día
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex gap-2">
+        <div className="flex flex-col justify-between text-[10px] font-mono text-slate-400 py-1 pr-1 text-right min-w-[26px] h-36">
+          {yAxis.ticks.map((t) => (
+            <span key={t}>{t}</span>
+          ))}
+        </div>
+        <div className="flex-1 overflow-x-auto">
+          <div style={{ width: `${zoomScale * 100}%` }}>
+            <div
+              ref={chartAreaRef}
+              className="relative h-36 border-b border-l border-slate-200 dark:border-slate-800 touch-pan-y select-none"
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                updateActivePointFromClientX(e.clientX);
+              }}
+              onTouchMove={(e) => {
+                if (e.touches[0]) {
+                  updateActivePointFromClientX(e.touches[0].clientX);
+                }
+              }}
+            >
+              <svg
+                viewBox="0 0 1000 100"
+                preserveAspectRatio="none"
+                className="absolute inset-0 w-full h-full overflow-visible pointer-events-none"
+              >
+                <defs>
+                  <linearGradient
+                    id="demandLineAreaGrad"
+                    x1="0"
+                    y1="0"
+                    x2="0"
+                    y2="1"
+                  >
+                    <stop offset="0%" stopColor="#129D44" stopOpacity="0.24" />
+                    <stop offset="100%" stopColor="#129D44" stopOpacity="0.01" />
+                  </linearGradient>
+                </defs>
+
+                {[0, 0.25, 0.5, 0.75, 1].map((stepRatio) => {
+                  const yLine = 94 - stepRatio * 88;
+                  return (
+                    <line
+                      key={stepRatio}
+                      x1="0"
+                      y1={yLine}
+                      x2="1000"
+                      y2={yLine}
+                      stroke="currentColor"
+                      className="text-slate-200/70 dark:text-slate-800/80"
+                      strokeWidth="1"
+                      strokeDasharray="4 4"
+                      vectorEffect="non-scaling-stroke"
+                    />
+                  );
+                })}
+
+                {areaPath && (
+                  <path d={areaPath} fill="url(#demandLineAreaGrad)" />
+                )}
+                {linePath && (
+                  <path
+                    d={linePath}
+                    fill="none"
+                    stroke="#129D44"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )}
+              </svg>
+
+              {selectedPoint !== null && chartPoints.length > 0 && (
+                <div
+                  className="absolute top-0 bottom-0 w-px bg-[#129D44]/60 pointer-events-none"
+                  style={{
+                    left: `${((selectedPoint + 0.5) / chartPoints.length) * 100}%`,
+                  }}
+                />
+              )}
+
+              {chartPoints.map((pt, idx) => {
+                const xPct =
+                  chartPoints.length > 0
+                    ? ((idx + 0.5) / chartPoints.length) * 100
+                    : 50;
+                const ratio =
+                  yAxis.maxTick > 0
+                    ? Math.min(1, Math.max(0, pt.count / yAxis.maxTick))
+                    : 0;
+                const yPct = 94 - ratio * 88;
+                const isActive = selectedPoint === idx;
+                return (
+                  <div
+                    key={`dot_${pt.key}`}
+                    className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-full pointer-events-none transition-all ${
+                      isActive
+                        ? 'w-3.5 h-3.5 bg-[#129D44] ring-4 ring-[#129D44]/25 z-10'
+                        : pt.count > 0
+                        ? 'w-2 h-2 bg-[#129D44] ring-2 ring-white dark:ring-slate-900'
+                        : 'w-1.5 h-1.5 bg-slate-300 dark:bg-slate-600'
+                    }`}
+                    style={{ left: `${xPct}%`, top: `${yPct}%` }}
+                  />
+                );
+              })}
+
+              {activePoint && activePointLayout && (
+                <div
+                  className="absolute z-20 pointer-events-none px-2 py-0.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-bold shadow-md whitespace-nowrap"
+                  style={activePointLayout}
+                >
+                  {activePoint.count}{' '}
+                  {activePoint.count === 1 ? 'reserva' : 'reservas'} · $
+                  {Math.round(activePoint.revenue).toLocaleString('es-AR')}
+                </div>
+              )}
+
+              <div className="absolute inset-0 flex">
+                {chartPoints.map((pt, idx) => (
+                  <div
+                    key={`hit_${pt.key}`}
+                    onPointerEnter={() => onSelectPoint(idx)}
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                      onSelectPoint(idx);
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectPoint(idx);
+                    }}
+                    className="flex-1 h-full cursor-pointer"
+                    title={`${pt.fullLabel} · ${pt.count} reservas · $${Math.round(pt.revenue).toLocaleString('es-AR')}`}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="flex pt-1">
+              {chartPoints.map((pt, idx) => (
+                <div
+                  key={`lbl_${pt.key}`}
+                  className={`flex-1 text-center text-[10px] font-mono transition-colors ${
+                    selectedPoint === idx
+                      ? 'text-[#129D44] font-bold'
+                      : 'text-slate-400'
+                  }`}
+                >
+                  {pt.shortLabel}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="text-center text-xs font-medium text-gray-500 dark:text-slate-400 pl-7">
+        {chartAxisMode === 'hour' ? 'Horario' : 'Día'}
+      </div>
+    </div>
+  );
+};

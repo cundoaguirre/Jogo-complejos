@@ -11467,6 +11467,7 @@ export default function App() {
 
   // Estados de modales para soporte, reportes y facturación (control global y retroceso)
   const [showReportsModal, setShowReportsModal] = useState(false);
+  const [showDemandStats, setShowDemandStats] = useState(false);
   const [showGlobalSupportModal, setShowGlobalSupportModal] = useState(false);
   const [showPersonalInfoModal, setShowPersonalInfoModal] = useState(false);
   const [isNoticeModalOpen, setIsNoticeModalOpen] = useState(false);
@@ -11522,6 +11523,7 @@ export default function App() {
     if (isNotificationsOpen) { setNotificationsOpen(false); return true; }
     if (isSidebarOpen) { setSidebarOpen(false); return true; }
     if (showReportsModal) { setShowReportsModal(false); return true; }
+    if (showDemandStats) { setShowDemandStats(false); return true; }
     if (showGlobalSupportModal) { setShowGlobalSupportModal(false); return true; }
     if (showPersonalInfoModal) { setShowPersonalInfoModal(false); return true; }
     if (isNoticeModalOpen) {
@@ -11542,7 +11544,7 @@ export default function App() {
   }, [
     isMembersModalOpen, deleteModalBooking, cancelModalBooking, selectedUser, selectedMatch,
     agendaTicketModalOp, agendaSettleModalTarget, isCreateMatchOpen,
-    isCreateUserOpen, isNotificationsOpen, isSidebarOpen, showReportsModal,
+    isCreateUserOpen, isNotificationsOpen, isSidebarOpen, showReportsModal, showDemandStats,
     showGlobalSupportModal, showPersonalInfoModal, isNoticeModalOpen,
     isPayModalOpen, activeTab
   ]);
@@ -11550,7 +11552,7 @@ export default function App() {
   const hasOpenLayer = Boolean(
     isMembersModalOpen || deleteModalBooking || cancelModalBooking || selectedUser || selectedMatch ||
     agendaTicketModalOp || agendaSettleModalTarget || isCreateMatchOpen ||
-    isCreateUserOpen || isNotificationsOpen || isSidebarOpen || showReportsModal ||
+    isCreateUserOpen || isNotificationsOpen || isSidebarOpen || showReportsModal || showDemandStats ||
     showGlobalSupportModal || showPersonalInfoModal || isNoticeModalOpen ||
     isPayModalOpen || activeTab !== 'finance'
   );
@@ -11637,7 +11639,6 @@ export default function App() {
 
   // Analytics States
   const [showExposureStats, setShowExposureStats] = useState(false);
-  const [showDemandStats, setShowDemandStats] = useState(false);
   const [showRetentionStats, setShowRetentionStats] = useState(false);
   const [showFinanceChart, setShowFinanceChart] = useState(false);
 
@@ -12703,7 +12704,7 @@ export default function App() {
             isDarkMode={isDarkMode} 
           />
         )}
-        {showDemandStats && <DemandHeatmapModal key="modal-demand-stats" onClose={() => setShowDemandStats(false)} complexId={activeComplexId} bookings={activeBookings} courts={courts} />}
+        {showDemandStats && <DemandHeatmapModal key="modal-demand-stats" onClose={() => setShowDemandStats(false)} complexId={activeComplexId} complexName={activeComplejoName || activeComplex?.name || 'Complejo'} bookings={activeBookings} courts={courts} />}
         {showRetentionStats && <RetentionStats key="modal-retention-stats" onClose={() => setShowRetentionStats(false)} complexId={activeComplexId} />}
         {showFinanceChart && <FinanceChartModal key="modal-finance-chart" isOpen={showFinanceChart} onClose={() => setShowFinanceChart(false)} complexId={activeComplexId} />}
         {showReportsModal && <ReportsModal key="modal-reports" isOpen={showReportsModal} onClose={() => setShowReportsModal(false)} complexId={activeComplexId} complexName={activeComplejoName} />}
