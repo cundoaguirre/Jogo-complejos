@@ -128,6 +128,11 @@ service cloud.firestore {
       return cId != null && hasComplexAccess(cId);
     }
 
+    function isJogoBillingDoc(data) {
+      return ('paymentTrack' in data && data.paymentTrack in ['subscription', 'commission']) ||
+             ('operationType' in data && data.operationType == 'jogo_billing');
+    }
+
     // Resolves complex ID for users/clients collection
     function getUserDocComplexId(data) {
       return ('originComplejoId' in data && data.originComplejoId != null) ? data.originComplejoId :
@@ -352,11 +357,15 @@ service cloud.firestore {
       match /payment_obligations/{obligationId} {
         allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
         allow write: if isSuperAdmin();
+
+        match /transactions/{txId} {
+          allow read: if isSignedIn() && (isSuperAdmin() || hasComplexAccess(complexId));
+          allow write: if isSuperAdmin();
+        }
       }
 
       match /payments/{paymentId} {
-        allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
-        allow write: if isSuperAdmin();
+        allow read, write: if isSuperAdmin();
       }
     }
 
@@ -395,11 +404,15 @@ service cloud.firestore {
       match /payment_obligations/{obligationId} {
         allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
         allow write: if isSuperAdmin();
+
+        match /transactions/{txId} {
+          allow read: if isSignedIn() && (isSuperAdmin() || hasComplexAccess(complexId));
+          allow write: if isSuperAdmin();
+        }
       }
 
       match /payments/{paymentId} {
-        allow read: if isSignedIn() && (isCollaboratorOf(complexId) || isSuperAdmin());
-        allow write: if isSuperAdmin();
+        allow read, write: if isSuperAdmin();
       }
     }
 
@@ -578,18 +591,24 @@ service cloud.firestore {
     // ------------------------------------------------------------------------
     match /operations/{operationId} {
       allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
-      allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
+      allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin()) && (!isJogoBillingDoc(request.resource.data) || isSuperAdmin());
       allow update: if isSignedIn() && (
         isSuperAdmin() ||
         (
           canAccessDocComplex(resource.data) &&
           canAccessDocComplex(request.resource.data) &&
-          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data) &&
+          !isJogoBillingDoc(resource.data) &&
+          !isJogoBillingDoc(request.resource.data)
         )
       );
       allow delete: if isSignedIn() && (
         isSuperAdmin() ||
-        (getDocComplexId(resource.data) != null && isComplexManagerOrOwner(getDocComplexId(resource.data)))
+        (
+          getDocComplexId(resource.data) != null &&
+          isComplexManagerOrOwner(getDocComplexId(resource.data)) &&
+          !isJogoBillingDoc(resource.data)
+        )
       );
     }
 
@@ -598,18 +617,24 @@ service cloud.firestore {
     // ------------------------------------------------------------------------
     match /financial_movements/{movementId} {
       allow read: if isSignedIn() && (canAccessDocComplex(resource.data) || isSuperAdmin());
-      allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin());
+      allow create: if isSignedIn() && (canAccessDocComplex(request.resource.data) || isSuperAdmin()) && (!isJogoBillingDoc(request.resource.data) || isSuperAdmin());
       allow update: if isSignedIn() && (
         isSuperAdmin() ||
         (
           canAccessDocComplex(resource.data) &&
           canAccessDocComplex(request.resource.data) &&
-          getDocComplexId(request.resource.data) == getDocComplexId(resource.data)
+          getDocComplexId(request.resource.data) == getDocComplexId(resource.data) &&
+          !isJogoBillingDoc(resource.data) &&
+          !isJogoBillingDoc(request.resource.data)
         )
       );
       allow delete: if isSignedIn() && (
         isSuperAdmin() ||
-        (getDocComplexId(resource.data) != null && isComplexManagerOrOwner(getDocComplexId(resource.data)))
+        (
+          getDocComplexId(resource.data) != null &&
+          isComplexManagerOrOwner(getDocComplexId(resource.data)) &&
+          !isJogoBillingDoc(resource.data)
+        )
       );
     }
 
@@ -697,6 +722,33 @@ service cloud.firestore {
         ('complejoId' in resource.data && isCollaboratorOf(resource.data.complejoId))
       );
       allow write: if isSuperAdmin();
+    }
+
+    // ------------------------------------------------------------------------
+    // ERP-Only Collections (Restricted Strictly to Super Admin)
+    // ------------------------------------------------------------------------
+    match /crm_users/{crmUserId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /activities/{activityId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /business_payments/{paymentId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /jogo_crm/{clientId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /funnel_analytics/{docId} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    match /payment_transactions/{txId} {
+      allow read, write: if isSuperAdmin();
     }
   }
 }
