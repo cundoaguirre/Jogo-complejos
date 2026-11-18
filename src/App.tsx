@@ -24,6 +24,7 @@ import { WelcomeCelebrationModal } from './components/WelcomeCelebrationModal';
 import { BillingNoticeModal } from './components/BillingNoticeModal';
 import { PayBalanceModal } from './components/PayBalanceModal';
 import { MembersModal } from './components/MembersModal';
+import { DemandHeatmapModal } from './components/DemandHeatmapModal';
 import { 
   calculateWeeklyObligations, 
   evaluateBillingNoticeState, 
@@ -245,7 +246,7 @@ const Sidebar = ({
       case 'schedule':
         return [
           { id: 'exposure', label: 'Estadísticas', icon: TrendingUp, action: 'exposure' },
-          { id: 'demand', label: 'Horarios Mayor Demanda', icon: Clock, action: 'demand' }
+          { id: 'demand', label: 'Análisis de Demanda', icon: Clock, action: 'demand' }
         ];
       case 'users':
         return [
@@ -5381,243 +5382,6 @@ const ExposureStatsModal = ({
           >
             Cerrar
           </button>
-        </div>
-      </motion.div>
-    </div>
-  );
-};
-
-const DemandStats = ({ onClose, complexId = 'complejo_central' }: { onClose: () => void, complexId?: string }) => {
-  const [peakHours, setPeakHours] = useState<{hour: string, count: number}[]>([]);
-  const [filter, setFilter] = useState<'global' | 'today' | 'week' | 'month' | 'day'>('global');
-  const [selectedDayOfWeek, setSelectedDayOfWeek] = useState<number>(1); // 1 = Lunes
-  const [venue, setVenue] = useState<any>(null);
-  const [bookings, setBookings] = useState<Match[]>([]);
-  
-  useEffect(() => {
-    const unsubVenue = subscribeToVenueProfile(complexId, (data) => {
-      if (data) setVenue(data);
-    });
-    const unsubBookings = subscribeToBookings(complexId, (data) => {
-      setBookings(Array.isArray(data) ? data : []);
-    });
-
-    return () => {
-      unsubVenue();
-      unsubBookings();
-    };
-  }, [complexId]);
-  
-  useEffect(() => {
-    const counts: Record<string, number> = {};
-    for (let i = 0; i < 24; i++) {
-      counts[i.toString().padStart(2, '0')] = 0;
-    }
-
-    const now = new Date();
-    bookings.forEach(b => {
-      if (b.status === 'cancelled') return;
-      const bDateStr = b.date || (b.start_time ? String(b.start_time).split('T')[0] : '');
-      const bDate = safeParseDate(bDateStr);
-      if (!bDate) return;
-
-      if (filter === 'today' && !isSameDay(bDate, now)) return;
-      if (filter === 'week' && differenceInDays(now, bDate) > 7) return;
-      if (filter === 'month' && !isSameMonth(bDate, now)) return;
-      if (filter === 'day' && bDate.getDay() !== selectedDayOfWeek) return;
-
-      const hourStr = (b.startTime || (b.start_time && b.start_time.includes('T') ? b.start_time.split('T')[1].substring(0, 2) : '18')).split(':')[0].padStart(2, '0');
-      if (counts[hourStr] !== undefined) {
-        counts[hourStr]++;
-      }
-    });
-
-    setPeakHours(Object.entries(counts).map(([hour, count]) => ({ hour, count })));
-  }, [bookings, filter, selectedDayOfWeek]);
-  
-  // Calculate open and close bounds from venue
-  let minHour = 8;
-  let maxHour = 23;
-  if (venue && Array.isArray(venue.hours)) {
-    let min = 24;
-    let max = 0;
-    venue.hours.forEach((h: any) => {
-      if (h.open) {
-        const s = parseInt(h.start.split(':')[0], 10);
-        let e = parseInt(h.end.split(':')[0], 10);
-        if (e === 0) e = 24;
-        if (s < min) min = s;
-        if (e > max) max = e;
-      }
-    });
-    if (min < 24) minHour = min;
-    if (max > 0) maxHour = max;
-  }
-  
-  // Create a full range of hours based on venue hours
-  const allHours = Array.from({ length: maxHour - minHour }, (_, i) => i + minHour);
-  
-  const chartData = allHours.map(hour => {
-    const hourStr = (hour % 24).toString().padStart(2, '0');
-    const found = peakHours.find(p => p.hour === hourStr);
-    return { 
-      hour, 
-      count: found ? found.count : 0,
-      label: `${hour}:00`
-    };
-  });
-
-  const maxCount = Math.max(...chartData.map(d => d.count), 1);
-  const totalBookings = chartData.reduce((acc, curr) => acc + curr.count, 0);
-
-  const daysOfWeek = [
-    { id: 1, label: 'Lunes' },
-    { id: 2, label: 'Martes' },
-    { id: 3, label: 'Miércoles' },
-    { id: 4, label: 'Jueves' },
-    { id: 5, label: 'Viernes' },
-    { id: 6, label: 'Sábado' },
-    { id: 0, label: 'Domingo' }
-  ];
-
-  return (
-    <div 
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      onClick={(e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        onClose();
-      }}
-    >
-      <motion.div 
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        onClick={(e) => e.stopPropagation()}
-        className="bg-white w-full max-w-4xl rounded-3xl overflow-hidden shadow-2xl flex flex-col max-h-[90vh]"
-      >
-        <div className="p-6 border-b border-gray-100 flex justify-between items-center flex-shrink-0">
-          <div>
-            <h3 className="font-bold text-xl text-gray-900">Horarios de Mayor Demanda</h3>
-            <p className="text-sm text-gray-500">Distribución de reservas por hora</p>
-          </div>
-          <button 
-            type="button" 
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onClose();
-            }} 
-            className="text-gray-400 hover:text-gray-600"
-          >
-            <X size={24} />
-          </button>
-        </div>
-        
-        <div className="p-4 bg-gray-50 border-b border-gray-100 flex gap-2 overflow-x-auto flex-shrink-0 items-center">
-          {[
-            { id: 'global', label: 'Histórico' },
-            { id: 'month', label: 'Este Mes' },
-            { id: 'week', label: 'Esta Semana' },
-            { id: 'today', label: 'Hoy' }
-          ].map((f, fIdx) => (
-            <button type="button"
-              key={`demand-filter-${f.id}-${fIdx}`}
-              onClick={() => setFilter(f.id as any)}
-              className={cn(
-                "px-4 py-2 rounded-xl text-sm font-bold transition-all whitespace-nowrap",
-                filter === f.id 
-                  ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20" 
-                  : "bg-white text-gray-500 border border-gray-200 hover:bg-gray-100"
-              )}
-            >
-              {f.label}
-            </button>
-          ))}
-          
-          <div className="relative ml-2 flex items-center">
-            <button type="button"
-              onClick={() => setFilter('day')}
-              className={cn(
-                "px-4 py-2 rounded-l-xl text-sm font-bold transition-all whitespace-nowrap",
-                filter === 'day'
-                  ? "bg-emerald-600 text-white shadow-lg shadow-emerald-900/20" 
-                  : "bg-white text-gray-500 border border-gray-200 border-r-0 hover:bg-gray-100"
-              )}
-            >
-              Día:
-            </button>
-            <select
-              value={selectedDayOfWeek}
-              onChange={(e) => {
-                setFilter('day');
-                setSelectedDayOfWeek(parseInt(e.target.value));
-              }}
-              className={cn(
-                "py-2 pr-8 pl-3 rounded-r-xl text-sm font-bold transition-all outline-none border cursor-pointer",
-                filter === 'day'
-                  ? "bg-emerald-700 text-white border-emerald-700" 
-                  : "bg-white text-gray-500 border-gray-200 border-l-gray-300 hover:bg-gray-50"
-              )}
-            >
-              {daysOfWeek.map((d, dIdx) => (
-                <option key={`demand-day-${d.id}-${dIdx}`} value={d.id}>{d.label}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="p-6 overflow-y-auto flex-1">
-          <div className="h-64 flex items-end gap-1.5 pb-8 pt-4 px-2 w-full">
-            {chartData.map((d, dIdx) => (
-              <div key={`demand-hour-${d.hour}-${dIdx}`} className="flex-1 flex flex-col items-center gap-2 group relative">
-                <div className="relative w-full flex justify-center h-full items-end">
-                  <div 
-                    className={cn(
-                      "w-full rounded-t-lg transition-all duration-500 relative group-hover:opacity-80 max-w-[40px]",
-                      d.count > 0 ? "bg-emerald-500" : "bg-gray-100"
-                    )}
-                    style={{ height: `${(d.count / maxCount) * 100}%`, minHeight: d.count > 0 ? '4px' : '4px' }}
-                  >
-                    {d.count > 0 && (
-                      <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] font-bold px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-10 pointer-events-none">
-                        {d.count} reservas
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <span className={cn(
-                  "text-[10px] sm:text-xs font-bold mt-1 text-center w-full",
-                  d.count > 0 ? "text-gray-900" : "text-gray-400"
-                )}>
-                  {d.label}
-                </span>
-              </div>
-            ))}
-          </div>
-          
-          <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
-              <div className="text-emerald-800 font-bold text-sm mb-1">Hora Pico</div>
-              <div className="text-2xl font-bold text-emerald-600">
-                {chartData.length > 0 && totalBookings > 0 ? chartData.reduce((prev, current) => (prev.count > current.count) ? prev : current).label : '--'}
-              </div>
-              <div className="text-xs text-emerald-600/70 mt-1">Mayor volumen de reservas</div>
-            </div>
-            <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
-              <div className="text-emerald-800 font-bold text-sm mb-1">Promedio Diario</div>
-              <div className="text-2xl font-bold text-emerald-600">
-                {chartData.length > 0 ? Math.round(totalBookings / (allHours.length || 1)) : 0}
-              </div>
-              <div className="text-xs text-emerald-600/70 mt-1">Reservas por hora</div>
-            </div>
-            <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-100">
-              <div className="text-emerald-800 font-bold text-sm mb-1">Ocupación Total</div>
-              <div className="text-2xl font-bold text-emerald-600">
-                {totalBookings}
-              </div>
-              <div className="text-xs text-emerald-600/70 mt-1">En este periodo</div>
-            </div>
-          </div>
         </div>
       </motion.div>
     </div>
@@ -12939,7 +12703,7 @@ export default function App() {
             isDarkMode={isDarkMode} 
           />
         )}
-        {showDemandStats && <DemandStats key="modal-demand-stats" onClose={() => setShowDemandStats(false)} complexId={activeComplexId} />}
+        {showDemandStats && <DemandHeatmapModal key="modal-demand-stats" onClose={() => setShowDemandStats(false)} complexId={activeComplexId} bookings={activeBookings} courts={courts} />}
         {showRetentionStats && <RetentionStats key="modal-retention-stats" onClose={() => setShowRetentionStats(false)} complexId={activeComplexId} />}
         {showFinanceChart && <FinanceChartModal key="modal-finance-chart" isOpen={showFinanceChart} onClose={() => setShowFinanceChart(false)} complexId={activeComplexId} />}
         {showReportsModal && <ReportsModal key="modal-reports" isOpen={showReportsModal} onClose={() => setShowReportsModal(false)} complexId={activeComplexId} complexName={activeComplejoName} />}

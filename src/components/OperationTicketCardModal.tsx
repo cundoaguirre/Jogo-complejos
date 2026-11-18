@@ -29,7 +29,8 @@ import {
   resolveClientName, 
   resolveClientPhone,
   formatPhoneForWhatsApp,
-  subscribeToVenueProfile
+  subscribeToVenueProfile,
+  isJogoBillingOperation
 } from '../lib/firestoreSync';
 import { shareOrDownloadTicketImage, TicketImageData } from '../lib/ticketImageGenerator';
 import { useFirebase } from './FirebaseContext';
@@ -196,6 +197,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
       (operation as any)?.createdSource === 'jogo'
     )
   );
+  const isJogoBillingOp = isJogoBillingOperation(operation);
 
   // Block color & hex
   // Mostrador: #1d63b8 | Gastos/Compras: #7c12e8 | Reservas: #129D44
@@ -819,17 +821,23 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                         Cancelado
                       </span>
                     ) : amountPending > 0 ? (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onOpenSettleModal?.(operation);
-                        }}
-                        className="bg-rose-100 hover:bg-rose-200 text-rose-600 font-bold text-xs px-3.5 py-1.5 rounded-xl inline-block shadow-2xs cursor-pointer transition-colors active:scale-95"
-                        title="Toca para cobrar o pagar saldo pendiente"
-                      >
-                        Faltan ${amountPending.toLocaleString('es-AR')}
-                      </button>
+                      isJogoBillingOp ? (
+                        <span className="bg-rose-100 text-rose-600 font-bold text-xs px-3.5 py-1.5 rounded-xl inline-block shadow-2xs select-none">
+                          Faltan ${amountPending.toLocaleString('es-AR')}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenSettleModal?.(operation);
+                          }}
+                          className="bg-rose-100 hover:bg-rose-200 text-rose-600 font-bold text-xs px-3.5 py-1.5 rounded-xl inline-block shadow-2xs cursor-pointer transition-colors active:scale-95"
+                          title="Toca para cobrar o pagar saldo pendiente"
+                        >
+                          Faltan ${amountPending.toLocaleString('es-AR')}
+                        </button>
+                      )
                     ) : (
                       <span className="bg-[#e8effa] text-[#1d63b8] font-bold text-xs px-4 py-1.5 rounded-xl inline-block shadow-2xs">
                         Pagado

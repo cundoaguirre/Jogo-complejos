@@ -223,6 +223,20 @@ function buildSingleMovementPayload(params: {
   };
 }
 
+export function isJogoBillingOperation(op: any): boolean {
+  if (!op) return false;
+  const id = String(op.id || '');
+  const concept = String(op.concept || op.userName || op.clientName || '').trim();
+  return Boolean(
+    op.paymentTrack ||
+    op.obligationId ||
+    op.metadata?.obligationId ||
+    id.startsWith('op_jogo_') ||
+    id.startsWith('op_servicio_jogo_') ||
+    ['Suscripción Jogo', 'Comisión Jogo', 'Servicio Jogo'].includes(concept)
+  );
+}
+
 /**
  * Calculates duration in minutes between two "HH:mm" strings
  */
@@ -4650,6 +4664,9 @@ export async function registerOperationPayment(
     if (opData.complexId !== params.complexId) {
       throw new Error('La operación no pertenece al complejo activo.');
     }
+    if (isJogoBillingOperation(opData)) {
+      throw new Error('Los cobros de Jogo solo pueden ser registrados por la administración de Jogo.');
+    }
     if (['cancelled_unpaid', 'cancelled_retained', 'fully_refunded'].includes(opData.paymentStatus)) {
       throw new Error(`No se pueden registrar cobros sobre una operación cancelada (${opData.paymentStatus}).`);
     }
@@ -5547,6 +5564,9 @@ export async function registerOperationPaymentsBatch(params: {
     // 2. Validaciones
     if (opData.complexId !== params.complexId) {
       throw new Error('La operación no pertenece al complejo activo.');
+    }
+    if (isJogoBillingOperation(opData)) {
+      throw new Error('Los cobros de Jogo solo pueden ser registrados por la administración de Jogo.');
     }
     if (['cancelled_unpaid', 'cancelled_retained', 'fully_refunded'].includes(opData.paymentStatus)) {
       throw new Error(`No se pueden registrar cobros sobre una operación cancelada (${opData.paymentStatus}).`);
