@@ -1,5 +1,10 @@
-import React, { useMemo, useRef, useState } from 'react';
-import { ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   DAYS_OF_WEEK,
   computeNiceYAxis,
@@ -19,8 +24,6 @@ interface DemandLineChartProps {
   onSelectPoint: (idx: number | null) => void;
 }
 
-const ZOOM_STEPS = [1, 1.6, 2.4, 3.2];
-
 export const DemandLineChart: React.FC<DemandLineChartProps> = ({
   chartAxisMode,
   onChangeAxisMode,
@@ -32,9 +35,47 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
   selectedPoint,
   onSelectPoint,
 }) => {
-  const [zoomIdx, setZoomIdx] = useState(0);
+  const [zoomScale, setZoomScale] = useState(1);
+  const zoomScaleRef = useRef(1);
+  zoomScaleRef.current = zoomScale;
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const chartAreaRef = useRef<HTMLDivElement>(null);
-  const zoomScale = ZOOM_STEPS[zoomIdx];
+  const pendingScrollLeftRef = useRef<number | null>(null);
+  const pinchRef = useRef<{
+    active: boolean;
+    startDist: number;
+    startScale: number;
+    focalRatio: number;
+  }>({
+    active: false,
+    startDist: 0,
+    startScale: 1,
+    focalRatio: 0.5,
+  });
+
+  useLayoutEffect(() => {
+    if (pendingScrollLeftRef.current !== null && scrollContainerRef.current) {
+      scrollContainerRef.current.scrollLeft = pendingScrollLeftRef.current;
+      pendingScrollLeftRef.current = null;
+    }
+  }, [zoomScale]);
+
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+
+    const handleNativeTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        e.preventDefault();
+      }
+    };
+
+    el.addEventListener('touchmove', handleNativeTouchMove, { passive: false });
+    return () => {
+      el.removeEventListener('touchmove', handleNativeTouchMove);
+    };
+  }, []);
 
   const { chartPoints, yAxis, linePath, areaPath } = useMemo(() => {
     const pts: ChartPoint[] =
@@ -102,6 +143,81 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
     onSelectPoint(idx);
   };
 
+  const initPinchGesture = (
+    t0: React.Touch,
+    t1: React.Touch,
+    dist: number
+  ) => {
+    const scrollEl = scrollContainerRef.current;
+    const midClientX = (t0.clientX + t1.clientX) / 2;
+    let focalRatio = 0.5;
+    if (scrollEl) {
+      const rect = scrollEl.getBoundingClientRect();
+      const midInViewport = midClientX - rect.left;
+      focalRatio =
+        (scrollEl.scrollLeft + midInViewport) /
+        Math.max(1, rect.width * zoomScaleRef.current);
+    }
+    pinchRef.current = {
+      active: true,
+      startDist: dist,
+      startScale: zoomScaleRef.current,
+      focalRatio,
+    };
+  };
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[1].clientX - e.touches[0].clientX,
+        e.touches[1].clientY - e.touches[0].clientY
+      );
+      initPinchGesture(e.touches[0], e.touches[1], dist);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length === 2) {
+      const currentDist = Math.hypot(
+        e.touches[1].clientX - e.touches[0].clientX,
+        e.touches[1].clientY - e.touches[0].clientY
+      );
+      if (!pinchRef.current.active || pinchRef.current.startDist <= 0) {
+        initPinchGesture(e.touches[0], e.touches[1], currentDist);
+        return;
+      }
+      const nextScale = Math.min(
+        3.5,
+        Math.max(
+          1,
+          pinchRef.current.startScale * (currentDist / pinchRef.current.startDist)
+        )
+      );
+      const scrollEl = scrollContainerRef.current;
+      if (scrollEl) {
+        const rect = scrollEl.getBoundingClientRect();
+        const midInViewport =
+          (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+        pendingScrollLeftRef.current = Math.max(
+          0,
+          pinchRef.current.focalRatio * (rect.width * nextScale) - midInViewport
+        );
+      }
+      setZoomScale(nextScale);
+      return;
+    }
+
+    if (e.touches.length === 1 && !pinchRef.current.active) {
+      updateActivePointFromClientX(e.touches[0].clientX);
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (e.touches.length < 2) {
+      pinchRef.current.active = false;
+    }
+  };
+
   const activePoint =
     selectedPoint !== null && chartPoints[selectedPoint]
       ? chartPoints[selectedPoint]
@@ -140,81 +256,39 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
           Reservas
         </h4>
 
-        <div className="flex items-center gap-1.5">
-          <div className="inline-flex items-center rounded-xl bg-slate-100 dark:bg-slate-800 p-0.5 text-slate-600 dark:text-slate-300">
-            <button
-              type="button"
-              disabled={zoomIdx === 0}
-              onClick={(e) => {
-                e.stopPropagation();
-                setZoomIdx((z) => Math.max(0, z - 1));
-              }}
-              aria-label="Alejar zoom"
-              className="p-1 rounded-lg disabled:opacity-35 hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-pointer"
-            >
-              <ZoomOut size={13} />
-            </button>
-            <button
-              type="button"
-              disabled={zoomIdx === ZOOM_STEPS.length - 1}
-              onClick={(e) => {
-                e.stopPropagation();
-                setZoomIdx((z) => Math.min(ZOOM_STEPS.length - 1, z + 1));
-              }}
-              aria-label="Acercar zoom"
-              className="p-1 rounded-lg disabled:opacity-35 hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-pointer"
-            >
-              <ZoomIn size={13} />
-            </button>
-            {zoomIdx > 0 && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setZoomIdx(0);
-                }}
-                aria-label="Restablecer zoom"
-                className="p-1 rounded-lg hover:bg-white dark:hover:bg-slate-700 transition-colors cursor-pointer"
-              >
-                <RotateCcw size={12} />
-              </button>
-            )}
-          </div>
-
-          <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-0.5 text-[11px] font-bold">
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onChangeAxisMode('hour');
-                onSelectPoint(null);
-                setZoomIdx(0);
-              }}
-              className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
-                chartAxisMode === 'hour'
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
-                  : 'text-slate-500'
-              }`}
-            >
-              Por horario
-            </button>
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                onChangeAxisMode('day');
-                onSelectPoint(null);
-                setZoomIdx(0);
-              }}
-              className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
-                chartAxisMode === 'day'
-                  ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
-                  : 'text-slate-500'
-              }`}
-            >
-              Por día
-            </button>
-          </div>
+        <div className="inline-flex rounded-xl bg-slate-100 dark:bg-slate-800 p-0.5 text-[11px] font-bold">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChangeAxisMode('hour');
+              onSelectPoint(null);
+              setZoomScale(1);
+            }}
+            className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+              chartAxisMode === 'hour'
+                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
+                : 'text-slate-500'
+            }`}
+          >
+            Por horario
+          </button>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChangeAxisMode('day');
+              onSelectPoint(null);
+              setZoomScale(1);
+            }}
+            className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+              chartAxisMode === 'day'
+                ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-white shadow-2xs'
+                : 'text-slate-500'
+            }`}
+          >
+            Por día
+          </button>
         </div>
       </div>
 
@@ -224,20 +298,23 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
             <span key={t}>{t}</span>
           ))}
         </div>
-        <div className="flex-1 overflow-x-auto">
+        <div
+          ref={scrollContainerRef}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchEnd}
+          className="flex-1 overflow-x-auto touch-pan-x touch-pan-y"
+        >
           <div style={{ width: `${zoomScale * 100}%` }}>
             <div
               ref={chartAreaRef}
-              className="relative h-36 border-b border-l border-slate-200 dark:border-slate-800 touch-pan-y select-none"
+              className="relative h-36 border-b border-l border-slate-200 dark:border-slate-800 touch-pan-x touch-pan-y select-none"
               onClick={(e) => e.stopPropagation()}
               onPointerDown={(e) => {
+                if (pinchRef.current.active) return;
                 e.stopPropagation();
                 updateActivePointFromClientX(e.clientX);
-              }}
-              onTouchMove={(e) => {
-                if (e.touches[0]) {
-                  updateActivePointFromClientX(e.touches[0].clientX);
-                }
               }}
             >
               <svg
@@ -342,12 +419,16 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
                 {chartPoints.map((pt, idx) => (
                   <div
                     key={`hit_${pt.key}`}
-                    onPointerEnter={() => onSelectPoint(idx)}
+                    onPointerEnter={() => {
+                      if (!pinchRef.current.active) onSelectPoint(idx);
+                    }}
                     onPointerDown={(e) => {
+                      if (pinchRef.current.active) return;
                       e.stopPropagation();
                       onSelectPoint(idx);
                     }}
                     onClick={(e) => {
+                      if (pinchRef.current.active) return;
                       e.stopPropagation();
                       onSelectPoint(idx);
                     }}

@@ -47,6 +47,9 @@ export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
   const [selectedCell, setSelectedCell] = useState<HeatmapCellDetail | null>(
     null
   );
+  const [activeStatusBadge, setActiveStatusBadge] = useState<
+    'played' | 'cancelled' | null
+  >(null);
 
   const [venue, setVenue] = useState<any>(null);
   const [subBookings, setSubBookings] = useState<Match[]>([]);
@@ -87,6 +90,7 @@ export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
     setSelectedPoint(null);
     setSelectedCell(null);
     setSelectedCourtKey(null);
+    setActiveStatusBadge(null);
   };
 
   const handleSwipeTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
@@ -360,7 +364,11 @@ export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
           </div>
         )}
 
-        <DemandKpiCards kpis={analytics.kpis} />
+        <DemandKpiCards
+          kpis={analytics.kpis}
+          activeStatusBadge={activeStatusBadge}
+          onSelectStatusBadge={setActiveStatusBadge}
+        />
 
         <DemandLineChart
           chartAxisMode={chartAxisMode}

@@ -1,25 +1,27 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import type { DemandKpis } from './demandAnalytics';
 
 interface DemandKpiCardsProps {
   kpis: DemandKpis;
+  activeStatusBadge: 'played' | 'cancelled' | null;
+  onSelectStatusBadge: (status: 'played' | 'cancelled' | null) => void;
 }
 
-export const DemandKpiCards: React.FC<DemandKpiCardsProps> = ({ kpis }) => {
-  const [activeStatusBadge, setActiveStatusBadge] = useState<
-    'played' | 'cancelled' | null
-  >(null);
-
+export const DemandKpiCards: React.FC<DemandKpiCardsProps> = ({
+  kpis,
+  activeStatusBadge,
+  onSelectStatusBadge,
+}) => {
   const total = kpis.totalReservations;
-  const activeCount =
-    activeStatusBadge === 'played' ? kpis.playedCount : kpis.cancelledCount;
-  const activePct = total > 0 ? Math.round((activeCount / total) * 100) : 0;
+  const playedPct = total > 0 ? Math.round((kpis.playedCount / total) * 100) : 0;
+  const cancelledPct =
+    total > 0 ? Math.round((kpis.cancelledCount / total) * 100) : 0;
 
   return (
-    <div className="space-y-2.5">
-      <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 space-y-1.5">
-        <div className="grid grid-cols-3 divide-x divide-slate-200 dark:divide-slate-700/80 text-center">
+    <div className="space-y-2.5 pt-2 overflow-visible">
+      <div className="rounded-2xl bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 overflow-visible">
+        <div className="grid grid-cols-3 divide-x divide-slate-200 dark:divide-slate-700/80 text-center overflow-visible">
           <div className="px-1">
             <p className="text-lg font-black text-slate-900 dark:text-white leading-tight">
               {kpis.totalReservations}
@@ -33,14 +35,28 @@ export const DemandKpiCards: React.FC<DemandKpiCardsProps> = ({ kpis }) => {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setActiveStatusBadge((prev) =>
-                prev === 'played' ? null : 'played'
+              onSelectStatusBadge(
+                activeStatusBadge === 'played' ? null : 'played'
               );
             }}
-            className={`px-1 cursor-pointer transition-opacity ${
+            className={`relative overflow-visible px-1 cursor-pointer transition-opacity ${
               activeStatusBadge === 'cancelled' ? 'opacity-50' : 'opacity-100'
             }`}
           >
+            <AnimatePresence>
+              {activeStatusBadge === 'played' && (
+                <motion.div
+                  key="played-pct-badge"
+                  initial={{ opacity: 0, y: 4, scale: 0.94 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 4, scale: 0.94 }}
+                  transition={{ duration: 0.16 }}
+                  className="absolute -top-7 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-2 py-0.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-bold shadow-md whitespace-nowrap"
+                >
+                  {playedPct}%
+                </motion.div>
+              )}
+            </AnimatePresence>
             <p className="text-lg font-black text-[#129D44] leading-tight">
               {kpis.playedCount}
             </p>
@@ -53,14 +69,28 @@ export const DemandKpiCards: React.FC<DemandKpiCardsProps> = ({ kpis }) => {
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              setActiveStatusBadge((prev) =>
-                prev === 'cancelled' ? null : 'cancelled'
+              onSelectStatusBadge(
+                activeStatusBadge === 'cancelled' ? null : 'cancelled'
               );
             }}
-            className={`px-1 cursor-pointer transition-opacity ${
+            className={`relative overflow-visible px-1 cursor-pointer transition-opacity ${
               activeStatusBadge === 'played' ? 'opacity-50' : 'opacity-100'
             }`}
           >
+            <AnimatePresence>
+              {activeStatusBadge === 'cancelled' && (
+                <motion.div
+                  key="cancelled-pct-badge"
+                  initial={{ opacity: 0, y: 4, scale: 0.94 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: 4, scale: 0.94 }}
+                  transition={{ duration: 0.16 }}
+                  className="absolute -top-7 left-1/2 -translate-x-1/2 z-20 pointer-events-none px-2 py-0.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-bold shadow-md whitespace-nowrap"
+                >
+                  {cancelledPct}%
+                </motion.div>
+              )}
+            </AnimatePresence>
             <p className="text-lg font-black text-rose-500 leading-tight">
               {kpis.cancelledCount}
             </p>
@@ -69,32 +99,6 @@ export const DemandKpiCards: React.FC<DemandKpiCardsProps> = ({ kpis }) => {
             </p>
           </button>
         </div>
-
-        <AnimatePresence mode="wait">
-          {activeStatusBadge && (
-            <motion.div
-              key={activeStatusBadge}
-              initial={{ opacity: 0, y: -4 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.16 }}
-              onClick={(e) => e.stopPropagation()}
-              className="text-center text-[11px] font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900/70 rounded-xl py-1 px-2 shadow-2xs"
-            >
-              {activeStatusBadge === 'played' ? 'Jugados' : 'Cancelados'}:{' '}
-              <span
-                className={
-                  activeStatusBadge === 'played'
-                    ? 'text-[#129D44]'
-                    : 'text-rose-500'
-                }
-              >
-                {activePct}%
-              </span>{' '}
-              del total ({activeCount} de {total})
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
 
       <div className="grid grid-cols-2 gap-2.5">
