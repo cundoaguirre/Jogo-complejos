@@ -269,6 +269,10 @@ export interface TransactionItem {
   quantity: number;
   unitPrice: number;
   subtotal: number;
+  unitCost?: number;
+  totalCost?: number;
+  profit?: number;
+  category?: string;
 }
 
 export interface POSTransaction {
@@ -481,10 +485,15 @@ export interface OperationDocument {
   // Desglose de ítems
   items?: Array<{
     id: string;
+    productId?: string;
     name: string;
     quantity: number;
     unitPrice: number;
     subtotal: number;
+    unitCost?: number;
+    totalCost?: number;
+    profit?: number;
+    category?: string;
   }>;
 
   notes?: string;

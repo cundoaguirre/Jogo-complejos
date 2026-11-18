@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
 import { ArrowLeft, Trophy } from 'lucide-react';
 import {
   isSameDay,
@@ -115,6 +116,7 @@ export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
   const [subCourts, setSubCourts] = useState<any[]>([]);
   const [selectedCell, setSelectedCell] = useState<{
     dayLabel: string;
+    dayShort: string;
     hour: number;
     rawHour: number;
     count: number;
@@ -125,6 +127,10 @@ export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
 
   const chartAreaRef = useRef<HTMLDivElement>(null);
   const stackedBarRef = useRef<HTMLDivElement>(null);
+  const isClosingManuallyRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   const swipeRef = useRef<{
     active: boolean;
     startX: number;
@@ -141,6 +147,32 @@ export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
 
   const hasBookingsProp = propBookings !== undefined;
   const hasCourtsProp = propCourts !== undefined;
+
+  useEffect(() => {
+    isClosingManuallyRef.current = false;
+    if (window.history.state?.modal !== 'demand-analytics') {
+      window.history.pushState({ modal: 'demand-analytics' }, '');
+    }
+
+    const handlePopState = () => {
+      if (isClosingManuallyRef.current) return;
+      onCloseRef.current();
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+  }, []);
+
+  const handleClose = () => {
+    if (isClosingManuallyRef.current) return;
+    isClosingManuallyRef.current = true;
+    onCloseRef.current();
+    if (window.history.state?.modal === 'demand-analytics') {
+      window.history.back();
+    }
+  };
 
   useEffect(() => {
     const unsubVenue = subscribeToVenueProfile(complexId, (data) => {
@@ -212,7 +244,7 @@ export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
     swipeRef.current.lastDx = 0;
     setIsSwiping(false);
     if (finalDx >= 80) {
-      onClose();
+      handleClose();
     } else {
       setSwipeOffset(0);
     }
@@ -712,7 +744,7 @@ export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onClose();
+              handleClose();
             }}
             aria-label="Volver"
             className="p-1.5 -ml-1 rounded-full text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer shrink-0"
@@ -1117,110 +1149,118 @@ export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
               </div>
             </div>
 
-            {selectedCell && (
-              <div
-                onClick={(e) => e.stopPropagation()}
-                className="text-xs font-semibold text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-800/70 px-3 py-2 rounded-xl"
-              >
-                {selectedCell.dayLabel} ·{' '}
-                {String(selectedCell.hour).padStart(2, '0')}:00 hs:{' '}
-                <span className="font-black text-[#129D44]">
-                  {selectedCell.count}{' '}
-                  {selectedCell.count === 1 ? 'reserva' : 'reservas'}
-                </span>{' '}
-                ({selectedCell.complexCount} propias · {selectedCell.jogoCount}{' '}
-                de Jogo) · {selectedCell.pct}% ocupación
+            <AnimatePresence>
+              {selectedCell && (
+                <motion.div
+                  key="selected-cell-detail"
+                  initial={{ opacity: 0, y: -6, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -6, scale: 0.98 }}
+                  transition={{ duration: 0.18, ease: 'easeOut' }}
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-[11px] font-semibold text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-800/70 px-2.5 py-1.5 rounded-xl whitespace-nowrap overflow-hidden text-ellipsis"
+                >
+                  {selectedCell.dayShort}{' '}
+                  {String(selectedCell.hour).padStart(2, '0')}:00 ·{' '}
+                  <span className="font-black text-[#129D44]">
+                    {selectedCell.count} res
+                  </span>{' '}
+                  ({selectedCell.complexCount} propias · {selectedCell.jogoCount}{' '}
+                  Jogo) · {selectedCell.pct}% ocup.
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="w-full px-1 py-1">
+              <div className="grid grid-cols-[34px_repeat(7,minmax(0,1fr))] mb-1">
+                <div className="text-[10px] font-bold text-slate-400 flex items-center justify-center">
+                  Hora
+                </div>
               </div>
-            )}
 
-            <div className="overflow-x-auto">
-              <div className="min-w-[420px] px-1.5 py-1">
-                <div className="grid grid-cols-8 mb-1">
-                  <div className="text-[10px] font-bold text-slate-400 flex items-center justify-center">
-                    Hora
-                  </div>
-                </div>
-
-                <div className="space-y-0">
-                  {hourRows.map((h, rowIdx) => {
-                    const hourLabel = `${String(h % 24).padStart(2, '0')}:00`;
-                    return (
-                      <div key={h} className="grid grid-cols-8 items-center">
-                        <div className="text-[11px] font-mono font-semibold text-slate-500 dark:text-slate-400 text-center pr-1">
-                          {hourLabel}
-                        </div>
-                        {DAYS_OF_WEEK.map((d, colIdx) => {
-                          const cell = matrix.get(`${d.key}_${h}`) || {
-                            total: 0,
-                            jogo: 0,
-                            complex: 0,
-                          };
-                          const occDenom =
-                            (weekdayOccurrences.get(d.key) || 1) *
-                            activeCourtsDenominator;
-                          const pct =
-                            cell.total > 0
-                              ? Math.min(
-                                  100,
-                                  Math.round((cell.total / occDenom) * 100)
-                                )
-                              : 0;
-                          const displayVal =
-                            cell.total === 0
-                              ? ''
-                              : heatmapMode === 'percent'
-                              ? `${pct}%`
-                              : String(cell.total);
-                          const isSelected =
-                            selectedCell !== null &&
-                            selectedCell.dayLabel === d.full &&
-                            selectedCell.rawHour === h;
-
-                          return (
-                            <button
-                              key={`${d.key}_${h}`}
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSelectedCell({
-                                  dayLabel: d.full,
-                                  hour: h % 24,
-                                  rawHour: h,
-                                  count: cell.total,
-                                  jogoCount: cell.jogo,
-                                  complexCount: cell.complex,
-                                  pct,
-                                });
-                              }}
-                              className={`h-8 border-0 text-[11px] font-bold flex items-center justify-center transition-colors cursor-pointer ${getCornerRadius(
-                                rowIdx,
-                                colIdx
-                              )} ${getCellColor(cell.total)} ${
-                                isSelected
-                                  ? 'relative z-10 ring-2 ring-emerald-500 shadow-[0_0_0_5px_rgba(16,185,129,0.28)]'
-                                  : ''
-                              }`}
-                            >
-                              {displayVal}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                <div className="grid grid-cols-8 mt-1">
-                  <div />
-                  {DAYS_OF_WEEK.map((d) => (
+              <div className="space-y-0">
+                {hourRows.map((h, rowIdx) => {
+                  const hourLabel = `${String(h % 24).padStart(2, '0')}:00`;
+                  return (
                     <div
-                      key={d.key}
-                      className="text-[11px] font-mono font-semibold text-slate-500 dark:text-slate-400 text-center py-1"
+                      key={h}
+                      className="grid grid-cols-[34px_repeat(7,minmax(0,1fr))] items-center"
                     >
-                      {d.label}
+                      <div className="text-[11px] font-mono font-semibold text-slate-500 dark:text-slate-400 text-left pr-0.5 whitespace-nowrap">
+                        {hourLabel}
+                      </div>
+                      {DAYS_OF_WEEK.map((d, colIdx) => {
+                        const cell = matrix.get(`${d.key}_${h}`) || {
+                          total: 0,
+                          jogo: 0,
+                          complex: 0,
+                        };
+                        const occDenom =
+                          (weekdayOccurrences.get(d.key) || 1) *
+                          activeCourtsDenominator;
+                        const pct =
+                          cell.total > 0
+                            ? Math.min(
+                                100,
+                                Math.round((cell.total / occDenom) * 100)
+                              )
+                            : 0;
+                        const displayVal =
+                          cell.total === 0
+                            ? ''
+                            : heatmapMode === 'percent'
+                            ? `${pct}%`
+                            : String(cell.total);
+                        const isSelected =
+                          selectedCell !== null &&
+                          selectedCell.dayLabel === d.full &&
+                          selectedCell.rawHour === h;
+
+                        return (
+                          <button
+                            key={`${d.key}_${h}`}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedCell({
+                                dayLabel: d.full,
+                                dayShort: d.label,
+                                hour: h % 24,
+                                rawHour: h,
+                                count: cell.total,
+                                jogoCount: cell.jogo,
+                                complexCount: cell.complex,
+                                pct,
+                              });
+                            }}
+                            className={`aspect-square w-full border-0 text-[11px] font-bold flex items-center justify-center transition-colors cursor-pointer ${getCornerRadius(
+                              rowIdx,
+                              colIdx
+                            )} ${getCellColor(cell.total)} ${
+                              isSelected
+                                ? 'relative z-10 ring-2 ring-emerald-500 shadow-[0_0_0_5px_rgba(16,185,129,0.28)]'
+                                : ''
+                            }`}
+                          >
+                            {displayVal}
+                          </button>
+                        );
+                      })}
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
+              </div>
+
+              <div className="grid grid-cols-[34px_repeat(7,minmax(0,1fr))] mt-1">
+                <div />
+                {DAYS_OF_WEEK.map((d) => (
+                  <div
+                    key={d.key}
+                    className="text-[11px] font-mono font-semibold text-slate-500 dark:text-slate-400 text-center py-1"
+                  >
+                    {d.label}
+                  </div>
+                ))}
               </div>
             </div>
           </div>

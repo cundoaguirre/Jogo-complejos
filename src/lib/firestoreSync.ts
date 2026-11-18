@@ -42,6 +42,7 @@ import {
 } from './financialMath';
 import { calculateCancellationFinancialPlan } from './cancellationPolicy';
 import { isBookingPlayed } from './userMetrics';
+import { consumeProductBatchesFifo, type FifoConsumeResult } from './inventoryFifo';
 import { 
   normalizeUnifiedCourt, 
   resolveUnifiedSchedule, 
@@ -3515,38 +3516,38 @@ export async function adjustProductStockInFirestore(params: {
 
   const prodData = snap.data();
   const currentStock = Number(prodData.stock || 0);
-  const newStock = Math.max(0, currentStock + params.delta);
-
+  let newStock = Math.max(0, currentStock + params.delta);
   let batches: ProductBatch[] = Array.isArray(prodData.batches) ? [...prodData.batches] : [];
-  if (batches.length === 0 && currentStock > 0) {
-    batches.push({
-      id: `batch_compat_${params.productId.slice(0, 8)}`,
-      quantity: currentStock,
-      initialQuantity: currentStock,
-      unitCost: Number(prodData.purchasePrice || 0),
-      purchasePlace: 'Inventario inicial',
-      createdAt: prodData.createdAt || new Date().toISOString()
-    });
-  }
 
-  if (params.delta > 0) {
-    batches.push({
-      id: generateUUID(),
-      quantity: params.delta,
-      initialQuantity: params.delta,
-      unitCost: Number(prodData.purchasePrice || 0),
-      purchasePlace: 'Ajuste manual',
-      createdAt: new Date().toISOString()
-    });
-  } else if (params.delta < 0) {
-    let toReduce = Math.abs(params.delta);
-    batches.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
-    for (const b of batches) {
-      if (toReduce <= 0) break;
-      if (b.quantity <= 0) continue;
-      const take = Math.min(b.quantity, toReduce);
-      b.quantity -= take;
-      toReduce -= take;
+  if (params.delta < 0) {
+    const fifoResult = consumeProductBatchesFifo(
+      prodData,
+      params.productId,
+      Math.abs(params.delta)
+    );
+    newStock = fifoResult.newStock;
+    batches = fifoResult.updatedBatches;
+  } else {
+    if (batches.length === 0 && currentStock > 0) {
+      batches.push({
+        id: `batch_compat_${params.productId.slice(0, 8)}`,
+        quantity: currentStock,
+        initialQuantity: currentStock,
+        unitCost: Number(prodData.purchasePrice || 0),
+        purchasePlace: 'Inventario inicial',
+        createdAt: prodData.createdAt || new Date().toISOString()
+      });
+    }
+
+    if (params.delta > 0) {
+      batches.push({
+        id: generateUUID(),
+        quantity: params.delta,
+        initialQuantity: params.delta,
+        unitCost: Number(prodData.purchasePrice || 0),
+        purchasePlace: 'Ajuste manual',
+        createdAt: new Date().toISOString()
+      });
     }
   }
 
@@ -4302,7 +4303,8 @@ export async function createOperationWithInitialPayment(
       }
     }
 
-    // 2.3 Validación atómica de inventario (aborta sin escrituras parciales si falta stock)
+    // 2.3 Validación atómica de inventario y cálculo PEPS en memoria (sin lecturas nuevas)
+    const fifoResultsMap = new Map<string, FifoConsumeResult>();
     for (const [prodId, { snap, requestedQty }] of productSnaps.entries()) {
       if (!snap.exists()) {
         const itName = params.items?.find(it => it.productId === prodId)?.name || prodId;
@@ -4314,6 +4316,7 @@ export async function createOperationWithInitialPayment(
         const itName = prodData.name || params.items?.find(it => it.productId === prodId)?.name || prodId;
         throw new Error(`Stock insuficiente para '${itName}'. Disponible: ${currentStock}, Solicitado: ${requestedQty}.`);
       }
+      fifoResultsMap.set(prodId, consumeProductBatchesFifo(prodData, prodId, requestedQty));
     }
 
     // 2.4 Cálculos de saldos financieros
@@ -4411,15 +4414,28 @@ export async function createOperationWithInitialPayment(
       currentAccountAssigned: ccResult.assignedToCurrentAccount,
       currentAccountDebtAmount,
       items: (params.items || []).map(it => {
+        const itemQty = Number(it.quantity || 1);
+        const itemSubtotal = Number(it.subtotal || (itemQty * Number(it.unitPrice || 0)));
         const itemObj: any = {
           id: it.id || it.productId || generateUUID(),
           name: it.name,
-          quantity: Number(it.quantity || 1),
+          quantity: itemQty,
           unitPrice: Number(it.unitPrice || 0),
-          subtotal: Number(it.subtotal || (Number(it.quantity || 1) * Number(it.unitPrice || 0)))
+          subtotal: itemSubtotal
         };
         if (it.productId) {
           itemObj.productId = it.productId;
+          const fifo = fifoResultsMap.get(it.productId);
+          if (fifo) {
+            const totalRequested = productQuantities.get(it.productId) || itemQty;
+            const lineTotalCost = itemQty === totalRequested
+              ? Number(fifo.totalCMV.toFixed(2))
+              : Number((fifo.unitCost * itemQty).toFixed(2));
+            itemObj.unitCost = fifo.unitCost;
+            itemObj.totalCost = lineTotalCost;
+            itemObj.profit = Number((itemSubtotal - lineTotalCost).toFixed(2));
+            itemObj.category = fifo.category;
+          }
         }
         return itemObj;
       }),
@@ -4501,40 +4517,12 @@ export async function createOperationWithInitialPayment(
     const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     const hoursStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-    for (const [prodId, { ref: prodRef, snap, requestedQty }] of productSnaps.entries()) {
-      const prodData = snap.data();
-      const currentStock = Number(prodData.stock || 0);
-      const newStock = Math.max(0, currentStock - requestedQty);
-
-      // Consumo PEPS de tandas
-      let currentBatches: ProductBatch[] = Array.isArray(prodData.batches) ? [...prodData.batches] : [];
-      if (currentBatches.length === 0 && currentStock > 0) {
-        currentBatches.push({
-          id: `batch_compat_${prodId.slice(0, 8)}`,
-          quantity: currentStock,
-          initialQuantity: currentStock,
-          unitCost: Number(prodData.purchasePrice || 0),
-          purchasePlace: 'Inventario inicial',
-          createdAt: prodData.createdAt || new Date().toISOString()
-        });
-      }
-
-      // Ordenar por fecha de creación ascendente (más antiguas primero)
-      currentBatches.sort((a, b) => new Date(a.createdAt || 0).getTime() - new Date(b.createdAt || 0).getTime());
-      let qtyToConsume = requestedQty;
-      let totalCMV = 0;
-      for (const batch of currentBatches) {
-        if (qtyToConsume <= 0) break;
-        if (batch.quantity <= 0) continue;
-        const take = Math.min(batch.quantity, qtyToConsume);
-        batch.quantity -= take;
-        qtyToConsume -= take;
-        totalCMV += take * Number(batch.unitCost || 0);
-      }
+    for (const [prodId, { ref: prodRef, requestedQty }] of productSnaps.entries()) {
+      const fifoResult = fifoResultsMap.get(prodId)!;
 
       t.update(prodRef, {
-        stock: newStock,
-        batches: currentBatches,
+        stock: fifoResult.newStock,
+        batches: fifoResult.updatedBatches,
         updatedAt: serverTimestamp()
       } as any);
 
@@ -4546,11 +4534,11 @@ export async function createOperationWithInitialPayment(
         type: 'sale',
         typeLabel: 'Venta',
         quantity: -requestedQty,
-        resultingStock: newStock,
+        resultingStock: fifoResult.newStock,
         date: dateStr,
         time: hoursStr,
         actorName: params.userName || 'Punto de Venta',
-        notes: `Venta Mostrador · Ticket ${ticketCode}${totalCMV > 0 ? ` · CMV: $${totalCMV.toLocaleString()}` : ''}`,
+        notes: `Venta Mostrador · Ticket ${ticketCode}${fifoResult.totalCMV > 0 ? ` · CMV: $${fifoResult.totalCMV.toLocaleString()}` : ''}`,
         operationId,
         createdAt: serverTimestamp()
       });
