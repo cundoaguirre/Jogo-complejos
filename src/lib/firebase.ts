@@ -1,13 +1,37 @@
-import { initializeApp } from 'firebase/app';
+import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import {
+  getFirestore,
+  initializeFirestore,
+  doc,
+  getDocFromServer,
+  type Firestore,
+} from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
-export const app = initializeApp(firebaseConfig);
+export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
-// Explicitly target the shared Firestore database instance
-export const FIRESTORE_DATABASE_ID = "ai-studio-apidegestindecli-29cae824-e5de-47b3-b428-1f598e3f8424";
-export const db = getFirestore(app, FIRESTORE_DATABASE_ID); /* CRITICAL: The app will break without this line */
+// Explicitly target the shared Firestore database instance from firebase-applet-config.json
+export const FIRESTORE_DATABASE_ID =
+  firebaseConfig.firestoreDatabaseId ||
+  'ai-studio-apidegestindecli-29cae824-e5de-47b3-b428-1f598e3f8424';
+
+function createFirestoreInstance(): Firestore {
+  try {
+    // Force long-polling to avoid WebChannel/HTTP2 stream stalls in proxied/iframe environments
+    return initializeFirestore(
+      app,
+      {
+        experimentalForceLongPolling: true,
+      },
+      FIRESTORE_DATABASE_ID
+    );
+  } catch {
+    return getFirestore(app, FIRESTORE_DATABASE_ID);
+  }
+}
+
+export const db = createFirestoreInstance(); /* CRITICAL: The app will break without this line */
 export const auth = getAuth(app);
 export const googleProvider = new GoogleAuthProvider();
 // Force account selection so users with multiple Google accounts can choose which one to sign in with
@@ -15,15 +39,31 @@ googleProvider.setCustomParameters({
   prompt: 'select_account'
 });
 
+let connectionTestPromise: Promise<void> | null = null;
+
 export async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-    console.log("Connected to Firestore database instance:", FIRESTORE_DATABASE_ID);
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration for database:", FIRESTORE_DATABASE_ID);
-    }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    return;
   }
+  if (connectionTestPromise) return connectionTestPromise;
+
+  connectionTestPromise = (async () => {
+    try {
+      await getDocFromServer(doc(db, 'test', 'connection'));
+      console.log('Connected to Firestore database instance:', FIRESTORE_DATABASE_ID);
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('the client is offline')) {
+        console.warn(
+          'Firestore backend unreachable (offline mode). Retrying automatically when network stabilizes. Database:',
+          FIRESTORE_DATABASE_ID
+        );
+      }
+    } finally {
+      connectionTestPromise = null;
+    }
+  })();
+
+  return connectionTestPromise;
 }
 
 export enum OperationType {

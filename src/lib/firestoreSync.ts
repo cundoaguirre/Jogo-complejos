@@ -627,7 +627,8 @@ export async function saveCourtInFirestore(
     status: court.status === 'inactiva' ? 'inactiva' : 'activa',
     is_roofed: Boolean(court.is_roofed ?? (court as any).isCovered),
     isCovered: Boolean(court.is_roofed ?? (court as any).isCovered),
-    blockedCourts: normalizedBlockedCourts
+    blockedCourts: normalizedBlockedCourts,
+    defaultDurationMinutes: Number((court as any).defaultDurationMinutes) || 60,
   };
 
   const idx = existingCourts.findIndex(c => String(c.id) === String(courtId));

@@ -19,6 +19,7 @@ export interface Court {
   is_roofed?: boolean;
   status?: 'available' | 'maintenance' | 'activa' | 'inactiva' | string;
   blockedCourts?: (number | string)[];
+  defaultDurationMinutes?: number;
 }
 
 export type BookingCreatedSource = 'jogo' | 'complejo';

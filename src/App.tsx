@@ -81,6 +81,16 @@ import { CancelBookingModal } from './components/CancelBookingModal';
 import { DeleteBookingModal } from './components/DeleteBookingModal';
 import { downloadUnifiedWeeklyReportPdf } from './lib/weeklyReportPdfGenerator';
 import { requestNotificationPermissionAndGetToken, initForegroundNotificationListener } from './lib/notifications';
+import {
+  areCourtsMutuallyBlocked,
+  getCourtDefaultDuration,
+  computeEndTime,
+  computeProportionalPrice,
+  generateHalfHourSlots,
+} from './lib/scheduleUtils';
+import { CourtEditModal } from './components/CourtEditModal';
+import { BookingStepOneForm } from './components/booking/BookingStepOneForm';
+import { AgendaGrid } from './components/agenda/AgendaGrid';
 
 // --- Components ---
 
@@ -186,28 +196,6 @@ export const MAIN_NAV_ITEMS: NavItemDef[] = [
   { id: 'users', label: 'Usuarios', icon: Users },
   { id: 'profile', label: 'Perfil', icon: Store },
 ];
-
-/**
- * Determina si dos canchas tienen bloqueo mutuo bidireccional por superposición física.
- */
-export const areCourtsMutuallyBlocked = (
-  courtAId: string | number | undefined | null,
-  courtBId: string | number | undefined | null,
-  courtsList: any[]
-): boolean => {
-  if (!courtAId || !courtBId) return false;
-  const strA = String(courtAId);
-  const strB = String(courtBId);
-  if (strA === strB) return false;
-
-  const courtA = (courtsList || []).find(c => String(c.id) === strA);
-  const courtB = (courtsList || []).find(c => String(c.id) === strB);
-
-  const aBlocksB = Array.isArray(courtA?.blockedCourts) && courtA.blockedCourts.map(String).includes(strB);
-  const bBlocksA = Array.isArray(courtB?.blockedCourts) && courtB.blockedCourts.map(String).includes(strA);
-
-  return Boolean(aBlocksB || bBlocksA);
-};
 
 const Sidebar = ({ 
   active, 
@@ -3296,7 +3284,13 @@ const CreateMatchModal = ({
     }
 
     const currentCourt = courts.find(c => String(c.id) === String(initialCourtId)) || (courts.length > 0 ? courts[0] : null);
-    const courtPrice = Number(currentCourt?.price_per_hour ?? currentCourt?.price ?? 0);
+    const initialDuration = (isRealMatch && Number(initialData?.durationMinutes))
+      ? Number(initialData.durationMinutes)
+      : getCourtDefaultDuration(currentCourt);
+    const courtPrice = computeProportionalPrice(
+      Number(currentCourt?.price_per_hour ?? currentCourt?.price ?? 0),
+      initialDuration
+    );
     if (isRealMatch) {
       if (initialPaymentStatus === 'partial' && initialAmountPaid === 0 && courtPrice > 0) {
         initialAmountPaid = Math.round(courtPrice * 0.1);
@@ -3317,6 +3311,7 @@ const CreateMatchModal = ({
       clientEmail: initialClientEmail,
       date: initialDate,
       time: initialTime,
+      durationMinutes: initialDuration,
       status: initialStatus,
       payment_status: initialPaymentStatus,
       amount_paid: initialAmountPaid,
@@ -3361,12 +3356,15 @@ const CreateMatchModal = ({
 
   const isJogoCreated = Boolean((initialData || data)?.createdSource === 'jogo' || (initialData as any)?.originalDoc?.createdSource === 'jogo');
   const selectedCourt = courts.find(c => String(c.id) === String(data.court_id)) || (courts.length > 0 ? courts[0] : null);
-  const priceTotal = Number(selectedCourt?.price_per_hour ?? selectedCourt?.price ?? 0);
+  const selectedDuration = Number(data.durationMinutes) || getCourtDefaultDuration(selectedCourt);
+  const priceTotal = computeProportionalPrice(
+    Number(selectedCourt?.price_per_hour ?? selectedCourt?.price ?? 0),
+    selectedDuration
+  );
 
-  // 3. Hora: Desplegable con filtro reactivo de turnos ocupados
-  const getAvailableHours = useCallback(() => {
-    const defaultHours = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24];
-    let hoursRange: number[] = defaultHours;
+  const allHalfHourSlots = useMemo(() => {
+    let startH = 8;
+    let endH = 24;
 
     if (venue && Array.isArray(venue.hours) && data.date) {
       const [y, m, d] = data.date.split('-').map(Number);
@@ -3384,26 +3382,30 @@ const CreateMatchModal = ({
         }
 
         if (hourConfig) {
-          const startH = parseInt(hourConfig.start?.split(':')[0] || hourConfig.openTime?.split(':')[0] || '14', 10);
-          let endH = parseInt(hourConfig.end?.split(':')[0] || hourConfig.closeTime?.split(':')[0] || '0', 10);
+          startH = parseInt(hourConfig.start?.split(':')[0] || hourConfig.openTime?.split(':')[0] || '14', 10);
+          endH = parseInt(hourConfig.end?.split(':')[0] || hourConfig.closeTime?.split(':')[0] || '0', 10);
           if (isNaN(endH) || endH === 0 || hourConfig.crossesMidnight || hourConfig.end === '00:00') {
             endH = 24;
           }
-
-          const generated: number[] = [];
-          if (startH <= endH) {
-            for (let i = startH; i <= endH; i++) generated.push(i);
-          } else {
-            for (let i = startH; i <= 24; i++) generated.push(i);
-            for (let i = 0; i <= endH; i++) generated.push(i);
-          }
-          if (generated.length > 0) hoursRange = generated;
         }
       }
     }
 
-    // Duración de la reserva que se está creando/editando (60 min)
-    const newDurationMin = 60;
+    if (startH <= endH) {
+      return generateHalfHourSlots(startH, endH);
+    }
+    return [
+      ...generateHalfHourSlots(startH, 24),
+      ...generateHalfHourSlots(0, endH),
+    ];
+  }, [venue, data.date]);
+
+  // 3. Hora: Desplegable con filtro reactivo de turnos ocupados cada 30 min
+  const getAvailableHours = useCallback(() => {
+    if (allHalfHourSlots.length === 0) return [];
+
+    // Duración de la reserva que se está creando/editando
+    const newDurationMin = selectedDuration;
 
     // Filtrar turnos activos que ocupan la cancha y fecha elegidas o canchas superpuestas bloqueadas
     const activeBookingsForCourt = (existingBookings || []).filter(b => {
@@ -3426,9 +3428,8 @@ const CreateMatchModal = ({
     });
 
     const result: string[] = [];
-    for (const h of hoursRange) {
-      const timeStr = h === 24 ? "00:00" : `${String(h % 24).padStart(2, '0')}:00`;
-      const slotStartMin = (h % 24) * 60;
+    for (const timeStr of allHalfHourSlots) {
+      const slotStartMin = timeStringToMinutes(timeStr);
       const slotEndMin = slotStartMin + newDurationMin;
 
       // Evaluar colisión real por solapamiento de intervalos [inicio, fin)
@@ -3442,13 +3443,13 @@ const CreateMatchModal = ({
         return intervalsOverlap(slotStartMin, slotEndMin, bStartMin, bEndMin);
       });
 
-      if (!hasCollision) {
-        if (!result.includes(timeStr)) result.push(timeStr);
+      if (!hasCollision && !result.includes(timeStr)) {
+        result.push(timeStr);
       }
     }
 
     return result;
-  }, [venue, data.date, data.court_id, data.id, existingBookings, selectedCourt, courts]);
+  }, [allHalfHourSlots, selectedDuration, data.date, data.court_id, data.id, existingBookings, selectedCourt, courts]);
 
   const availableHours = getAvailableHours();
   const displayHours = availableHours;
@@ -3458,7 +3459,7 @@ const CreateMatchModal = ({
     if (!data.date || !data.time) return false;
     const [h, m] = data.time.split(':').map(Number);
     const slotStartMin = (isNaN(h) ? 0 : h) * 60 + (isNaN(m) ? 0 : m);
-    const slotEndMin = slotStartMin + 60;
+    const slotEndMin = slotStartMin + selectedDuration;
 
     return (existingBookings || []).some(b => {
       if (!b) return false;
@@ -3485,7 +3486,7 @@ const CreateMatchModal = ({
       let bEndMin = bEndStr ? timeStringToMinutes(bEndStr) : bStartMin + 60;
       return intervalsOverlap(slotStartMin, slotEndMin, bStartMin, bEndMin);
     });
-  }, [data.date, data.time, data.id, existingBookings, courts]);
+  }, [data.date, data.time, data.id, existingBookings, courts, selectedDuration]);
 
   // Si cambia la cancha o la fecha y el horario previo quedó ocupado, actualizar al primer disponible
   useEffect(() => {
@@ -3661,7 +3662,7 @@ const CreateMatchModal = ({
     const startDateTime = (!isNaN(y) && !isNaN(m) && !isNaN(d)) 
       ? new Date(y, m - 1, d, isNaN(hh) ? 18 : hh, isNaN(mm) ? 0 : mm)
       : new Date();
-    const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000);
+    const endDateTime = new Date(startDateTime.getTime() + selectedDuration * 60 * 1000);
     const endTimeStr = `${String(endDateTime.getHours()).padStart(2, '0')}:${String(endDateTime.getMinutes()).padStart(2, '0')}`;
     const courtName = selectedCourt?.name || 'Cancha';
 
@@ -3712,7 +3713,7 @@ const CreateMatchModal = ({
         endTime: endTimeStr,
         start_time: startDateTime.toISOString(),
         end_time: endDateTime.toISOString(),
-        durationMinutes: 60,
+        durationMinutes: selectedDuration,
         price: priceTotal,
         price_total: priceTotal,
         deposit: paidAmount,
@@ -3792,9 +3793,7 @@ const CreateMatchModal = ({
   const isBookingClientBlocked = hasPendingBookingPayment && !hasClient;
   const canConfirmBooking = (isBookingMathExact || isBookingSobra) && !isBookingClientBlocked && !isSubmitting && priceTotal > 0;
 
-  const [hhCalc, mmCalc] = (data.time || '18:00').split(':').map(Number);
-  const endHourCalc = isNaN(hhCalc) ? 19 : ((hhCalc + 1) % 24);
-  const endTimeStr = `${String(endHourCalc).padStart(2, '0')}:${String(isNaN(mmCalc) ? 0 : mmCalc).padStart(2, '0')}`;
+  const endTimeStr = computeEndTime(data.time || '18:00', selectedDuration);
 
   const selectedUserName = clientDisplayName;
   const filteredUsers = users.filter(u => {
@@ -3823,27 +3822,25 @@ const CreateMatchModal = ({
           exit={{ y: '100%' }}
           transition={{ type: 'spring', damping: 28, stiffness: 300 }}
           onClick={(e) => e.stopPropagation()}
-          className="w-full max-w-lg rounded-t-[32px] sm:rounded-3xl bg-[#f8fafc] dark:bg-slate-900 border-t border-x border-gray-100 dark:border-slate-800 shadow-2xl overflow-hidden mx-auto flex flex-col max-h-[92vh]"
+          className="w-full max-w-lg rounded-t-[32px] sm:rounded-3xl bg-[#f4f6f7] dark:bg-slate-900 border-t border-x border-gray-100 dark:border-slate-800 shadow-2xl overflow-hidden mx-auto flex flex-col max-h-[92vh]"
         >
           {/* Barra gris de arrastre */}
           <div className="w-12 h-1.5 bg-gray-300 dark:bg-slate-700 rounded-full mx-auto mt-3 mb-2 shrink-0" />
 
           {/* En Paso 1: Cabecera con pestañas. En Paso 2: Cabecera estandarizada con botón volver */}
           {step === 1 ? (
-            <div className="px-4 sm:px-5 pb-3 border-b border-gray-100 dark:border-slate-800 shrink-0 space-y-2 bg-white dark:bg-slate-900">
-              <div className="flex justify-between items-center">
-                <div>
-                  <h2 className="text-base sm:text-lg font-bold text-gray-900 dark:text-white flex items-center gap-2">
-                    <span>{data.id ? 'Editar reserva' : 'Nueva reserva'}</span>
-                  </h2>
-                </div>
+            <div className="px-4 sm:px-5 pb-3 border-b border-gray-100 dark:border-slate-800 shrink-0 space-y-2.5 bg-[#f4f6f7] dark:bg-slate-900">
+              <div className="relative flex items-center justify-center min-h-[28px]">
+                <h2 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white text-center">
+                  {data.id ? 'Editar reserva' : 'Crear reserva'}
+                </h2>
 
-                <div className="flex items-center gap-1">
+                <div className="absolute right-0 flex items-center gap-1">
                   {data.id && onDeleteBooking && !isStaff && !isJogoCreated && (
                     <button 
                       type="button" 
                       onClick={() => onDeleteBooking(initialData || data)}
-                      className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
+                      className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors cursor-pointer"
                       title="Eliminar reserva definitivamente"
                     >
                       <Trash2 size={18} />
@@ -3856,7 +3853,8 @@ const CreateMatchModal = ({
                       e.stopPropagation();
                       onClose();
                     }}
-                    className="text-gray-400 hover:text-gray-600 dark:hover:text-slate-300 p-1 cursor-pointer"
+                    className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-1 cursor-pointer"
+                    aria-label="Cerrar"
                   >
                     <X size={18} />
                   </button>
@@ -3864,7 +3862,7 @@ const CreateMatchModal = ({
               </div>
 
               {/* Selector de pasos visual plano sin fondo de caja */}
-              <div className="grid grid-cols-2 gap-4 pt-1">
+              <div className="grid grid-cols-2 gap-4 pt-0.5">
                 <button
                   type="button"
                   onClick={() => setStep(1)}
@@ -3872,13 +3870,13 @@ const CreateMatchModal = ({
                 >
                   <span className={cn(
                     "text-xs sm:text-sm pb-1.5 block text-center transition-colors",
-                    step === 1 ? "font-extrabold text-gray-900 dark:text-white" : "font-bold text-gray-400"
+                    step === 1 ? "font-bold text-slate-900 dark:text-white" : "font-semibold text-slate-400"
                   )}>
-                    1. Datos del Turno
+                    Datos de la reserva
                   </span>
                   <div className={cn(
                     "h-1 rounded-full w-full transition-all",
-                    step === 1 ? "bg-[#129D44]" : "bg-gray-200 dark:bg-slate-700"
+                    step === 1 ? "bg-[#0f9d42]" : "bg-slate-200 dark:bg-slate-700"
                   )} />
                 </button>
                 <button
@@ -3886,10 +3884,10 @@ const CreateMatchModal = ({
                   onClick={handleProceedToPayment}
                   className="cursor-pointer text-left flex flex-col items-center"
                 >
-                  <span className="text-xs sm:text-sm pb-1.5 block text-center transition-colors font-bold text-gray-400">
-                    2. Registrar Pago
+                  <span className="text-xs sm:text-sm pb-1.5 block text-center transition-colors font-semibold text-slate-400">
+                    Registrar cobro
                   </span>
-                  <div className="h-1 rounded-full w-full transition-all bg-gray-200 dark:bg-slate-700" />
+                  <div className="h-1 rounded-full w-full transition-all bg-slate-200 dark:bg-slate-700" />
                 </button>
               </div>
             </div>
@@ -3915,227 +3913,84 @@ const CreateMatchModal = ({
           {/* CUERPO DEL PASO 1: DATOS DEL TURNO */}
           {step === 1 ? (
             <>
-              <div className="space-y-3 p-4 sm:p-5 pt-3 overflow-y-auto pr-2 flex-1 text-xs sm:text-sm">
-              {/* 1. Cliente: Buscador con botón '+ Nuevo Cliente' */}
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = !isSelectUserOpen;
-                      setIsSelectUserOpen(next);
-                      if (next) {
-                        setTimeout(() => userSearchInputRef.current?.focus(), 80);
-                      }
-                    }}
-                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-left flex justify-between items-center focus:ring-2 focus:ring-[#129D44] outline-none cursor-pointer relative"
-                  >
-                    <UserIcon size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                    <span className={selectedUserName ? "text-gray-900 dark:text-white font-medium truncate text-xs sm:text-sm" : "text-gray-400 truncate text-xs sm:text-sm"}>
-                      {selectedUserName || "Buscar o seleccionar cliente..."}
-                    </span>
-                    <ChevronDown size={15} className="text-gray-400 shrink-0 ml-1" />
-                  </button>
+              <BookingStepOneForm
+                data={data}
+                setData={setData}
+                courts={courts}
+                selectedCourt={selectedCourt}
+                priceTotal={priceTotal}
+                selectedDuration={selectedDuration}
+                selectedUserName={selectedUserName}
+                isSelectUserOpen={isSelectUserOpen}
+                setIsSelectUserOpen={setIsSelectUserOpen}
+                userSearch={userSearch}
+                setUserSearch={setUserSearch}
+                userSearchInputRef={userSearchInputRef}
+                filteredUsers={filteredUsers}
+                onOpenNewUser={() => setIsAddingNewUser(true)}
+                allHalfHourSlots={allHalfHourSlots}
+                displayHours={displayHours}
+                isCourtOccupiedForTime={isCourtOccupiedForTime}
+                onCourtChange={(newCourtId) => {
+                  if (isCourtOccupiedForTime(newCourtId)) return;
+                  const court = courts.find((c) => String(c.id) === String(newCourtId));
+                  const nextDuration = !data.id ? getCourtDefaultDuration(court) : selectedDuration;
+                  const newPrice = computeProportionalPrice(
+                    Number(court?.price_per_hour ?? court?.price ?? 0),
+                    nextDuration
+                  );
+                  setData((prev: any) => ({
+                    ...prev,
+                    court_id: newCourtId,
+                    ...(!prev.id ? { durationMinutes: nextDuration } : {}),
+                  }));
+                  if (data.id && bookingPayments.length <= 1) {
+                    setBookingPayments([
+                      { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: newPrice },
+                    ]);
+                  }
+                }}
+                errorMessage={errorMessage}
+              />
 
-                  {isSelectUserOpen && (
-                    <div className="absolute z-20 w-full mt-1 bg-white dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl shadow-xl overflow-hidden">
-                      <div className="p-2 border-b border-gray-100 dark:border-slate-700 flex items-center bg-gray-50 dark:bg-slate-900/50">
-                        <Search size={14} className="text-gray-400 ml-1 shrink-0" />
-                        <input 
-                          ref={userSearchInputRef}
-                          type="text"
-                          placeholder="Buscar por nombre o teléfono..."
-                          className="w-full px-2 py-1 bg-transparent outline-none text-xs text-gray-900 dark:text-white"
-                          value={userSearch}
-                          onChange={e => setUserSearch(e.target.value)}
-                        />
-                      </div>
-                      <div className="max-h-40 overflow-y-auto divide-y divide-gray-50 dark:divide-slate-700/50">
-                        {filteredUsers.map((u, uIdx) => (
-                          <div 
-                            key={`select-user-${u.id || uIdx}-${uIdx}`}
-                            onClick={() => {
-                              setData((prev: any) => ({
-                                ...prev,
-                                host_id: u.id,
-                                clientName: u.name,
-                                clientPhone: u.phone || '',
-                                clientEmail: u.email || '',
-                                canonicalId: u.canonicalId,
-                                canonicalName: u.canonicalName,
-                                historicalId: u.historicalId,
-                                historicalIds: u.historicalIds
-                              }));
-                              setIsSelectUserOpen(false);
-                              setUserSearch('');
-                            }}
-                            className="p-2.5 hover:bg-gray-50 dark:hover:bg-slate-700/50 cursor-pointer flex items-center justify-between transition-colors"
-                          >
-                            <div className="min-w-0 pr-2">
-                              <span className="font-semibold text-gray-900 dark:text-white truncate block">{u.name}</span>
-                              {u.phone && <span className="text-[11px] text-gray-400 dark:text-slate-400 block">{u.phone}</span>}
-                            </div>
-                            {String(data.host_id) === String(u.id) && <Check size={14} className="text-[#129D44] shrink-0" />}
-                          </div>
-                        ))}
-                        {filteredUsers.length === 0 && (
-                          <div className="p-3 text-center text-xs text-gray-400 dark:text-slate-500">
-                            No se encontraron usuarios. Usa "+ Nuevo Cliente".
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
+              {/* Botón de Acción al Pie para Paso 1 */}
+              {(() => {
+                const isStepOneDisabled =
+                  isSubmitting ||
+                  (!data.host_id && !data.clientName) ||
+                  !data.date ||
+                  !data.time ||
+                  !data.court_id;
+                return (
+                  <div className="flex flex-col gap-2 px-4 sm:px-5 py-3.5 shrink-0 bg-[#f4f6f7] dark:bg-slate-900">
+                    <button
+                      type="button"
+                      onClick={(data.id && isBookingMathExact) ? handleSubmit : handleProceedToPayment}
+                      disabled={isStepOneDisabled}
+                      className={cn(
+                        'w-full py-3.5 rounded-2xl font-bold text-sm sm:text-base transition-colors cursor-pointer',
+                        isStepOneDisabled
+                          ? 'bg-slate-300 dark:bg-slate-700 text-white cursor-not-allowed'
+                          : 'bg-[#0f9d42] hover:bg-emerald-700 text-white shadow-sm'
+                      )}
+                    >
+                      {data.id && isBookingMathExact ? 'Guardar cambios' : 'Continuar'}
+                    </button>
 
-                <button 
-                  type="button"
-                  onClick={() => setIsAddingNewUser(true)}
-                  className="h-9.5 px-3 inline-flex items-center gap-1.5 text-xs font-bold text-[#129D44] bg-[#129D44]/10 hover:bg-[#129D44]/20 rounded-xl cursor-pointer border border-[#129D44]/30 shrink-0 transition-colors"
-                >
-                  <Plus size={13} strokeWidth={2.5} />
-                  <span>Nuevo Cliente</span>
-                </button>
-              </div>
-
-              {/* 2 & 3. Fecha y Hora */}
-              <div className="grid grid-cols-2 gap-2.5">
-                <div className="relative flex items-center">
-                  <Calendar size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                  <input 
-                    type="date" 
-                    value={data.date || ''}
-                    onChange={e => setData({ ...data, date: e.target.value })}
-                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]" 
-                  />
-                </div>
-
-                <div className="relative flex items-center">
-                  <Clock size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                  <select 
-                    value={data.time || ''}
-                    onChange={e => setData({ ...data, time: e.target.value })}
-                    disabled={!data.date || displayHours.length === 0}
-                    className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44] disabled:opacity-50"
-                  >
-                    <option value="" disabled>
-                      {!data.date ? 'Elige fecha' : displayHours.length === 0 ? 'Sin horarios' : 'Seleccionar horario...'}
-                    </option>
-                    {displayHours.map((time, tIdx) => (
-                      <option key={`opt-time-${time}-${tIdx}`} value={time}>
-                        {time} hs
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              {/* 4. Cancha */}
-              <div className="relative flex items-center">
-                <Trophy size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                <select
-                  value={data.court_id ? String(data.court_id) : ''}
-                  onChange={e => {
-                    const newCourtId = e.target.value;
-                    if (isCourtOccupiedForTime(newCourtId)) return;
-                    const court = courts.find(c => String(c.id) === String(newCourtId));
-                    const newPrice = Number(court?.price_per_hour ?? court?.price ?? 0);
-                    setData((prev: any) => ({
-                      ...prev,
-                      court_id: newCourtId
-                    }));
-                    if (data.id && bookingPayments.length <= 1) {
-                      setBookingPayments([
-                        { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: newPrice }
-                      ]);
-                    }
-                  }}
-                  className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 rounded-xl border border-gray-200 dark:border-slate-700 text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44]"
-                >
-                  <option value="" disabled>Seleccionar cancha...</option>
-                  {courts.map((court, cIdx) => {
-                    const isOccupied = isCourtOccupiedForTime(court.id);
-                    const isInactive = court.status === 'inactiva';
-                    const isDisabled = isOccupied || isInactive;
-                    return (
-                      <option 
-                        key={`court-opt-${court.id || cIdx}`} 
-                        value={String(court.id)}
-                        disabled={isDisabled}
-                        className={isDisabled ? "text-gray-400 dark:text-gray-500 bg-gray-100 dark:bg-slate-800" : ""}
+                    {data.id && (data.status !== 'cancelado' && data.status !== 'cancelled') && onCancelBooking && !isJogoCreated && (
+                      <button
+                        type="button"
+                        onClick={() => onCancelBooking(initialData || data)}
+                        disabled={isSubmitting}
+                        className="w-full py-2 rounded-xl font-bold text-xs sm:text-sm text-red-600 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors cursor-pointer disabled:opacity-50"
                       >
-                        {court.name} - ${Number(court.price_per_hour ?? court.price ?? 0).toLocaleString()} {isInactive ? '(Inactiva)' : isOccupied ? '(Ocupada)' : ''}
-                      </option>
-                    );
-                  })}
-                </select>
-              </div>
-              {data.court_id && !(data.status === 'cancelado' || data.status === 'cancelled') && isCourtOccupiedForTime(data.court_id) && (
-                <p className="text-[11px] text-red-600 dark:text-red-400 font-bold mt-1.5 flex items-center gap-1">
-                  <AlertCircle size={13} className="shrink-0" />
-                  <span>Esta cancha ya está ocupada en el horario seleccionado. Elegí otra cancha o cambiá el horario.</span>
-                </p>
-              )}
-
-              {/* 5. Notas u Observaciones */}
-              <div className="relative flex items-center">
-                <FileText size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
-                <input 
-                  type="text"
-                  placeholder="Notas u observaciones (opcional)..."
-                  value={data.notes || ''}
-                  onChange={e => setData({ ...data, notes: e.target.value })}
-                  className="w-full h-9.5 pl-9 pr-3 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl text-xs sm:text-sm font-medium text-gray-900 dark:text-white outline-none focus:ring-2 focus:ring-[#129D44] placeholder:text-gray-400"
-                />
-              </div>
-
-              {/* Mensaje de error si falta algún dato */}
-              {errorMessage && (
-                <div className="p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/60 rounded-xl text-red-700 dark:text-red-300 text-xs font-semibold flex items-center gap-2">
-                  <AlertTriangle size={16} className="shrink-0 text-red-600 dark:text-red-400" />
-                  <span>{errorMessage}</span>
-                </div>
-              )}
-            </div>
-
-            {/* Botones de Acción al Pie para Paso 1 */}
-            <div className="flex items-center justify-between gap-2.5 px-4 sm:px-5 py-3 border-t border-gray-100 dark:border-slate-800 shrink-0 bg-white dark:bg-slate-900">
-              {data.id && (data.status !== 'cancelado' && data.status !== 'cancelled') && onCancelBooking && !isJogoCreated ? (
-                <button 
-                  type="button" 
-                  onClick={() => onCancelBooking(initialData || data)}
-                  disabled={isSubmitting}
-                  className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-white bg-red-600 hover:bg-red-700 transition-colors shadow-sm shadow-red-600/20 cursor-pointer disabled:opacity-50"
-                >
-                  Cancelar reserva
-                </button>
-              ) : null}
-
-              <div className="flex items-center gap-2 flex-1 justify-end">
-                <button 
-                  type="button" 
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    onClose();
-                  }}
-                  disabled={isSubmitting}
-                  className="py-2.5 px-3.5 rounded-xl font-bold text-xs sm:text-sm text-gray-700 dark:text-slate-300 bg-gray-100 dark:bg-slate-800 hover:bg-gray-200 dark:hover:bg-slate-700 transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  {data.id ? 'Cerrar' : 'Cancelar'}
-                </button>
-                <button 
-                  type="button" 
-                  onClick={(data.id && isBookingMathExact) ? handleSubmit : handleProceedToPayment} 
-                  disabled={isSubmitting || (!data.host_id && !data.clientName) || !data.date || !data.time || !data.court_id}
-                  className="py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm text-white bg-emerald-600 hover:bg-emerald-700 transition-colors shadow-md disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-                >
-                  <span>{data.id ? (isBookingMathExact ? 'Guardar cambios' : 'Siguiente: Registrar Pago') : 'Continuar al Pago'}</span>
-                  {!(data.id && isBookingMathExact) && <ArrowRight size={15} />}
-                </button>
-              </div>
-            </div>
-          </>
+                        Cancelar reserva
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
+            </>
         ) : (
           /* CUERPO DEL PASO 2: REGISTRAR EL PAGO (IDÉNTICO A MOSTRADOR Y GASTOS) */
           <div 
@@ -5995,52 +5850,6 @@ const ScheduleView = ({
     return { isOpenDay: true, timeSlots: slots };
   }, [selectedDateStr, venueHours]);
 
-  // Match lookup para una cancha y un slot específicos (excluye estrictamente reservas canceladas)
-  const getMatchForCourtSlot = (courtId: string | number, rawHour: number) => {
-    const targetHour = rawHour % 24;
-    const courtObj = courts.find(c => String(c.id) === String(courtId));
-    return matches.find(m => {
-      if (!m) return false;
-      const status = String(m.status || '').toLowerCase();
-      if (status === 'cancelado' || status === 'cancelled') return false;
-
-      const sameCourt = String(m.court_id) === String(courtId) || 
-                        String((m as any).courtId) === String(courtId) ||
-                        (courtObj && m.court_name && m.court_name === courtObj.name) ||
-                        (courtObj && m.courtName && m.courtName === courtObj.name);
-      if (!sameCourt) return false;
-
-      const matchDateStr = m.date || (m.start_time ? String(m.start_time).split('T')[0] : '');
-      if (matchDateStr !== selectedDateStr) return false;
-
-      const startTimeStr = m.startTime || (m.start_time && m.start_time.includes('T') ? m.start_time.split('T')[1].substring(0, 5) : '');
-      const matchHour = startTimeStr ? parseInt(startTimeStr.split(':')[0], 10) : (m.start_time ? new Date(m.start_time).getHours() : -1);
-
-      return matchHour === targetHour;
-    });
-  };
-
-  // Lookup de reserva que bloquee a esta cancha por superposición mutua (bloqueo bidireccional)
-  const getBlockingMatchForCourtSlot = (courtId: string | number, rawHour: number) => {
-    const targetHour = rawHour % 24;
-    return matches.find(m => {
-      if (!m) return false;
-      const status = String(m.status || '').toLowerCase();
-      if (status === 'cancelado' || status === 'cancelled') return false;
-
-      const otherCourtId = (m as any).courtId || m.court_id;
-      if (!areCourtsMutuallyBlocked(courtId, otherCourtId, courts)) return false;
-
-      const matchDateStr = m.date || (m.start_time ? String(m.start_time).split('T')[0] : '');
-      if (matchDateStr !== selectedDateStr) return false;
-
-      const startTimeStr = m.startTime || (m.start_time && m.start_time.includes('T') ? m.start_time.split('T')[1].substring(0, 5) : '');
-      const matchHour = startTimeStr ? parseInt(startTimeStr.split(':')[0], 10) : (m.start_time ? new Date(m.start_time).getHours() : -1);
-
-      return matchHour === targetHour;
-    });
-  };
-
   // Posición de la línea de hora actual
   const getCurrentTimePosition = () => {
     const todayYMD = getTodayLocalYMD();
@@ -6363,185 +6172,19 @@ const ScheduleView = ({
                 <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">Configura los horarios en la sección de Perfil.</p>
               </div>
             ) : (
-              <div className="relative">
-                {/* Cabecera de Nombres de Cancha arriba de las columnas */}
-                <div className="flex items-center pb-2">
-                  <div className="w-14 shrink-0" />
-                  <div className="flex-1 flex gap-2">
-                    {displayedCourts.map((c) => (
-                      <div 
-                        key={`col-header-${c.id}`} 
-                        className="flex-1 text-center text-sm font-medium text-gray-600 dark:text-slate-300 truncate"
-                      >
-                        {c.name}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Área de Grilla (Horas y Columnas de Canchas) */}
-                <div className="relative flex">
-                  {/* Columna izquierda de Horas ubicadas ENTRE medio de un bloque y otro (legibilidad mejorada) */}
-                  <div 
-                    className="w-14 shrink-0 relative"
-                    style={{ height: `${timeSlots.length * slotHeight}px` }}
-                  >
-                    {timeSlots.map((rawHour, i) => {
-                      const hourLabel = rawHour === 24 ? "00:00" : `${String(rawHour % 24).padStart(2, '0')}:00`;
-                      return (
-                        <div
-                          key={`hour-slot-lbl-${rawHour}-${i}`}
-                          className="absolute left-0 -translate-y-1/2 text-xs font-medium text-gray-400 dark:text-slate-400 font-sans select-none"
-                          style={{ top: `${i * slotHeight}px` }}
-                        >
-                          {hourLabel}
-                        </div>
-                      );
-                    })}
-                    {timeSlots.length > 0 && (() => {
-                      const lastHour = timeSlots[timeSlots.length - 1];
-                      const closingHour = (lastHour + 1) % 24;
-                      const closingLabel = `${String(closingHour).padStart(2, '0')}:00`;
-                      return (
-                        <div
-                          key="hour-slot-lbl-closing"
-                          className="absolute left-0 -translate-y-1/2 text-xs font-medium text-gray-400 dark:text-slate-400 font-sans select-none"
-                          style={{ top: `${timeSlots.length * slotHeight}px` }}
-                        >
-                          {closingLabel}
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* Área de Canchas */}
-                  <div className="flex-1 relative">
-                    {/* Línea roja de hora actual */}
-                    {currentTimePos !== null && (
-                      <div 
-                        className="absolute -left-14 right-0 z-20 flex items-center pointer-events-none -translate-y-1/2"
-                        style={{ top: `${currentTimePos}px` }}
-                      >
-                        <div className="w-14 shrink-0 text-left pl-0 text-[10px] font-semibold text-red-500">
-                          {format(currentTime, 'HH:mm')}
-                        </div>
-                        <div className="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0" />
-                        <div className="flex-1 h-[1.5px] bg-red-500" />
-                      </div>
-                    )}
-
-                    {/* Filas de slots horarios sin líneas divisorias de tabla */}
-                    <div className="flex flex-col">
-                      {timeSlots.map((rawHour, hIdx) => {
-                        const hourLabel = rawHour === 24 ? "00:00" : `${String(rawHour % 24).padStart(2, '0')}:00`;
-                        const nextHour = (rawHour + 1) % 24;
-                        const endHourLabel = `${String(nextHour).padStart(2, '0')}:00`;
-
-                        return (
-                          <div
-                            key={`grid-slot-row-${rawHour}-${hIdx}`}
-                            className="flex items-stretch gap-2 py-1"
-                            style={{ height: `${slotHeight}px` }}
-                          >
-                            {displayedCourts.map((court) => {
-                              const match = getMatchForCourtSlot(court.id, rawHour);
-                              const blockingMatch = !match ? getBlockingMatchForCourtSlot(court.id, rawHour) : null;
-
-                              return (
-                                <div 
-                                  key={`grid-cell-${court.id}-${rawHour}`}
-                                  className="flex-1 h-full min-w-0"
-                                >
-                                  {match ? (
-                                    (() => {
-                                      const totalPrice = Number(match.price_total ?? match.price ?? 0);
-                                      const paidAmount = match.payment_status === 'paid' ? totalPrice : Number(match.amount_paid ?? match.deposit ?? 0);
-                                      const isFullyPaid = (totalPrice > 0 && paidAmount >= totalPrice) || match.payment_status === 'paid' || (match as any).paymentStatus === 'pagado';
-                                      
-                                      // Regla estricta: 1 o 2 canchas = 1 sola línea; 3 o más canchas = 2 líneas
-                                      const isNarrowLayout = displayedCourts.length >= 3;
-
-                                      return (
-                                        <div
-                                          onClick={(e) => {
-                                            e.preventDefault();
-                                            e.stopPropagation();
-                                            onMatchClick(match);
-                                          }}
-                                          className={cn(
-                                            "h-full w-full rounded-2xl cursor-pointer transition-all hover:shadow-xs overflow-hidden select-none",
-                                            isFullyPaid
-                                              ? "bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300"
-                                              : "bg-red-50/70 dark:bg-red-950/30 border border-red-100 dark:border-red-900/40 text-red-800 dark:text-red-300"
-                                          )}
-                                        >
-                                           {isNarrowLayout ? (
-                                            <div className="flex flex-col justify-center items-start px-2 py-1 h-full w-full rounded-2xl leading-tight min-w-0">
-                                              <div className="flex items-center gap-1 w-full min-w-0">
-                                                <UserIcon size={11} className="shrink-0 opacity-80" />
-                                                <span className="truncate text-[10px] sm:text-[11px] font-medium">
-                                                  {getMatchHostDisplayName(match)}
-                                                </span>
-                                              </div>
-                                              <div className="text-[10px] font-bold pl-3.5 whitespace-nowrap">
-                                                ${paidAmount.toLocaleString('es-AR')}
-                                              </div>
-                                            </div>
-                                          ) : (
-                                            <div className="flex items-center justify-between gap-2 px-3.5 h-full w-full rounded-2xl min-w-0">
-                                              <div className="flex items-center gap-1.5 min-w-0 flex-1 truncate">
-                                                <UserIcon size={14} className="shrink-0 opacity-80" />
-                                                <span className="truncate font-medium text-xs sm:text-sm">
-                                                  {getMatchHostDisplayName(match)}
-                                                </span>
-                                              </div>
-                                              <span className="font-semibold text-xs sm:text-sm shrink-0 whitespace-nowrap">
-                                                ${paidAmount.toLocaleString('es-AR')}
-                                              </span>
-                                            </div>
-                                          )}
-                                        </div>
-                                      );
-                                    })()
-                                  ) : blockingMatch ? (
-                                    /* Celda bloqueada por superposición mutua con otra cancha */
-                                    <div 
-                                      className="h-full w-full rounded-2xl bg-amber-50/70 dark:bg-amber-950/25 border border-amber-200/60 dark:border-amber-900/40 flex items-center justify-center px-2 text-center select-none cursor-not-allowed"
-                                      title={`Bloqueada por turno confirmado en ${blockingMatch.courtName || blockingMatch.court_name || 'cancha superpuesta'}`}
-                                    >
-                                      <span className="text-[10px] sm:text-[11px] font-semibold text-amber-700 dark:text-amber-400 truncate">
-                                        Bloqueada ({blockingMatch.courtName || blockingMatch.court_name || 'Superpuesta'})
-                                      </span>
-                                    </div>
-                                  ) : (
-                                    /* Hueco libre con fondo gris suave y esquinas redondeadas */
-                                    <div
-                                      onClick={() => {
-                                        onNewBooking({
-                                          court_id: court.id,
-                                          courtId: court.id,
-                                          courtName: court.name,
-                                          date: selectedDateStr,
-                                          startTime: hourLabel,
-                                          time: hourLabel,
-                                          endTime: endHourLabel,
-                                          isPrefilledFromSlot: true
-                                        });
-                                      }}
-                                      className="h-full w-full rounded-2xl bg-[#eeeeef] dark:bg-slate-800/70 hover:bg-gray-200/80 dark:hover:bg-slate-800 transition-colors cursor-pointer"
-                                      title={`Tocar para reservar ${court.name} a las ${hourLabel}`}
-                                    />
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <AgendaGrid
+                timeSlots={timeSlots}
+                slotHeight={slotHeight}
+                displayedCourts={displayedCourts}
+                courts={courts}
+                matches={matches}
+                selectedDateStr={selectedDateStr}
+                currentTime={currentTime}
+                currentTimePos={currentTimePos}
+                getMatchHostDisplayName={getMatchHostDisplayName}
+                onMatchClick={onMatchClick}
+                onNewBooking={onNewBooking}
+              />
             )}
           </div>
         </div>
@@ -10237,7 +9880,8 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
         price_per_hour: parsedPrice,
         status: court.status === 'inactiva' ? 'inactiva' : 'activa',
         is_roofed: Boolean(court.is_roofed),
-        blockedCourts: court.blockedCourts || []
+        blockedCourts: court.blockedCourts || [],
+        defaultDurationMinutes: Number(court.defaultDurationMinutes) || 60,
       };
       await saveCourtInFirestore(complexId, courtPayload);
     } catch (e) {
@@ -10705,244 +10349,15 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
 
       {/* Edit Court Modal */}
       {editSection === 'court' && editingCourt && !isStaff && (
-        <div 
-          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs" 
-          onClick={() => setEditSection(null)}
-        >
-          <div 
-            className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-[28px] border border-gray-100 dark:border-slate-800 p-6 shadow-2xl relative space-y-4 max-h-[90vh] overflow-y-auto" 
-            onClick={e => e.stopPropagation()}
-          >
-            <div className="flex justify-between items-center pb-2 border-b border-gray-100 dark:border-slate-800">
-              <div>
-                <h3 className="font-bold text-xl text-slate-800 dark:text-slate-100">
-                  {editingCourt.id ? 'Editar Cancha' : 'Nueva Cancha'}
-                </h3>
-                <p className="text-xs text-slate-400">Configuración de cancha dentro de la sede activa</p>
-              </div>
-              <button 
-                type="button" 
-                onClick={() => setEditSection(null)} 
-                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 cursor-pointer p-1"
-              >
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="space-y-3.5">
-              {/* Fila 1: Nombre de Cancha */}
-              <div>
-                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Nombre de Cancha *</label>
-                <input 
-                  value={editingCourt.name || ''} 
-                  onChange={e => setEditingCourt({...editingCourt, name: e.target.value})}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
-                  placeholder="Ej: Cancha 1"
-                />
-              </div>
-
-              {/* Fila 2: Deporte y Tipo de Cancha */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Deporte *</label>
-                  <select 
-                    value={(editingCourt as any).sport || (editingCourt.type?.toLowerCase().includes('fútbol') ? 'Fútbol' : editingCourt.type) || 'Fútbol'} 
-                    onChange={e => {
-                      const newSport = e.target.value;
-                      setEditingCourt({
-                        ...editingCourt, 
-                        sport: newSport, 
-                        type: newSport === 'Fútbol' ? 'fútbol 5' : newSport
-                      });
-                    }}
-                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
-                  >
-                    <option value="Fútbol">Fútbol</option>
-                    <option value="Pádel">Pádel</option>
-                    <option value="Tenis">Tenis</option>
-                    <option value="Pickleball">Pickleball</option>
-                    <option value="Squash">Squash</option>
-                    <option value="Vóley">Vóley</option>
-                    <option value="Básquet">Básquet</option>
-                    <option value="Hockey">Hockey</option>
-                    <option value="Handball">Handball</option>
-                    <option value="Otro">Otro</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Tipo de cancha *</label>
-                  {((editingCourt as any).sport === 'Fútbol' || !(editingCourt as any).sport || editingCourt.type?.toLowerCase().includes('fútbol')) ? (
-                    <select 
-                      value={editingCourt.type || 'fútbol 5'} 
-                      onChange={e => setEditingCourt({...editingCourt, type: e.target.value})}
-                      className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
-                    >
-                      <option value="fútbol 5">fútbol 5</option>
-                      <option value="fútbol 6">fútbol 6</option>
-                      <option value="fútbol 7">fútbol 7</option>
-                      <option value="fútbol 8">fútbol 8</option>
-                      <option value="fútbol 9">fútbol 9</option>
-                      <option value="fútbol 11">fútbol 11</option>
-                    </select>
-                  ) : (
-                    <input
-                      type="text"
-                      readOnly
-                      value={(editingCourt as any).sport || editingCourt.type}
-                      className="w-full px-3.5 py-2.5 bg-slate-100 dark:bg-slate-800/60 border border-gray-200 dark:border-slate-700 rounded-xl font-medium text-sm text-slate-500 dark:text-slate-400 outline-none select-none cursor-default"
-                    />
-                  )}
-                </div>
-              </div>
-
-              {/* Fila 3: Precio por Hora y Estado Operativo */}
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Precio por Hora ($) *</label>
-                  <div className="relative">
-                    <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 font-bold">$</span>
-                    <input 
-                      type="number"
-                      placeholder="Ej: 50000"
-                      value={((editingCourt as any).price_per_hour !== undefined && (editingCourt as any).price_per_hour !== null)
-                        ? (editingCourt as any).price_per_hour
-                        : (((editingCourt as any).price !== undefined && (editingCourt as any).price !== null) ? (editingCourt as any).price : '')} 
-                      onChange={e => {
-                        const val = e.target.value;
-                        setEditingCourt({
-                          ...editingCourt, 
-                          price: (val === '' ? '' : Number(val)) as any,
-                          price_per_hour: (val === '' ? '' : Number(val)) as any
-                        });
-                      }}
-                      className="w-full pl-8 pr-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Estado Operativo *</label>
-                  <select 
-                    value={editingCourt.status === 'inactiva' ? 'inactiva' : 'activa'} 
-                    onChange={e => setEditingCourt({...editingCourt, status: e.target.value})}
-                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
-                  >
-                    <option value="activa">activa</option>
-                    <option value="inactiva">inactiva</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Fila 4: ¿Es techada? y Superficie */}
-              <div className="grid grid-cols-2 gap-3 items-center">
-                <div className="flex items-center gap-2.5 p-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl h-full">
-                  <input 
-                    type="checkbox" 
-                    id="is_roofed_checkbox"
-                    checked={Boolean((editingCourt as any).is_roofed)} 
-                    onChange={e => setEditingCourt({...editingCourt, is_roofed: e.target.checked})}
-                    className="w-4.5 h-4.5 text-[#129D44] rounded focus:ring-[#129D44] cursor-pointer"
-                  />
-                  <label htmlFor="is_roofed_checkbox" className="font-semibold text-slate-700 dark:text-slate-300 text-xs sm:text-sm cursor-pointer select-none">
-                    ¿Es techada?
-                  </label>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">Superficie *</label>
-                  <select 
-                    value={editingCourt.surface || 'sintético'} 
-                    onChange={e => setEditingCourt({...editingCourt, surface: e.target.value})}
-                    className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white capitalize"
-                  >
-                    <option value="sintético">sintético</option>
-                    <option value="cemento">cemento</option>
-                    <option value="césped">césped</option>
-                    <option value="blindex">blindex</option>
-                    <option value="tierra">tierra</option>
-                    <option value="arena">arena</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Fila 5: Canchas Superpuestas (Bloqueo Mutuo) */}
-              <div className="bg-slate-50 dark:bg-slate-800/60 border border-gray-200 dark:border-slate-700 p-3.5 rounded-2xl space-y-2.5">
-                <div className="flex items-center gap-2">
-                  <ShieldCheck size={16} className="text-[#129D44]" />
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-200">Canchas Superpuestas (Bloqueo Mutuo)</label>
-                </div>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
-                  Seleccioná las canchas que comparten el mismo espacio físico. Si esta cancha tiene un turno confirmado, las seleccionadas quedarán bloqueadas automáticamente en ese horario.
-                </p>
-                <div className="flex flex-wrap gap-2 pt-1">
-                  {courts.filter(c => !editingCourt.id || String(c.id) !== String(editingCourt.id)).map((c, cIdx) => {
-                    const isBlocked = ((editingCourt as any).blockedCourts || []).map(String).includes(String(c.id));
-                    return (
-                      <button
-                        type="button"
-                        key={`overlap-court-${c.id || cIdx}`}
-                        onClick={() => {
-                          const currentBlocked = ((editingCourt as any).blockedCourts || []).map(String);
-                          const strCId = String(c.id);
-                          const newBlocked = isBlocked 
-                            ? currentBlocked.filter((id: string) => id !== strCId)
-                            : [...currentBlocked, strCId];
-                          setEditingCourt({...editingCourt, blockedCourts: newBlocked});
-                        }}
-                        className={cn(
-                          "px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 shadow-2xs cursor-pointer",
-                          isBlocked 
-                            ? "bg-amber-500 text-white border-amber-600 shadow-amber-500/20" 
-                            : "bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 border-gray-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-600"
-                        )}
-                      >
-                        <ShieldCheck size={13} className={isBlocked ? "text-white" : "text-slate-400"} />
-                        <span>{c.name}</span>
-                        {isBlocked && <span className="text-[10px] bg-amber-600 px-1 rounded ml-0.5">Bloqueada</span>}
-                      </button>
-                    );
-                  })}
-                  {courts.filter(c => !editingCourt.id || String(c.id) !== String(editingCourt.id)).length === 0 && (
-                    <div className="text-xs text-slate-400 italic">No hay otras canchas creadas para vincular.</div>
-                  )}
-                </div>
-              </div>
-
-              {/* Botones de acción del modal de cancha */}
-              <div className="pt-2 flex flex-col gap-2">
-                <button 
-                  type="button"
-                  onClick={() => handleSaveCourt(editingCourt)} 
-                  disabled={isSaving || !editingCourt.name || (editingCourt as any).price_per_hour === ''} 
-                  className="w-full bg-[#129D44] hover:bg-emerald-700 text-white py-3 rounded-xl font-bold shadow-md transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer"
-                >
-                  {isSaving ? 'Guardando en complejo...' : 'Guardar Cancha'}
-                </button>
-                {editingCourt.id && (
-                  <button 
-                    type="button" 
-                    onClick={() => {
-                      if (confirm(`¿Estás seguro de eliminar la cancha "${editingCourt.name}"?`)) {
-                        handleDeleteCourt(editingCourt.id);
-                      }
-                    }}
-                    className="w-full py-2.5 text-red-500 hover:text-red-700 font-semibold text-sm cursor-pointer"
-                  >
-                    Eliminar Cancha
-                  </button>
-                )}
-                <button 
-                  type="button" 
-                  onClick={() => setEditSection(null)} 
-                  className="w-full py-2 text-slate-500 hover:text-slate-700 dark:text-slate-400 font-semibold text-sm cursor-pointer"
-                >
-                  Cancelar
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <CourtEditModal
+          editingCourt={editingCourt}
+          courts={courts}
+          isSaving={isSaving}
+          onChange={setEditingCourt}
+          onSave={handleSaveCourt}
+          onDelete={handleDeleteCourt}
+          onClose={() => setEditSection(null)}
+        />
       )}
     </div>
   );

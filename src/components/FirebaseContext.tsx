@@ -105,13 +105,14 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setAuthError(null);
   }, []);
 
-  // Subscribe in real-time to ERP billing config (settings/billing_config)
+  // Subscribe in real-time to ERP billing config (settings/billing_config) only when authenticated
   useEffect(() => {
+    if (!user) return;
     const unsubBilling = subscribeBillingConfig((config) => {
       setBillingConfig(config);
     });
     return () => unsubBilling();
-  }, []);
+  }, [user]);
 
   // Configure explicit browserLocalPersistence
   useEffect(() => {
