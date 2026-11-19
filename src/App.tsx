@@ -84,8 +84,9 @@ import { requestNotificationPermissionAndGetToken, initForegroundNotificationLis
 import {
   areCourtsMutuallyBlocked,
   getCourtDefaultDuration,
+  getCourtPriceForDuration,
+  sanitizePricesByDuration,
   computeEndTime,
-  computeProportionalPrice,
   generateHalfHourSlots,
 } from './lib/scheduleUtils';
 import { CourtEditModal } from './components/CourtEditModal';
@@ -3287,10 +3288,7 @@ const CreateMatchModal = ({
     const initialDuration = (isRealMatch && Number(initialData?.durationMinutes))
       ? Number(initialData.durationMinutes)
       : getCourtDefaultDuration(currentCourt);
-    const courtPrice = computeProportionalPrice(
-      Number(currentCourt?.price_per_hour ?? currentCourt?.price ?? 0),
-      initialDuration
-    );
+    const courtPrice = getCourtPriceForDuration(currentCourt, initialDuration);
     if (isRealMatch) {
       if (initialPaymentStatus === 'partial' && initialAmountPaid === 0 && courtPrice > 0) {
         initialAmountPaid = Math.round(courtPrice * 0.1);
@@ -3357,10 +3355,7 @@ const CreateMatchModal = ({
   const isJogoCreated = Boolean((initialData || data)?.createdSource === 'jogo' || (initialData as any)?.originalDoc?.createdSource === 'jogo');
   const selectedCourt = courts.find(c => String(c.id) === String(data.court_id)) || (courts.length > 0 ? courts[0] : null);
   const selectedDuration = Number(data.durationMinutes) || getCourtDefaultDuration(selectedCourt);
-  const priceTotal = computeProportionalPrice(
-    Number(selectedCourt?.price_per_hour ?? selectedCourt?.price ?? 0),
-    selectedDuration
-  );
+  const priceTotal = getCourtPriceForDuration(selectedCourt, selectedDuration);
 
   const allHalfHourSlots = useMemo(() => {
     let startH = 8;
@@ -3810,11 +3805,7 @@ const CreateMatchModal = ({
     <>
       <div 
         className="fixed inset-0 z-[70] flex flex-col justify-end bg-black/60 backdrop-blur-xs p-0 sm:p-4"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onClose();
-        }}
+        onClick={onClose}
       >
         <motion.div 
           initial={{ y: '100%' }}
@@ -3935,10 +3926,7 @@ const CreateMatchModal = ({
                   if (isCourtOccupiedForTime(newCourtId)) return;
                   const court = courts.find((c) => String(c.id) === String(newCourtId));
                   const nextDuration = !data.id ? getCourtDefaultDuration(court) : selectedDuration;
-                  const newPrice = computeProportionalPrice(
-                    Number(court?.price_per_hour ?? court?.price ?? 0),
-                    nextDuration
-                  );
+                  const newPrice = getCourtPriceForDuration(court, nextDuration);
                   setData((prev: any) => ({
                     ...prev,
                     court_id: newCourtId,
@@ -9865,9 +9853,17 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
   const handleSaveCourt = async (court: any) => {
     setIsSaving(true);
     try {
-      const parsedPrice = court.price_per_hour !== '' && court.price_per_hour !== undefined
-        ? Number(court.price_per_hour)
-        : (court.price !== '' && court.price !== undefined ? Number(court.price) : 0);
+      const cleanedPricesByDuration = sanitizePricesByDuration(court.pricesByDuration);
+      const parsedPrice = cleanedPricesByDuration
+        ? cleanedPricesByDuration[60] ??
+          getCourtPriceForDuration(
+            {
+              defaultDurationMinutes: Number(court.defaultDurationMinutes) || 60,
+              pricesByDuration: cleanedPricesByDuration,
+            },
+            60
+          )
+        : getCourtPriceForDuration(court, 60);
 
       const courtPayload = {
         ...court,
@@ -9882,6 +9878,7 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
         is_roofed: Boolean(court.is_roofed),
         blockedCourts: court.blockedCourts || [],
         defaultDurationMinutes: Number(court.defaultDurationMinutes) || 60,
+        ...(cleanedPricesByDuration ? { pricesByDuration: cleanedPricesByDuration } : { pricesByDuration: undefined }),
       };
       await saveCourtInFirestore(complexId, courtPayload);
     } catch (e) {
@@ -10012,7 +10009,8 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                     price_per_hour: '',
                     is_roofed: false,
                     status: 'activa',
-                    blockedCourts: []
+                    blockedCourts: [],
+                    pricesByDuration: {},
                   } as any);
                   setEditSection('court');
                 }}
@@ -10041,7 +10039,8 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
                     type: court.type || 'fútbol 5',
                     price: (court as any).price !== undefined && (court as any).price !== null ? (court as any).price : (court.price_per_hour ?? ''),
                     price_per_hour: court.price_per_hour !== undefined && court.price_per_hour !== null ? court.price_per_hour : ((court as any).price ?? ''),
-                    blockedCourts: (court as any).blockedCourts || []
+                    blockedCourts: (court as any).blockedCourts || [],
+                    pricesByDuration: (court as any).pricesByDuration,
                   });
                   setEditSection('court');
                 } : undefined}

@@ -20,6 +20,7 @@ export interface Court {
   status?: 'available' | 'maintenance' | 'activa' | 'inactiva' | string;
   blockedCourts?: (number | string)[];
   defaultDurationMinutes?: number;
+  pricesByDuration?: { 30?: number; 60?: number; 90?: number };
 }
 
 export type BookingCreatedSource = 'jogo' | 'complejo';

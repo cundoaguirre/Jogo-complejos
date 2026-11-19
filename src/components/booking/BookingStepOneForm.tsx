@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { StartTimeStaggeredPicker } from './StartTimeStaggeredPicker';
 import { DurationSelector } from './DurationSelector';
+import { getCourtPriceForDuration } from '../../lib/scheduleUtils';
 
 interface BookingStepOneFormProps {
   data: any;
@@ -63,17 +64,29 @@ export const BookingStepOneForm: React.FC<BookingStepOneFormProps> = ({
   };
 
   return (
-    <div className="space-y-3.5 p-4 sm:p-5 pt-3.5 overflow-y-auto flex-1 text-xs sm:text-sm">
+    <div
+      onClick={() => {
+        if (isSelectUserOpen) {
+          setIsSelectUserOpen(false);
+        }
+        userSearchInputRef.current?.blur();
+      }}
+      className="space-y-3.5 p-4 sm:p-5 pt-3.5 overflow-y-auto flex-1 text-xs sm:text-sm"
+    >
       {/* Fila 1: Jugador * + Canchas * */}
       <div className="grid grid-cols-2 gap-3 items-start">
-        <div className="relative">
+        <div className="relative" onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-between gap-1 mb-1.5">
             <label className="text-xs font-bold text-slate-600 dark:text-slate-300 truncate">
               Jugador *
             </label>
             <button
               type="button"
-              onClick={onOpenNewUser}
+              onClick={() => {
+                setIsSelectUserOpen(false);
+                userSearchInputRef.current?.blur();
+                onOpenNewUser();
+              }}
               className="text-xs font-bold text-[#0f9d42] hover:underline cursor-pointer shrink-0"
             >
               + Nuevo cliente
@@ -132,6 +145,7 @@ export const BookingStepOneForm: React.FC<BookingStepOneFormProps> = ({
                       }));
                       setIsSelectUserOpen(false);
                       setUserSearch('');
+                      userSearchInputRef.current?.blur();
                     }}
                     className="p-2.5 hover:bg-slate-50 dark:hover:bg-slate-700/50 cursor-pointer flex items-center justify-between transition-colors"
                   >
@@ -191,7 +205,7 @@ export const BookingStepOneForm: React.FC<BookingStepOneFormProps> = ({
                     disabled={isDisabled}
                   >
                     {court.name} • $
-                    {Number(court.price_per_hour ?? court.price ?? 0).toLocaleString('es-AR')}{' '}
+                    {getCourtPriceForDuration(court, selectedDuration).toLocaleString('es-AR')}{' '}
                     {isInactive ? '(Inactiva)' : isOccupied ? '(Ocupada)' : ''}
                   </option>
                 );

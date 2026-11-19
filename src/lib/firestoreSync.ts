@@ -50,6 +50,7 @@ import {
   doesCrossMidnight 
 } from './complexProfileSync';
 import { findMatchingLocalUser, isSameComplex, normalizePhoneNumber, isGenericPlaceholderName } from './crmActivityIndex';
+import { getCourtPriceForDuration, sanitizePricesByDuration } from './scheduleUtils';
 
 export const COMPLEJOS_COLLECTION = 'complejos';
 export const BOOKINGS_COLLECTION = 'bookings';
@@ -616,24 +617,41 @@ export async function saveCourtInFirestore(
     ? (court as any).blockedCourts.map(String)
     : [];
 
-  const courtItem = {
+  const cleanedPricesByDuration = sanitizePricesByDuration((court as any).pricesByDuration);
+  const resolvedHourPrice = cleanedPricesByDuration
+    ? cleanedPricesByDuration[60] ??
+      getCourtPriceForDuration(
+        {
+          defaultDurationMinutes: Number((court as any).defaultDurationMinutes) || 60,
+          pricesByDuration: cleanedPricesByDuration,
+        },
+        60
+      )
+    : getCourtPriceForDuration(court, 60);
+
+  const courtItem: Record<string, any> = {
     id: courtId,
     name: (court.name || 'Cancha').trim(),
     sport: court.sport || court.type || 'fútbol 5',
     type: court.sport || court.type || 'fútbol 5',
     surface: court.surface || 'sintético',
-    price: Number(court.price ?? court.price_per_hour ?? 0),
-    price_per_hour: Number(court.price ?? court.price_per_hour ?? 0),
+    price: Number(resolvedHourPrice || 0),
+    price_per_hour: Number(resolvedHourPrice || 0),
     status: court.status === 'inactiva' ? 'inactiva' : 'activa',
     is_roofed: Boolean(court.is_roofed ?? (court as any).isCovered),
     isCovered: Boolean(court.is_roofed ?? (court as any).isCovered),
     blockedCourts: normalizedBlockedCourts,
     defaultDurationMinutes: Number((court as any).defaultDurationMinutes) || 60,
+    ...(cleanedPricesByDuration ? { pricesByDuration: cleanedPricesByDuration } : {}),
   };
 
   const idx = existingCourts.findIndex(c => String(c.id) === String(courtId));
   if (idx >= 0) {
-    existingCourts[idx] = { ...existingCourts[idx], ...courtItem };
+    const mergedCourt = { ...existingCourts[idx], ...courtItem };
+    if (!cleanedPricesByDuration) {
+      delete mergedCourt.pricesByDuration;
+    }
+    existingCourts[idx] = mergedCourt;
   } else {
     existingCourts.push(courtItem);
   }

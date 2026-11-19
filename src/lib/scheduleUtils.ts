@@ -50,6 +50,67 @@ export function computeProportionalPrice(
   return Math.round((Number(pricePerHour || 0) * Number(durationMinutes || 60)) / 60);
 }
 
+export function sanitizePricesByDuration(
+  raw?: any
+): { 30?: number; 60?: number; 90?: number } | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const cleaned: { 30?: number; 60?: number; 90?: number } = {};
+  for (const dur of DURATION_OPTIONS) {
+    const val = Number(raw[dur] ?? raw[String(dur)]);
+    if (Number.isFinite(val) && val > 0) {
+      cleaned[dur] = val;
+    }
+  }
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
+export function getCourtPriceForDuration(
+  court: any,
+  durationMinutes: number
+): number {
+  const dur = Number(durationMinutes) || 60;
+  const map = court?.pricesByDuration;
+  const exact = Number(map?.[dur] ?? map?.[String(dur)]);
+  if (Number.isFinite(exact) && exact > 0) return exact;
+
+  const legacyHourPrice = Number(court?.price_per_hour ?? court?.price ?? 0);
+  if (dur === 60 && Number.isFinite(legacyHourPrice) && legacyHourPrice > 0) {
+    return legacyHourPrice;
+  }
+
+  const p60 = Number(map?.[60] ?? map?.['60']);
+  const base60 = Number.isFinite(p60) && p60 > 0 ? p60 : legacyHourPrice;
+  const defaultDur = getCourtDefaultDuration(court);
+  const pDefault = Number(map?.[defaultDur] ?? map?.[String(defaultDur)]);
+  const baseDefault =
+    Number.isFinite(pDefault) && pDefault > 0
+      ? pDefault
+      : defaultDur === 60
+      ? legacyHourPrice
+      : 0;
+  const p30 = Number(map?.[30] ?? map?.['30']);
+  const p90 = Number(map?.[90] ?? map?.['90']);
+
+  const candidates: Array<{ baseDur: number; basePrice: number }> = [
+    { baseDur: 60, basePrice: base60 },
+    { baseDur: defaultDur, basePrice: baseDefault },
+    { baseDur: 30, basePrice: Number.isFinite(p30) ? p30 : 0 },
+    { baseDur: 90, basePrice: Number.isFinite(p90) ? p90 : 0 },
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      Number.isFinite(candidate.basePrice) &&
+      candidate.basePrice > 0 &&
+      candidate.baseDur > 0
+    ) {
+      return Math.round((candidate.basePrice * dur) / candidate.baseDur);
+    }
+  }
+
+  return 0;
+}
+
 export function generateHalfHourSlots(startHour: number, endHour: number): string[] {
   const slots: string[] = [];
   const startMin = startHour * 60;

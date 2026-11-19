@@ -1,7 +1,12 @@
 import React from 'react';
 import { X, ShieldCheck } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { getCourtDefaultDuration } from '../lib/scheduleUtils';
+import {
+  DURATION_OPTIONS,
+  getCourtDefaultDuration,
+  getCourtPriceForDuration,
+  sanitizePricesByDuration,
+} from '../lib/scheduleUtils';
 
 interface CourtEditModalProps {
   editingCourt: any;
@@ -13,6 +18,12 @@ interface CourtEditModalProps {
   onClose: () => void;
 }
 
+const DURATION_LABELS: Record<number, string> = {
+  30: '30 min',
+  60: '1 hora',
+  90: '1h 30m',
+};
+
 export const CourtEditModal: React.FC<CourtEditModalProps> = ({
   editingCourt,
   courts,
@@ -23,6 +34,107 @@ export const CourtEditModal: React.FC<CourtEditModalProps> = ({
   onClose,
 }) => {
   const currentDuration = getCourtDefaultDuration(editingCourt);
+
+  const hasPricesMap =
+    editingCourt?.pricesByDuration &&
+    typeof editingCourt.pricesByDuration === 'object';
+  const legacyHourPrice =
+    editingCourt?.price_per_hour !== undefined &&
+    editingCourt?.price_per_hour !== null &&
+    editingCourt?.price_per_hour !== ''
+      ? Number(editingCourt.price_per_hour)
+      : editingCourt?.price !== undefined &&
+        editingCourt?.price !== null &&
+        editingCourt?.price !== ''
+      ? Number(editingCourt.price)
+      : 0;
+
+  // Si es una cancha existente sin pricesByDuration, precargamos 1 hora (60) con price_per_hour ?? price
+  const effectivePrices: Record<number, any> = hasPricesMap
+    ? editingCourt.pricesByDuration
+    : editingCourt?.id && Number.isFinite(legacyHourPrice) && legacyHourPrice > 0
+    ? { 60: legacyHourPrice }
+    : {};
+
+  const cleanedForPreview = sanitizePricesByDuration(effectivePrices);
+  const previewCourt = {
+    defaultDurationMinutes: currentDuration,
+    pricesByDuration: cleanedForPreview,
+  };
+
+  const defaultDurationPrice = Number(effectivePrices[currentDuration] ?? 0);
+  const hasValidDefaultPrice =
+    Number.isFinite(defaultDurationPrice) && defaultDurationPrice > 0;
+
+  const handlePriceInputChange = (dur: number, rawValue: string) => {
+    const nextPrices: Record<number, any> = {
+      ...effectivePrices,
+      [dur]: rawValue === '' ? '' : Number(rawValue),
+    };
+    const nextCleaned = sanitizePricesByDuration(nextPrices);
+    const derivedHourPrice = nextCleaned
+      ? nextCleaned[60] ??
+        getCourtPriceForDuration(
+          {
+            defaultDurationMinutes: currentDuration,
+            pricesByDuration: nextCleaned,
+          },
+          60
+        )
+      : '';
+
+    onChange({
+      ...editingCourt,
+      pricesByDuration: nextPrices,
+      price: derivedHourPrice as any,
+      price_per_hour: derivedHourPrice as any,
+    });
+  };
+
+  const handleDurationSelect = (dur: number) => {
+    const nextCleaned = sanitizePricesByDuration(effectivePrices);
+    const derivedHourPrice = nextCleaned
+      ? nextCleaned[60] ??
+        getCourtPriceForDuration(
+          {
+            defaultDurationMinutes: dur,
+            pricesByDuration: nextCleaned,
+          },
+          60
+        )
+      : editingCourt.price_per_hour ?? editingCourt.price ?? '';
+
+    onChange({
+      ...editingCourt,
+      defaultDurationMinutes: dur,
+      pricesByDuration: effectivePrices,
+      price: derivedHourPrice as any,
+      price_per_hour: derivedHourPrice as any,
+    });
+  };
+
+  const handleSubmit = () => {
+    if (!hasValidDefaultPrice || !editingCourt.name?.trim()) return;
+    const cleaned = sanitizePricesByDuration(effectivePrices);
+    const hourPrice = cleaned
+      ? cleaned[60] ??
+        getCourtPriceForDuration(
+          {
+            defaultDurationMinutes: currentDuration,
+            pricesByDuration: cleaned,
+          },
+          60
+        )
+      : 0;
+
+    onSave({
+      ...editingCourt,
+      defaultDurationMinutes: currentDuration,
+      pricesByDuration: cleaned,
+      price: hourPrice,
+      price_per_hour: hourPrice,
+    });
+  };
 
   return (
     <div
@@ -137,40 +249,80 @@ export const CourtEditModal: React.FC<CourtEditModalProps> = ({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-                Precio por Hora ($) *
+          {/* Duración predeterminada y precios por duración */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
+                Duración predeterminada y precios ($) *
               </label>
-              <div className="relative">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 font-bold">
-                  $
-                </span>
-                <input
-                  type="number"
-                  placeholder="Ej: 50000"
-                  value={
-                    editingCourt.price_per_hour !== undefined &&
-                    editingCourt.price_per_hour !== null
-                      ? editingCourt.price_per_hour
-                      : editingCourt.price !== undefined &&
-                        editingCourt.price !== null
-                      ? editingCourt.price
-                      : ''
-                  }
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    onChange({
-                      ...editingCourt,
-                      price: (val === '' ? '' : Number(val)) as any,
-                      price_per_hour: (val === '' ? '' : Number(val)) as any,
-                    });
-                  }}
-                  className="w-full pl-8 pr-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
-                />
-              </div>
             </div>
+            <div className="grid grid-cols-3 gap-2.5">
+              {DURATION_OPTIONS.map((opt) => {
+                const active = currentDuration === opt;
+                const rawVal = effectivePrices[opt];
+                const displayVal =
+                  rawVal !== undefined && rawVal !== null ? rawVal : '';
+                const proratedHint =
+                  displayVal === '' && cleanedForPreview
+                    ? getCourtPriceForDuration(previewCourt, opt)
+                    : 0;
 
+                return (
+                  <div key={opt} className="flex flex-col gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleDurationSelect(opt)}
+                      className={cn(
+                        'w-full py-2.5 rounded-2xl text-xs sm:text-sm font-semibold transition-all cursor-pointer shadow-2xs border',
+                        active
+                          ? 'bg-[#0f9d42] text-white border-[#0f9d42]'
+                          : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-gray-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700'
+                      )}
+                    >
+                      {DURATION_LABELS[opt] || `${opt} min`}
+                    </button>
+
+                    <div className="relative">
+                      <span
+                        className={cn(
+                          'absolute left-2.5 top-1/2 -translate-y-1/2 font-bold text-xs pointer-events-none',
+                          active ? 'text-[#0f9d42]' : 'text-slate-400'
+                        )}
+                      >
+                        $
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        inputMode="numeric"
+                        value={displayVal}
+                        onChange={(e) => handlePriceInputChange(opt, e.target.value)}
+                        placeholder={
+                          active
+                            ? 'Obligatorio'
+                            : proratedHint > 0
+                            ? `${proratedHint}`
+                            : 'Opcional'
+                        }
+                        aria-label={`Precio para ${DURATION_LABELS[opt]}`}
+                        className={cn(
+                          'w-full pl-6 pr-2 py-2 bg-slate-50 dark:bg-slate-800 border rounded-xl font-semibold outline-none focus:ring-2 focus:ring-[#0f9d42] text-xs sm:text-sm text-slate-800 dark:text-white placeholder:text-slate-400 placeholder:font-normal',
+                          active
+                            ? 'border-[#0f9d42]/60 dark:border-[#0f9d42]/70'
+                            : 'border-gray-200 dark:border-slate-700'
+                        )}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1.5">
+              Solo el precio de la duración seleccionada es obligatorio. Los demás son opcionales y se prorratean solos si los dejás vacíos.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
                 Estado Operativo *
@@ -183,46 +335,6 @@ export const CourtEditModal: React.FC<CourtEditModalProps> = ({
                 <option value="activa">activa</option>
                 <option value="inactiva">inactiva</option>
               </select>
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
-              Duración predeterminada del turno
-            </label>
-            <select
-              value={currentDuration}
-              onChange={(e) =>
-                onChange({
-                  ...editingCourt,
-                  defaultDurationMinutes: Number(e.target.value),
-                })
-              }
-              className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl font-medium outline-none focus:ring-2 focus:ring-[#129D44] text-sm text-slate-800 dark:text-white"
-            >
-              <option value={30}>30 minutos</option>
-              <option value={60}>1 hora (60 min)</option>
-              <option value={90}>1 hora y media (90 min)</option>
-            </select>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 items-center">
-            <div className="flex items-center gap-2.5 p-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl h-full">
-              <input
-                type="checkbox"
-                id="is_roofed_checkbox"
-                checked={Boolean(editingCourt.is_roofed)}
-                onChange={(e) =>
-                  onChange({ ...editingCourt, is_roofed: e.target.checked })
-                }
-                className="w-4.5 h-4.5 text-[#129D44] rounded focus:ring-[#129D44] cursor-pointer"
-              />
-              <label
-                htmlFor="is_roofed_checkbox"
-                className="font-semibold text-slate-700 dark:text-slate-300 text-xs sm:text-sm cursor-pointer select-none"
-              >
-                ¿Es techada?
-              </label>
             </div>
 
             <div>
@@ -242,6 +354,24 @@ export const CourtEditModal: React.FC<CourtEditModalProps> = ({
                 <option value="arena">arena</option>
               </select>
             </div>
+          </div>
+
+          <div className="flex items-center gap-2.5 p-2.5 bg-slate-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-xl">
+            <input
+              type="checkbox"
+              id="is_roofed_checkbox"
+              checked={Boolean(editingCourt.is_roofed)}
+              onChange={(e) =>
+                onChange({ ...editingCourt, is_roofed: e.target.checked })
+              }
+              className="w-4.5 h-4.5 text-[#129D44] rounded focus:ring-[#129D44] cursor-pointer"
+            />
+            <label
+              htmlFor="is_roofed_checkbox"
+              className="font-semibold text-slate-700 dark:text-slate-300 text-xs sm:text-sm cursor-pointer select-none"
+            >
+              ¿Es techada?
+            </label>
           </div>
 
           <div className="bg-slate-50 dark:bg-slate-800/60 border border-gray-200 dark:border-slate-700 p-3.5 rounded-2xl space-y-2.5">
@@ -306,12 +436,8 @@ export const CourtEditModal: React.FC<CourtEditModalProps> = ({
           <div className="pt-2 flex flex-col gap-2">
             <button
               type="button"
-              onClick={() => onSave(editingCourt)}
-              disabled={
-                isSaving ||
-                !editingCourt.name ||
-                editingCourt.price_per_hour === ''
-              }
+              onClick={handleSubmit}
+              disabled={isSaving || !editingCourt.name?.trim() || !hasValidDefaultPrice}
               className="w-full bg-[#129D44] hover:bg-emerald-700 text-white py-3 rounded-xl font-bold shadow-md transition-all active:scale-[0.98] disabled:opacity-50 cursor-pointer"
             >
               {isSaving ? 'Guardando en complejo...' : 'Guardar Cancha'}

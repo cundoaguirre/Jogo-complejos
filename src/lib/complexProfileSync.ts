@@ -234,6 +234,25 @@ export function normalizeUnifiedCourt(c: any, idx: number) {
 
   const isCovered = Boolean(c?.is_roofed ?? c?.isCovered ?? false);
   const blockedCourts = Array.isArray(c?.blockedCourts) ? c.blockedCourts.map(String) : [];
+  const rawDefaultDur = Number(c?.defaultDurationMinutes);
+  const defaultDurationMinutes =
+    rawDefaultDur === 30 || rawDefaultDur === 60 || rawDefaultDur === 90
+      ? rawDefaultDur
+      : undefined;
+
+  let pricesByDuration: { 30?: number; 60?: number; 90?: number } | undefined;
+  if (c?.pricesByDuration && typeof c.pricesByDuration === 'object') {
+    const cleaned: { 30?: number; 60?: number; 90?: number } = {};
+    for (const dur of [30, 60, 90] as const) {
+      const val = Number(c.pricesByDuration[dur] ?? c.pricesByDuration[String(dur)]);
+      if (Number.isFinite(val) && val > 0) {
+        cleaned[dur] = val;
+      }
+    }
+    if (Object.keys(cleaned).length > 0) {
+      pricesByDuration = cleaned;
+    }
+  }
 
   return {
     id,
@@ -246,6 +265,8 @@ export function normalizeUnifiedCourt(c: any, idx: number) {
     status,
     is_roofed: isCovered,
     isCovered,
-    blockedCourts
+    blockedCourts,
+    ...(defaultDurationMinutes ? { defaultDurationMinutes } : {}),
+    ...(pricesByDuration ? { pricesByDuration } : {}),
   };
 }
