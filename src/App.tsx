@@ -8079,9 +8079,15 @@ const FinanceView = ({
            (typeof (op as any).date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test((op as any).date) ? (op as any).date : null))
         : null;
 
-      const d = bookingDateRaw
-        ? (safeParseDate(bookingDateRaw + 'T12:00:00') || safeParseDate(bookingDateRaw) || new Date())
-        : (safeParseDate((op as any).paidAt) || safeParseDate((op as any).effectiveDate) || safeParseDate(op.createdAt) || safeParseDate(op.updatedAt) || new Date());
+      const d =
+        safeParseDate(op.createdAt) ||
+        safeParseDate((op as any).effectiveDate) ||
+        safeParseDate((op as any).paidAt) ||
+        safeParseDate(op.updatedAt) ||
+        (bookingDateRaw
+          ? (safeParseDate(bookingDateRaw + 'T12:00:00') || safeParseDate(bookingDateRaw))
+          : null) ||
+        new Date();
 
       let concept = 'Venta Mostrador';
       if (op.operationType === 'court_booking' || op.operationType === 'booking') concept = op.notes || 'Alquiler de Cancha';
