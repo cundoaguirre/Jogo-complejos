@@ -27,6 +27,64 @@ export interface InvitationValidationResult {
   complexId?: string;
 }
 
+export const DEFAULT_PUBLIC_APP_URL = 'https://jogo-complejos.vercel.app';
+
+function normalizeOriginUrl(raw?: string | null): string {
+  const val = (raw || '').trim();
+  if (!val) return '';
+  try {
+    const withProtocol = /^https?:\/\//i.test(val) ? val : `https://${val}`;
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    return parsed.origin.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+export function isAiStudioOrLocalOrigin(hostname?: string): boolean {
+  const host = (
+    hostname ??
+    (typeof window !== 'undefined' ? window.location.hostname : '')
+  )
+    .toLowerCase()
+    .trim();
+  if (!host) return true;
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host.endsWith('.run.app') ||
+    host.endsWith('aistudio.google.com') ||
+    host.endsWith('.googleusercontent.com') ||
+    (!host.endsWith('.web.app') && host.includes('ais-'))
+  );
+}
+
+/**
+ * Resolves the canonical public web/PWA origin (Vercel/custom domain) for invitation links.
+ * Prioritizes billingConfig / VITE_PUBLIC_APP_URL / production origin, and falls back to DEFAULT_PUBLIC_APP_URL
+ * when generated from AI Studio preview (*.run.app) or localhost.
+ */
+export function getPublicAppOrigin(configuredUrl?: string | null): string {
+  const fromConfig = normalizeOriginUrl(configuredUrl);
+  if (fromConfig && !isAiStudioOrLocalOrigin(new URL(fromConfig).hostname)) {
+    return fromConfig;
+  }
+
+  const fromEnv = normalizeOriginUrl(
+    (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_PUBLIC_APP_URL) || ''
+  );
+  if (fromEnv && !isAiStudioOrLocalOrigin(new URL(fromEnv).hostname)) {
+    return fromEnv;
+  }
+
+  if (typeof window !== 'undefined' && !isAiStudioOrLocalOrigin(window.location.hostname)) {
+    return window.location.origin.replace(/\/+$/, '');
+  }
+
+  return DEFAULT_PUBLIC_APP_URL;
+}
+
 /**
  * Normalizes and extracts milliseconds timestamp from multiple date representations
  * (Firestore Timestamp, Date, number, ISO string) with zero timezone ambiguity.
@@ -279,29 +337,54 @@ export async function claimSaasInvitation(
 
     const compName = cData.name || cData.company || 'Mi Complejo';
 
-    // 1. Register or update member in subcollection preserving existing owner/manager role
+    // 1. Register member in subcollection preserving existing owner/manager/staff doc
     const memberRef = doc(db, 'complejos', complexId, 'members', user.uid);
     let resolvedMemberRole: 'owner' | 'manager' | 'staff' = 'staff';
+    let memberAlreadyExists = false;
     try {
       const existingMember = await getDoc(memberRef);
       if (existingMember.exists()) {
+        memberAlreadyExists = true;
         const existingRole = (existingMember.data()?.role || '').toString().toLowerCase().trim();
-        if (existingRole === 'owner' || existingRole === 'manager') {
-          resolvedMemberRole = existingRole;
+        if (existingRole === 'owner' || existingRole === 'propietario') {
+          resolvedMemberRole = 'owner';
+        } else if (existingRole === 'manager' || existingRole === 'encargado') {
+          resolvedMemberRole = 'manager';
         }
       }
     } catch {
-      // Proceed with staff if member doc doesn't exist or isn't readable yet
+      // Proceed if member doc doesn't exist or isn't readable before collaborator linking
     }
 
-    await setDoc(memberRef, {
+    if (cData.ownerUid && cData.ownerUid === user.uid) {
+      resolvedMemberRole = 'owner';
+    }
+
+    let memberCreateDeferred = false;
+    const memberPayload = {
       uid: user.uid,
       email: user.email || '',
       displayName: user.displayName || user.email?.split('@')[0] || 'Miembro',
       photoURL: user.photoURL || null,
-      role: resolvedMemberRole,
+      role: resolvedMemberRole === 'owner' ? 'owner' : 'staff',
+      inviteToken,
       joinedAt: serverTimestamp()
-    }, { merge: true });
+    };
+
+    if (!memberAlreadyExists) {
+      try {
+        await setDoc(memberRef, memberPayload);
+      } catch (memberErr: any) {
+        const code = String(memberErr?.code || '').toLowerCase();
+        const msg = String(memberErr?.message || '').toLowerCase();
+        if (code.includes('permission-denied') || msg.includes('permission')) {
+          // May already exist in members/{uid} while unreadable before collaborator doc is linked
+          memberCreateDeferred = true;
+        } else {
+          throw memberErr;
+        }
+      }
+    }
 
     // 2. Register membership in collaborator profile
     const colabRef = doc(db, 'collaborators', user.uid);
@@ -319,7 +402,7 @@ export async function claimSaasInvitation(
           {
             complexId,
             complexName: compName,
-            role: 'staff'
+            role: resolvedMemberRole
           }
         ],
         claimedMemberInviteToken: inviteToken,
@@ -330,16 +413,25 @@ export async function claimSaasInvitation(
     } else {
       const existing = colabSnap.data() as CollaboratorProfile;
       const existingMemberships = Array.isArray(existing.memberships) ? existing.memberships : [];
-      const existingComplexIds = Array.isArray(existing.complexIds) ? existing.complexIds : existingMemberships.map(m => m.complexId);
+      const existingComplexIds = Array.isArray(existing.complexIds)
+        ? existing.complexIds
+        : existingMemberships.map(m => m.complexId);
 
       const alreadyHas = existingMemberships.some(m => m.complexId === complexId);
       const updatedMemberships = alreadyHas
-        ? existingMemberships.map(m => m.complexId === complexId ? { ...m, role: m.role || 'staff' } : m)
-        : [...existingMemberships, { complexId, complexName: compName, role: 'staff' }];
+        ? existingMemberships.map(m =>
+            m.complexId === complexId
+              ? { ...m, complexName: compName, role: resolvedMemberRole || m.role || 'staff' }
+              : m
+          )
+        : [...existingMemberships, { complexId, complexName: compName, role: resolvedMemberRole }];
 
       const updatedComplexIds = Array.from(new Set([...existingComplexIds, complexId]));
 
       await updateDoc(colabRef, {
+        uid: user.uid,
+        email: existing.email || user.email || null,
+        name: existing.name || user.displayName || user.email?.split('@')[0] || 'Miembro',
         memberships: updatedMemberships,
         complexIds: updatedComplexIds,
         activeComplexId: complexId,
@@ -347,6 +439,28 @@ export async function claimSaasInvitation(
         claimedMemberComplexId: complexId,
         updatedAt: serverTimestamp()
       });
+    }
+
+    // 3. Verify member doc if initial create was deferred due to pre-claim read restriction
+    if (memberCreateDeferred) {
+      let verifiedExists = false;
+      try {
+        const verifySnap = await getDoc(memberRef);
+        verifiedExists = verifySnap.exists();
+      } catch {
+        verifiedExists = false;
+      }
+      if (!verifiedExists) {
+        await setDoc(memberRef, memberPayload);
+      }
+    }
+
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('activeComplexId', complexId);
+      }
+    } catch {
+      // Ignore storage error
     }
 
     return {
@@ -598,7 +712,8 @@ export async function createSaasInvitation(params: {
     claimedAt: null
   });
 
-  const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+  const resolvedOrigin = getPublicAppOrigin();
+  const baseUrl = resolvedOrigin || (typeof window !== 'undefined' ? window.location.origin : '');
   const inviteUrl = `${baseUrl}/invite/${token}`;
 
   return {

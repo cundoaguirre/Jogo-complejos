@@ -35,9 +35,9 @@ import {
 } from './lib/weeklyBilling';
 import { createSaasInvitation } from './lib/invitations';
 import { calculateUserLifecycleMetrics, formatDDMMYY, parseYMD, differenceInCalendarDays, isBookingPlayed, type UserLifecycleMetrics } from './lib/userMetrics';
-import { buildCrmActivityIndex, normalizePhoneNumber, isGenericPlaceholderName, findMatchingLocalUser } from './lib/crmActivityIndex';
-import { computeComplexFinancialSummary } from './lib/financialMath';
-import { doc, getDoc, getDocs, collection, query, where, serverTimestamp, addDoc } from 'firebase/firestore';
+import { buildCrmActivityIndex, normalizePhoneNumber, isGenericPlaceholderName, findMatchingLocalUser, isUserHiddenForComplex } from './lib/crmActivityIndex';
+import { computeComplexFinancialSummary, computeCajaPaymentBreakdown } from './lib/financialMath';
+import { doc, getDoc } from 'firebase/firestore';
 import { db, auth } from './lib/firebase';
 import { 
   getActiveComplexId,
@@ -50,6 +50,7 @@ import {
   saveCourtInFirestore,
   deleteCourtInFirestore,
   subscribeToClients,
+  getHiddenClientsForComplex,
   saveClientInFirestore,
   deleteClientInFirestore,
   subscribeToVenueProfile,
@@ -65,7 +66,8 @@ import {
   resolveClientPhone,
   subscribeToExpenseCategories,
   subscribeToExpenseItems,
-  permanentlyDeleteFinancialRecordInFirestore
+  permanentlyDeleteFinancialRecordInFirestore,
+  executeManualFinanceTransaction
 } from './lib/firestoreSync';
 import type { OperationDocument, FinancialMovementDocument, ProductCategory, Product, FinancialPaymentMethod } from './types';
 import { POSView } from './components/POSView';
@@ -79,6 +81,7 @@ import { PendingSettleModal } from './components/PendingSettleModal';
 import { OperationTicketCardModal } from './components/OperationTicketCardModal';
 import { CancelBookingModal } from './components/CancelBookingModal';
 import { DeleteBookingModal } from './components/DeleteBookingModal';
+import { ConfirmDeleteCardModal } from './components/ConfirmDeleteCardModal';
 import { downloadUnifiedWeeklyReportPdf } from './lib/weeklyReportPdfGenerator';
 import { requestNotificationPermissionAndGetToken, initForegroundNotificationListener } from './lib/notifications';
 import {
@@ -92,6 +95,7 @@ import {
 import { CourtEditModal } from './components/CourtEditModal';
 import { BookingStepOneForm } from './components/booking/BookingStepOneForm';
 import { AgendaGrid } from './components/agenda/AgendaGrid';
+import { KpiBreakdownTrigger } from './components/finance/KpiBreakdownBadge';
 
 // --- Components ---
 
@@ -479,6 +483,11 @@ interface NewUserModalProps {
   initialData?: User | null;
   isEdit?: boolean;
   existingUsers?: User[];
+  deleteWarningInfo?: {
+    hasDebt?: boolean;
+    debtAmount?: number;
+    futureBookingsCount?: number;
+  };
 }
 
 const NewUserModal = ({ 
@@ -488,7 +497,8 @@ const NewUserModal = ({
   onDelete,
   initialData = null, 
   isEdit = false, 
-  existingUsers = [] 
+  existingUsers = [],
+  deleteWarningInfo
 }: NewUserModalProps) => {
   const nameInputRef = useRef<HTMLInputElement | null>(null);
   const isFromJogoInitial = Boolean(
@@ -510,6 +520,7 @@ const NewUserModal = ({
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
@@ -531,6 +542,8 @@ const NewUserModal = ({
       });
       setError(null);
       setIsSubmitting(false);
+      setIsDeleting(false);
+      setShowDeleteConfirm(false);
 
       if (!isEdit) {
         const timer = setTimeout(() => {
@@ -608,18 +621,23 @@ const NewUserModal = ({
     }
   };
 
-  const handleDeleteUserClick = async () => {
+  const handleDeleteUserClick = () => {
     if (!initialData?.id || !onDelete) return;
-    const confirmDelete = window.confirm(`¿Estás seguro de que deseas eliminar a "${initialData.name || 'este usuario'}" de la sede?`);
-    if (!confirmDelete) return;
+    setError(null);
+    setShowDeleteConfirm(true);
+  };
 
+  const handleConfirmDeleteUser = async () => {
+    if (!initialData?.id || !onDelete) return;
     try {
       setIsDeleting(true);
+      setError(null);
       await onDelete(initialData.id);
+      setShowDeleteConfirm(false);
       onClose();
     } catch (err: any) {
-      console.error('Error al eliminar usuario:', err);
-      setError(err?.message || 'Error al eliminar el usuario.');
+      console.error('Error al ocultar usuario de la sede:', err);
+      setError(err?.message || 'Error al eliminar el usuario de la sede.');
     } finally {
       setIsDeleting(false);
     }
@@ -873,6 +891,26 @@ const NewUserModal = ({
           </div>
         </div>
       </motion.div>
+      <ConfirmDeleteCardModal
+        isOpen={showDeleteConfirm}
+        onClose={() => {
+          if (!isDeleting) {
+            setError(null);
+            setShowDeleteConfirm(false);
+          }
+        }}
+        onConfirm={handleConfirmDeleteUser}
+        targetName={initialData?.name || formData.name || 'este usuario'}
+        warningNote={
+          deleteWarningInfo?.hasDebt
+            ? `Saldo pendiente: $${Number(deleteWarningInfo.debtAmount || 0).toLocaleString('es-AR')}`
+            : Number(deleteWarningInfo?.futureBookingsCount || 0) > 0
+            ? `${deleteWarningInfo?.futureBookingsCount} reserva(s) próxima(s) en agenda`
+            : null
+        }
+        errorMessage={error}
+        isDeleting={isDeleting}
+      />
     </div>
   );
 };
@@ -1023,16 +1061,37 @@ const UserDetailModal = ({
     setCurrentUser(user);
     if (!user) return;
 
-    // Resolve and preserve canonical record from /users/{userId} if personal fields can be populated
+    // Los usuarios no derivados ya llegan completos desde subscribeToClients en memoria (0 lecturas extra)
+    const isDerivedUser = Boolean(user.isDerived) || String(user.id || '').startsWith('derived_');
     const candidateLookupIds = [
-      user.id,
       user.canonicalId,
       (user as any).userId,
       (user as any).personId,
       (user as any).erpUserId,
     ].filter(id => id && !String(id).startsWith('derived_'));
 
-    if (candidateLookupIds.length > 0) {
+    if (isDerivedUser && candidateLookupIds.length > 0) {
+      // Resolver primero en memoria contra existingUsers antes de consultar Firestore
+      const localMatch = existingUsers.find(u =>
+        !u.isDerived && candidateLookupIds.some(cid => String(u.id) === String(cid) || String(u.canonicalId || '') === String(cid))
+      );
+      if (localMatch) {
+        setCurrentUser(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            gender: toCanonicalGender(prev.gender || localMatch.gender),
+            birthDate: prev.birthDate || localMatch.birthDate || '',
+            address: prev.address || localMatch.address || '',
+            city: prev.city || localMatch.city || '',
+            preferredFoot: prev.preferredFoot || localMatch.preferredFoot || '',
+            phone: prev.phone || localMatch.phone || '',
+            email: (prev.email && !prev.email.includes('@sin-correo.com')) ? prev.email : (localMatch.email || prev.email || ''),
+          };
+        });
+        return;
+      }
+
       let isMounted = true;
       (async () => {
         try {
@@ -1069,7 +1128,7 @@ const UserDetailModal = ({
         isMounted = false;
       };
     }
-  }, [user]);
+  }, [user, existingUsers]);
 
   // Real-time subscriptions strictly scoped to active complex
   useEffect(() => {
@@ -1522,6 +1581,17 @@ const UserDetailModal = ({
   }, [pendingOperations, currentUser?.debt, (currentUser as any)?.currentDebt]);
 
   const hasDebt = totalCalculatedDebt > 0;
+
+  const futureBookingsCount = useMemo(() => {
+    const todayIso = new Date().toISOString().split('T')[0];
+    return userBookings.filter(b => {
+      const st = String(b.status || '').toLowerCase();
+      const paySt = String((b as any).paymentStatus || (b as any).payment_status || '').toLowerCase();
+      if (st === 'cancelled' || st === 'cancelado' || paySt.includes('cancel')) return false;
+      const bDate = String(b.date || (b.startTime ? String(b.startTime).split('T')[0] : '')).trim();
+      return bDate >= todayIso;
+    }).length;
+  }, [userBookings]);
 
   // 12 Lifecycle Metrics for "Datos" tab
   const metricsData = useMemo(() => {
@@ -2006,9 +2076,9 @@ const UserDetailModal = ({
                           No hay saldos pendientes
                         </div>
                       ) : (
-                        pendingOperations.map((item) => (
+                        pendingOperations.map((item, idx) => (
                           <div 
-                            key={`pending-${item.id}`}
+                            key={`pending-${item.id}-${idx}`}
                             onClick={() => handleOpenOperationCard(item.originalDoc)}
                             className="flex items-center justify-between p-2 rounded-2xl hover:bg-gray-50/80 transition-colors cursor-pointer group"
                           >
@@ -2067,7 +2137,7 @@ const UserDetailModal = ({
                           Sin actividad registrada en este complejo
                         </div>
                       ) : (
-                        playerCommercialOperations.map((item) => {
+                        playerCommercialOperations.map((item, idx) => {
                           const isCancelled = Boolean(
                             item.isCancelled || 
                             item.status === 'cancelado' || 
@@ -2080,7 +2150,7 @@ const UserDetailModal = ({
 
                           return (
                             <div 
-                              key={`recent-${item.id}`}
+                              key={`recent-${item.id}-${idx}`}
                               onClick={() => handleOpenOperationCard(item.originalDoc)}
                               className="relative z-10 flex items-center justify-between gap-3 group cursor-pointer hover:bg-gray-50/80 p-1.5 -ml-1.5 rounded-xl transition-colors"
                             >
@@ -2229,14 +2299,20 @@ const UserDetailModal = ({
             isEdit={true}
             initialData={currentUser}
             existingUsers={existingUsers}
+            deleteWarningInfo={{
+              hasDebt,
+              debtAmount: totalCalculatedDebt,
+              futureBookingsCount
+            }}
             onClose={() => setIsEditModalOpen(false)}
             onDelete={async (uid) => {
-              await deleteClientInFirestore(uid, complexId);
+              if (onDelete) {
+                await onDelete(uid);
+              } else if (!String(uid).startsWith('derived_')) {
+                await deleteClientInFirestore(uid, complexId);
+              }
               setIsEditModalOpen(false);
               onClose();
-              if (onDelete) {
-                onDelete(uid);
-              }
             }}
             onSave={async (updatedFields) => {
               const clientToSave: any = {
@@ -3122,6 +3198,7 @@ const CreateMatchModal = ({
   const [isAddingNewUser, setIsAddingNewUser] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const initialPaidOnOpenRef = useRef<number>(0);
 
   // Estados para filas de pago, popover de borrado y Sub-Bottom Sheet
   const [deleteBookingMenuRowId, setDeleteBookingMenuRowId] = useState<string | null>(null);
@@ -3288,17 +3365,24 @@ const CreateMatchModal = ({
     const initialDuration = (isRealMatch && Number(initialData?.durationMinutes))
       ? Number(initialData.durationMinutes)
       : getCourtDefaultDuration(currentCourt);
-    const courtPrice = getCourtPriceForDuration(currentCourt, initialDuration);
+    const courtPrice = Number(
+      (isRealMatch ? (initialData?.price ?? initialData?.price_total) : undefined) ??
+      getCourtPriceForDuration(currentCourt, initialDuration)
+    );
     if (isRealMatch) {
-      if (initialPaymentStatus === 'partial' && initialAmountPaid === 0 && courtPrice > 0) {
+      const hasExplicitPaid = initialData.amount_paid !== undefined || initialData.deposit !== undefined;
+      if (!hasExplicitPaid && initialPaymentStatus === 'partial' && initialAmountPaid === 0 && courtPrice > 0) {
         initialAmountPaid = Math.round(courtPrice * 0.1);
-      } else if (initialPaymentStatus === 'paid' && initialAmountPaid === 0 && courtPrice > 0) {
+      } else if (!hasExplicitPaid && initialPaymentStatus === 'paid' && initialAmountPaid === 0 && courtPrice > 0) {
         initialAmountPaid = courtPrice;
       }
     } else {
       initialAmountPaid = 0;
       initialPaymentStatus = 'pending';
     }
+
+    const isEditingExisting = Boolean(isRealMatch && initialData?.id);
+    initialPaidOnOpenRef.current = isEditingExisting ? Math.max(0, Number(initialAmountPaid) || 0) : 0;
 
     setData({
       id: isRealMatch ? initialData.id : undefined,
@@ -3315,7 +3399,6 @@ const CreateMatchModal = ({
       amount_paid: initialAmountPaid,
       notes: initialNotes
     });
-    const isEditingExisting = Boolean(isRealMatch && initialData?.id);
     if (!isEditingExisting) {
       setIsSelectUserOpen(true);
       setTimeout(() => {
@@ -3333,7 +3416,11 @@ const CreateMatchModal = ({
           { id: `bpay_${Date.now()}_1`, method: 'Efectivo', amount: initialAmountPaid },
           { id: `bpay_${Date.now()}_2`, method: 'Pendiente', amount: courtPrice - initialAmountPaid }
         ]);
-      } else if (initialPaymentStatus === 'paid' && initialAmountPaid >= courtPrice) {
+      } else if ((initialPaymentStatus === 'paid' || initialPaymentStatus === 'pagado') && initialAmountPaid >= courtPrice) {
+        setBookingPayments([
+          { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: initialAmountPaid }
+        ]);
+      } else if (initialAmountPaid > 0) {
         setBookingPayments([
           { id: `bpay_${Date.now()}`, method: 'Efectivo', amount: initialAmountPaid }
         ]);
@@ -3683,7 +3770,31 @@ const CreateMatchModal = ({
         notes: `Cobro reserva (${p.method}) · ${clientName}`
       }));
 
-    const paymentStatus = isCancelled ? 'cancelled' : (paidAmount >= priceTotal && priceTotal > 0 ? 'pagado' : (paidAmount > 0 ? 'seña' : 'pendiente'));
+    const isEditing = Boolean(data.id);
+    const previousDeposit = isEditing ? initialPaidOnOpenRef.current : 0;
+    const deltaPaid = isEditing ? Math.max(0, Number((paidAmount - previousDeposit).toFixed(2))) : paidAmount;
+
+    let deltaPayments = paidPayments;
+    if (isEditing) {
+      let remainingToSkip = previousDeposit;
+      deltaPayments = [];
+      for (const p of paidPayments) {
+        if (remainingToSkip >= p.amount) {
+          remainingToSkip -= p.amount;
+        } else if (remainingToSkip > 0) {
+          deltaPayments.push({
+            ...p,
+            amount: Number((p.amount - remainingToSkip).toFixed(2))
+          });
+          remainingToSkip = 0;
+        } else {
+          deltaPayments.push(p);
+        }
+      }
+    }
+
+    const effectiveTotalPaid = isEditing ? Math.max(previousDeposit, paidAmount) : paidAmount;
+    const paymentStatus = isCancelled ? 'cancelled' : (effectiveTotalPaid >= priceTotal && priceTotal > 0 ? 'pagado' : (effectiveTotalPaid > 0 ? 'seña' : 'pendiente'));
 
     setIsSubmitting(true);
     try {
@@ -3711,12 +3822,19 @@ const CreateMatchModal = ({
         durationMinutes: selectedDuration,
         price: priceTotal,
         price_total: priceTotal,
-        deposit: paidAmount,
-        amount_paid: paidAmount,
-        hostAmountPaid: paidAmount,
-        host_amount_paid: paidAmount,
+        deposit: effectiveTotalPaid,
+        amount_paid: effectiveTotalPaid,
+        hostAmountPaid: effectiveTotalPaid,
+        host_amount_paid: effectiveTotalPaid,
         amountPending: pendingAmount,
-        payments: paidPayments,
+        ...(isEditing ? {
+          previousDeposit,
+          deltaPaid,
+          deltaPayments,
+          ...(deltaPaid > 0 ? { idempotencyKey: `booking_edit_${data.id}_${Date.now()}` } : {})
+        } : {
+          payments: paidPayments
+        }),
         status: isCancelled ? 'cancelado' : (() => {
           const now = new Date();
           return endDateTime < now ? 'jugado' : 'confirmado';
@@ -3792,6 +3910,7 @@ const CreateMatchModal = ({
 
   const selectedUserName = clientDisplayName;
   const filteredUsers = users.filter(u => {
+    if (!u || isUserHiddenForComplex(u, complexId)) return false;
     if (!userSearch) return true;
     const term = userSearch.toLowerCase();
     return (
@@ -3932,7 +4051,7 @@ const CreateMatchModal = ({
                     court_id: newCourtId,
                     ...(!prev.id ? { durationMinutes: nextDuration } : {}),
                   }));
-                  if (data.id && bookingPayments.length <= 1) {
+                  if (data.id && initialPaidOnOpenRef.current <= 0 && bookingPayments.length <= 1) {
                     setBookingPayments([
                       { id: `bpay_${Date.now()}`, method: 'Pendiente', amount: newPrice },
                     ]);
@@ -6414,7 +6533,7 @@ const UsersView = ({
     if (unifiedUsers && userMetrics) {
       return { crmUsers: unifiedUsers, userMetricsMap: userMetrics };
     }
-    return buildCrmActivityIndex(users, bookings, complexId, new Date());
+    return buildCrmActivityIndex(users, bookings, complexId, new Date(), [], getHiddenClientsForComplex(complexId));
   }, [users, bookings, complexId, unifiedUsers, userMetrics]);
 
   const { crmUsers, userMetricsMap } = computedIndex;
@@ -6431,7 +6550,7 @@ const UsersView = ({
 
   const filteredUsers = useMemo(() => {
     return (Array.isArray(crmUsers) ? crmUsers : []).filter(user => {
-      if (!user) return false;
+      if (!user || isUserHiddenForComplex(user, complexId)) return false;
       const metrics = userMetricsMap.get(String(user.id));
       if (!metrics) return false;
 
@@ -8020,7 +8139,15 @@ const FinanceView = ({
       const effectivePaid = isPaid ? (rawPaid > 0 ? Math.max(rawPaid, tot) : tot) : rawPaid;
 
       if (effectivePaid > 0) {
-        const d = b.date ? safeParseDate(b.date) || new Date() : (b.start_time ? safeParseDate(b.start_time) || new Date() : new Date());
+        const d =
+          safeParseDate((b as any).paidAt) ||
+          safeParseDate(b.createdAt) ||
+          safeParseDate((b as any).created_at) ||
+          safeParseDate(b.updatedAt) ||
+          (b.date ? safeParseDate(b.date) : null) ||
+          (b.start_time ? safeParseDate(b.start_time) : null) ||
+          (b.startTime ? safeParseDate(b.startTime) : null) ||
+          new Date();
         const resolvedName = resolveClientName(b, users);
         list.push({
           id: `${b.id}_deposit_legacy`,
@@ -8038,7 +8165,11 @@ const FinanceView = ({
       }
     });
 
-    return list.sort((a, b) => b.date.getTime() - a.date.getTime());
+    const uniqueMap = new Map<string, (typeof list)[number]>();
+    list.forEach(item => {
+      if (!uniqueMap.has(item.id)) uniqueMap.set(item.id, item);
+    });
+    return Array.from(uniqueMap.values()).sort((a, b) => b.date.getTime() - a.date.getTime());
   }, [financialMovements, operations, legacyTransactions, effectiveBookings, users, operationsMap, bookingsMap, targetIds]);
 
   // 2. SECCIÓN OPERACIONES: Vista comercial unificada
@@ -8215,11 +8346,14 @@ const FinanceView = ({
       });
     });
 
-    const existingBookingIds = new Set(
-      operations
+    const existingBookingIds = new Set([
+      ...operations
         .filter(o => o.bookingId || o.id.endsWith('-booking'))
-        .map(o => String(o.bookingId || o.id.replace('-booking', '')))
-    );
+        .map(o => String(o.bookingId || o.id.replace('-booking', ''))),
+      ...legacyTransactions
+        .filter(t => t.bookingId || String(t.id || '').endsWith('-booking'))
+        .map(t => String(t.bookingId || String(t.id).replace('-booking', '')))
+    ]);
 
     effectiveBookings.forEach(b => {
       if (!b) return;
@@ -8231,7 +8365,14 @@ const FinanceView = ({
       const bPayStatus = String(b.payment_status || (b as any).paymentStatus || '').toLowerCase();
       const isCancelledBooking = bStatus === 'cancelado' || bStatus === 'cancelled' || bPayStatus.includes('cancel');
 
-      const d = b.date ? safeParseDate(b.date) || new Date() : (b.start_time ? safeParseDate(b.start_time) || new Date() : new Date());
+      const d =
+        safeParseDate(b.createdAt) ||
+        safeParseDate((b as any).created_at) ||
+        safeParseDate(b.updatedAt) ||
+        (b.date ? safeParseDate(b.date) : null) ||
+        (b.start_time ? safeParseDate(b.start_time) : null) ||
+        (b.startTime ? safeParseDate(b.startTime) : null) ||
+        new Date();
       const rawTot = Number(b.price || b.price_total || 0);
       const isPaid = b.payment_status === 'paid' || b.paymentStatus === 'paid' || b.payment_status === 'pagado';
       const rawPaid = Number(b.amount_paid ?? b.deposit ?? 0);
@@ -8291,7 +8432,11 @@ const FinanceView = ({
       });
     });
 
-    return list.sort((a, b) => b.date.getTime() - a.date.getTime());
+    const uniqueOpsMap = new Map<string, (typeof list)[number]>();
+    list.forEach(item => {
+      if (!uniqueOpsMap.has(item.id)) uniqueOpsMap.set(item.id, item);
+    });
+    return Array.from(uniqueOpsMap.values()).sort((a, b) => b.date.getTime() - a.date.getTime());
   }, [operations, legacyTransactions, effectiveBookings, targetId, users, bookingsMap, targetIds]);
 
   const handleOpenTicketFromMovement = (opId?: string | null) => {
@@ -8312,11 +8457,9 @@ const FinanceView = ({
     e.preventDefault();
     const amountVal = Number(newTx.amount);
     if (isNaN(amountVal) || amountVal <= 0) return;
-    
-    const isGasto = newTx.type === 'expense';
+
     const categoryToSave = newTx.category === 'Otro' && customCategory ? customCategory.trim() : newTx.category;
     const conceptToSave = selectedExpenseItemName ? selectedExpenseItemName : (newTx.description?.trim() || categoryToSave);
-    const notesWithMethod = `${newTx.paymentMethod} - ${newTx.description || conceptToSave}`.trim();
 
     const paymentMethodMap: Record<string, FinancialPaymentMethod> = {
       'Efectivo': 'cash',
@@ -8327,75 +8470,25 @@ const FinanceView = ({
     const mappedPaymentMethod: FinancialPaymentMethod = paymentMethodMap[newTx.paymentMethod] || 'cash';
 
     try {
-      const operationId = `manual_op_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const movId = `manual_mov_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-      const currentYear = new Date().getFullYear().toString().slice(-2);
-      const ticketCode = `${isGasto ? 'E' : 'I'}-${currentYear}-${Math.floor(1000 + Math.random() * 9000)}`;
-
-      await addDoc(collection(db, 'operations'), {
-        id: operationId,
+      await executeManualFinanceTransaction({
         complexId: targetId,
-        complejoId: targetId,
-        ticketCode,
-        operationType: isGasto ? 'expense' : 'pos_sale',
-        responsibleType: isGasto ? 'supplier' : 'anonymous',
-        userName: isGasto ? (conceptToSave || categoryToSave) : 'Cliente Mostrador',
-        clientName: isGasto ? (conceptToSave || categoryToSave) : 'Cliente Mostrador',
-        contractualAmount: amountVal,
-        totalCollected: amountVal,
-        totalRefunded: 0,
-        netCollected: amountVal,
-        retainedAmount: 0,
-        amountPending: 0,
-        paymentStatus: 'paid',
-        currentAccountAssigned: false,
-        currentAccountDebtAmount: 0,
-        items: [{
-          id: operationId,
-          name: conceptToSave,
-          quantity: 1,
-          unitPrice: amountVal,
-          subtotal: amountVal
-        }],
-        notes: notesWithMethod,
-        metadata: {
-          category: categoryToSave,
-          isManual: true,
-          isExpense: isGasto
-        },
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        createdBy: 'administrador'
-      });
-
-      await addDoc(collection(db, 'financial_movements'), {
-        id: movId,
-        complexId: targetId,
-        complejoId: targetId,
-        operationId,
-        ticketCode,
-        idempotencyKey: `manual_${operationId}`,
-        flow: isGasto ? 'expense' : 'income',
-        category: isGasto ? 'expense_payment' : 'sale_collection',
+        type: newTx.type,
         amount: amountVal,
+        category: categoryToSave,
+        concept: conceptToSave,
+        description: newTx.description || `${newTx.paymentMethod} - ${conceptToSave}`,
         paymentMethod: mappedPaymentMethod,
-        effectiveDate: serverTimestamp(),
-        responsibleName: isGasto ? categoryToSave : 'Mostrador',
-        userName: isGasto ? categoryToSave : 'Mostrador',
-        clientName: isGasto ? categoryToSave : 'Cliente Mostrador',
-        clearedCurrentAccountDebt: 0,
-        notes: notesWithMethod,
-        operatorId: 'administrador',
-        createdAt: serverTimestamp()
+        operatorId: auth.currentUser?.uid || 'administrador',
+        idempotencyKey: `manual_tx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
       });
+
+      setIsManualTxModalOpen(false);
+      setNewTx({ type: 'income', amount: '', category: 'Alquiler de Cancha', paymentMethod: 'Transferencia', description: '' });
+      setCustomCategory('');
+      setSelectedExpenseItemName('');
     } catch (err) {
       console.warn('Error saving tx to Firestore:', err);
     }
-    
-    setIsManualTxModalOpen(false);
-    setNewTx({ type: 'income', amount: '', category: 'Alquiler de Cancha', paymentMethod: 'Transferencia', description: '' });
-    setCustomCategory('');
-    setSelectedExpenseItemName('');
   };
 
   // -------------------------------------------------------------------------
@@ -8409,12 +8502,6 @@ const FinanceView = ({
 
   const periodOperations = useMemo(() => {
     return combinedOperations.filter(op => {
-      const isBookingOp = op.originalDoc?.operationType === 'court_booking' || op.originalDoc?.operationType === 'booking' || Boolean(op.originalDoc?.bookingId) || op.id.endsWith('-booking') || Boolean(op.bookingDate);
-      if (isBookingOp && op.bookingDate) {
-        const sDate = safeParseDate(op.bookingDate + 'T12:00:00') || safeParseDate(op.bookingDate) || op.date;
-        const t = sDate.getTime();
-        return t >= currentRange.start.getTime() && t <= currentRange.end.getTime();
-      }
       const t = op.date.getTime();
       return t >= currentRange.start.getTime() && t <= currentRange.end.getTime();
     });
@@ -8429,12 +8516,6 @@ const FinanceView = ({
 
   const previousOperations = useMemo(() => {
     return combinedOperations.filter(op => {
-      const isBookingOp = op.originalDoc?.operationType === 'court_booking' || op.originalDoc?.operationType === 'booking' || Boolean(op.originalDoc?.bookingId) || op.id.endsWith('-booking') || Boolean(op.bookingDate);
-      if (isBookingOp && op.bookingDate) {
-        const sDate = safeParseDate(op.bookingDate + 'T12:00:00') || safeParseDate(op.bookingDate) || op.date;
-        const t = sDate.getTime();
-        return t >= previousRange.start.getTime() && t <= previousRange.end.getTime();
-      }
       const t = op.date.getTime();
       return t >= previousRange.start.getTime() && t <= previousRange.end.getTime();
     });
@@ -8519,6 +8600,14 @@ const FinanceView = ({
     return computeTrend(financialSummary.cashAvailable, previousSummary.cashAvailable);
   }, [financialSummary.cashAvailable, previousSummary.cashAvailable]);
 
+  const cajaBreakdown = useMemo(() => {
+    return computeCajaPaymentBreakdown({
+      targetComplexIds: targetIds,
+      periodMovements,
+      rawFinancialMovements: financialMovements
+    });
+  }, [targetIds, periodMovements, financialMovements]);
+
   const porCobrarPct = financialSummary.economicIncome > 0
     ? Math.round((financialSummary.pendingToCollect / financialSummary.economicIncome) * 100)
     : (financialSummary.pendingToCollect > 0 ? 100 : 0);
@@ -8586,12 +8675,7 @@ const FinanceView = ({
     return combinedOperations.filter(op => {
       // Si no es propietario (Encargado o Staff), filtrar estrictamente por la fecha de Hoy
       if (!isOwner) {
-        const isBookingOp = op.originalDoc?.operationType === 'court_booking' || op.originalDoc?.operationType === 'booking' || Boolean(op.originalDoc?.bookingId) || op.id.endsWith('-booking') || Boolean(op.bookingDate);
-        let opTime = op.date.getTime();
-        if (isBookingOp && op.bookingDate) {
-          const sDate = safeParseDate(op.bookingDate + 'T12:00:00') || safeParseDate(op.bookingDate) || op.date;
-          opTime = sDate.getTime();
-        }
+        const opTime = op.date.getTime();
         if (opTime < currentRange.start.getTime() || opTime > currentRange.end.getTime()) {
           return false;
         }
@@ -8788,6 +8872,10 @@ const FinanceView = ({
           {/* 2.2. Columna Derecha: Ampliada a col-span-8 para formato apaisado */}
           <div className="col-span-8 flex flex-col justify-between space-y-2.5">
             {/* Arriba: Sub-tarjeta Verde de Caja (Rectángulo acostado / apaisado con $) */}
+            <KpiBreakdownTrigger
+              breakdown={cajaBreakdown}
+              className="cursor-pointer"
+            >
             <div className="bg-[#129D44] text-white rounded-2xl py-2 px-3 sm:py-2.5 sm:px-3.5 shadow-sm flex items-center justify-between gap-2">
               {/* Izquierda: Caja */}
               <div className="min-w-0">
@@ -8835,6 +8923,7 @@ const FinanceView = ({
                 </div>
               </div>
             </div>
+            </KpiBreakdownTrigger>
 
             {/* Abajo: Mostrador y Agenda con montos perfectamente alineados al título */}
             <div className="space-y-2 pt-0.5">
@@ -9013,7 +9102,7 @@ const FinanceView = ({
 
                     return (
                       <div
-                        key={`timeline-row-${item.id}`}
+                        key={`timeline-row-${group.key}-${item.id}-${idx}`}
                         onClick={item.onClick}
                         className="relative flex items-center justify-between gap-3 py-2 cursor-pointer group hover:bg-gray-50/70 dark:hover:bg-slate-800/40 rounded-2xl px-2 transition-colors select-none"
                       >
@@ -9667,158 +9756,45 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
 
   useEffect(() => {
     let isMounted = true;
-    const controller = new AbortController();
+    setIsLoading(true);
+    setLoading(true);
 
-    const loadProfileData = async () => {
-      setIsLoading(true);
-      setLoading(true);
-      try {
-        // 1. Check collaborators doc for current authenticated user
-        const currentAuth = auth.currentUser || user;
-        let collaboratorProfile: any = null;
-        if (currentAuth) {
-          try {
-            const colDoc = await getDoc(doc(db, 'collaborators', currentAuth.uid));
-            if (colDoc.exists()) {
-              collaboratorProfile = colDoc.data();
-            }
-          } catch (colErr) {
-            console.warn('[Profile] Notice checking collaborator doc:', colErr);
-          }
-        }
-
-        // 2. Read directly from canonical complejos/{activeComplejoId}
-        let complexDocData: any = null;
-        const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
-        try {
-          const cSnap = await getDoc(doc(db, 'complejos', targetId));
-          if (cSnap.exists()) {
-            complexDocData = cSnap.data();
-          }
-        } catch (cErr) {
-          console.warn('[Profile] Notice checking complejo doc:', cErr);
-        }
-
-        if (isMounted) {
-          // Read courts directly from complexes/{activeComplexId} ('courts' or 'canchas') or courtsData
-          const embeddedCourts = complexDocData?.courts || complexDocData?.canchas;
-          if (Array.isArray(embeddedCourts) && embeddedCourts.length > 0) {
-            const mappedCourts: Court[] = embeddedCourts.map((c: any, idx: number) => ({
-              id: c.id ? (isNaN(Number(c.id)) ? c.id : Number(c.id)) : idx + 1,
-              name: c.name || `Cancha ${idx + 1}`,
-              type: c.sport || c.type || 'Fútbol 5',
-              surface: c.surface || 'Césped Sintético',
-              price_per_hour: Number(c.price || c.price_per_hour) || 0,
-              is_roofed: Boolean(c.is_roofed),
-              image_url: c.image_url || '',
-              status: c.status === 'activa' ? 'available' : (c.status || 'available')
-            }));
-            setCourts(mappedCourts);
-          }
-
-          // Build unified profile: fallback to active complex, authenticated user details, or 'Colo loco'
-          const resolvedName = complexDocData?.name || activeComplex?.name || 'Colo loco';
-          const resolvedAddress = complexDocData?.address || activeComplex?.address || 'Av. Corrientes 1234, CABA';
-          const resolvedPhone = complexDocData?.phone || activeComplex?.phone || '+54 9 11 5555-5555';
-          const resolvedInstagram = complexDocData?.instagram || activeComplex?.instagram || '@cololoco';
-          const resolvedDescription = complexDocData?.description || activeComplex?.description || 'Complejo deportivo líder.';
-          const rawComplexHours = complexDocData?.hours || complexDocData?.weeklySchedule;
-          const resolvedHours = Array.isArray(rawComplexHours)
-            ? rawComplexHours
-            : (rawComplexHours && typeof rawComplexHours === 'object' && Object.values(rawComplexHours).length > 0 && typeof Object.values(rawComplexHours)[0] === 'object' && 'day' in (Object.values(rawComplexHours)[0] as any)
-                ? Object.values(rawComplexHours)
-                : defaultHours);
-          const resolvedServices = complexDocData?.services || ['Estacionamiento', 'Vestuarios', 'Buffet', 'Césped Sintético'];
-
-          setProfile({
-            name: resolvedName,
-            address: resolvedAddress,
-            phone: resolvedPhone,
-            instagram: resolvedInstagram,
-            description: resolvedDescription,
-            hours: resolvedHours,
-            services: resolvedServices
-          });
-        }
-      } catch (err: any) {
-        if (err.name !== 'AbortError') {
-          console.error('Error fetching profile data:', err);
-        }
-      } finally {
-        setIsLoading(false);
-        setLoading(false);
-      }
-    };
-
-    loadProfileData();
-
-    // Real-time Firestore sync for venue and courts
     const unsubVenue = subscribeToVenueProfile(complexId, (vData) => {
-      if (vData && isMounted) {
-        setProfile((prev: any) => ({ 
-          ...prev, 
+      if (!isMounted) return;
+      if (vData) {
+        setProfile((prev: any) => ({
+          ...prev,
           ...vData,
-          hours: Array.isArray(vData.hours) ? vData.hours : (Array.isArray(prev?.hours) ? prev.hours : defaultHours)
+          name: vData.name || activeComplex?.name || prev?.name || '',
+          address: vData.address || activeComplex?.address || prev?.address || '',
+          phone: vData.phone || activeComplex?.phone || prev?.phone || '',
+          instagram: vData.instagram || activeComplex?.instagram || prev?.instagram || '',
+          description: vData.description || activeComplex?.description || prev?.description || '',
+          hours: Array.isArray(vData.hours) ? vData.hours : (Array.isArray(prev?.hours) ? prev.hours : defaultHours),
+          services: vData.services || prev?.services || ['Estacionamiento', 'Vestuarios', 'Buffet', 'Césped Sintético']
         }));
         if (Array.isArray(vData.photos)) {
-          setPhotos(vData.photos.map((p: any, idx: number) => 
+          setPhotos(vData.photos.map((p: any, idx: number) =>
             typeof p === 'string' ? { id: `p_${idx}`, url: p } : { id: p.id || `p_${idx}`, url: p.url || '' }
           ));
         }
       }
+      setIsLoading(false);
+      setLoading(false);
     });
+
     const unsubCourts = subscribeToCourts(complexId, (cList) => {
-      if (Array.isArray(cList) && isMounted) setCourts(cList);
+      if (Array.isArray(cList) && isMounted) {
+        setCourts(cList);
+      }
     });
 
     return () => {
       isMounted = false;
-      controller.abort();
       unsubVenue();
       unsubCourts();
     };
   }, [complexId]);
-
-  const fetchData = async () => {
-    setIsLoading(true);
-    setLoading(true);
-    try {
-      const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
-      const cSnap = await getDoc(doc(db, 'complejos', targetId));
-      if (cSnap.exists()) {
-        const cData = cSnap.data();
-        if (cData.name || cData.company) {
-          setProfile((prev: any) => ({ 
-            ...prev, 
-            name: cData.name || cData.company || prev.name,
-            address: cData.address || prev.address,
-            phone: cData.phone || prev.phone,
-            instagram: cData.instagram || prev.instagram,
-            description: cData.description || cData.notes || prev.description,
-            hours: Array.isArray(cData.hours) ? cData.hours : prev.hours
-          }));
-        }
-        if (Array.isArray(cData.courts)) {
-          setCourts(cData.courts.map((c: any, idx: number) => ({
-            id: c.id ? String(c.id) : `c_${idx + 1}`,
-            name: c.name || `Cancha ${idx + 1}`,
-            type: c.sport || c.type || 'fútbol 5',
-            sport: c.sport || c.type || 'fútbol 5',
-            surface: c.surface || 'sintético',
-            price_per_hour: Number(c.price ?? c.price_per_hour ?? 0),
-            price: Number(c.price ?? c.price_per_hour ?? 0),
-            is_roofed: Boolean(c.is_roofed),
-            status: c.status === 'activa' || c.status === 'available' ? 'available' : (c.status || 'available')
-          })));
-        }
-      }
-    } catch (err) {
-      console.error('Error refreshing profile data:', err);
-    } finally {
-      setIsLoading(false);
-      setLoading(false);
-    }
-  };
 
   const [isSaving, setIsSaving] = useState(false);
   const [mostradorSheetMode, setMostradorSheetMode] = useState<'mostrador' | 'gastos' | null>(null);
@@ -9894,7 +9870,6 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
     setIsSaving(false);
     setEditingCourt(null);
     setEditSection(null);
-    fetchData();
     if (onDataChange) onDataChange();
   };
 
@@ -9906,7 +9881,6 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
     }
     setEditingCourt(null);
     setEditSection(null);
-    fetchData();
     if (onDataChange) onDataChange();
   };
 
@@ -10119,16 +10093,14 @@ const ProfileView = ({ onDataChange, isDarkMode, onToggleDarkMode, complexId = '
         )}
       </div>
 
-      {!isOwner && (
-        <button
-          type="button"
-          onClick={logout}
-          className="w-full mt-3 rounded-2xl border border-red-200/80 dark:border-red-900/50 bg-white dark:bg-slate-800 py-3.5 px-4 text-center font-bold text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-2"
-        >
-          <LogOut size={16} />
-          <span>Cerrar sesión</span>
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={logout}
+        className="w-full mt-3 rounded-2xl border border-red-200/80 dark:border-red-900/50 bg-white dark:bg-slate-800 py-3.5 px-4 text-center font-bold text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/30 transition-all shadow-2xs cursor-pointer flex items-center justify-center gap-2"
+      >
+        <LogOut size={16} />
+        <span>Cerrar sesión</span>
+      </button>
 
       {/* Mostrador & Gastos Bottom Sheet */}
       <MostradorBottomSheet
@@ -11230,7 +11202,7 @@ export default function App() {
 
   // Índice de actividad unificado de jugadores del complejo activo (registrados + organizadores y participantes de reservas)
   const { crmUsers: unifiedCrmUsers, userMetricsMap: unifiedUserMetricsMap } = useMemo(() => {
-    return buildCrmActivityIndex(users, activeBookings, activeComplexId, new Date());
+    return buildCrmActivityIndex(users, activeBookings, activeComplexId, new Date(), [], getHiddenClientsForComplex(activeComplexId));
   }, [users, activeBookings, activeComplexId]);
 
   // Cálculo y sincronización de obligaciones semanales (Carril B: Turnos de Jogo)
@@ -11440,6 +11412,7 @@ export default function App() {
       setRefreshKey(prev => prev + 1);
     } catch (e) {
       console.error(e);
+      throw e;
     }
   };
 
@@ -11467,7 +11440,7 @@ export default function App() {
 
       const payload = {
         complejoId: activeComplexId,
-        complejoName: activeComplejoName || 'Colo loco',
+        complejoName: activeComplejoName || '',
         courtId: resolvedCourtId,
         court_id: resolvedCourtId,
         courtName: bookingData.courtName || selectedCourt?.name || 'Cancha 1',
@@ -11523,7 +11496,7 @@ export default function App() {
         activationDate: null,
         activationTime: null,
         originComplejoId: activeComplexId,
-        originComplejoName: activeComplejoName || 'Colo loco',
+        originComplejoName: activeComplejoName || '',
         totalBookings: 0,
         totalMatchesPlayed: 0,
         participatedMatches: 0,
@@ -11575,6 +11548,9 @@ export default function App() {
           setSearchParams(new URLSearchParams());
         }}
         onSuccess={(newComplexId, complexName) => {
+          try {
+            localStorage.setItem('activeComplexId', newComplexId);
+          } catch {}
           setActiveComplexId(newComplexId);
           window.history.pushState({}, '', '/');
           setCurrentPath('/');
@@ -11649,25 +11625,27 @@ export default function App() {
   return (
     <POSCartProvider complexId={activeComplexId}>
       <div className="flex w-full h-[100dvh] overflow-hidden bg-white dark:bg-slate-950 font-sans text-slate-900 dark:text-slate-100 transition-colors">
-      <Sidebar 
-        active={activeTab} 
-        onNavigate={handleNavigate}
-        onAction={handleSidebarAction} 
-        isOpen={Boolean(isOwner && isSidebarOpen)}
-        onClose={() => setSidebarOpen(false)}
-        isDarkMode={isDarkMode}
-        onToggleDarkMode={toggleDarkMode}
-        activeComplex={activeComplex}
-        user={user}
-        collaboratorData={collaboratorData}
-        onLogout={logout}
-        isOwner={isOwner}
-        onOpenMembers={() => setIsMembersModalOpen(true)}
-        onOpenActivation={() => {
-          window.history.pushState({}, '', '/activar');
-          setCurrentPath('/activar');
-        }}
-      />
+      {isOwner && (
+        <Sidebar 
+          active={activeTab} 
+          onNavigate={handleNavigate}
+          onAction={handleSidebarAction} 
+          isOpen={isSidebarOpen}
+          onClose={() => setSidebarOpen(false)}
+          isDarkMode={isDarkMode}
+          onToggleDarkMode={toggleDarkMode}
+          activeComplex={activeComplex}
+          user={user}
+          collaboratorData={collaboratorData}
+          onLogout={logout}
+          isOwner={isOwner}
+          onOpenMembers={() => setIsMembersModalOpen(true)}
+          onOpenActivation={() => {
+            window.history.pushState({}, '', '/activar');
+            setCurrentPath('/activar');
+          }}
+        />
+      )}
 
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
@@ -11998,6 +11976,7 @@ export default function App() {
         {/* Modal de Ticket de Venta para reservas de la Agenda */}
         {agendaTicketModalOp && (
           <TicketModal
+            key="modal-agenda-ticket"
             isOpen={Boolean(agendaTicketModalOp)}
             onClose={() => setAgendaTicketModalOp(null)}
             operation={agendaTicketModalOp}
@@ -12030,6 +12009,7 @@ export default function App() {
         {/* Modal de Cobro de Pendientes para reservas de la Agenda */}
         {agendaSettleModalTarget && (
           <PendingSettleModal
+            key="modal-agenda-settle"
             isOpen={Boolean(agendaSettleModalTarget)}
             onClose={() => setAgendaSettleTarget(null)}
             preselectedPlayer={agendaSettleModalTarget.targetPlayer}

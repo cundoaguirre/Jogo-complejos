@@ -78,16 +78,59 @@ export interface BreakdownItem {
   color: string;
 }
 
-export function extractStartHour(b: Match): number | null {
+export function extractStartMinutes(b: Match): number | null {
   const rawTime =
     b.startTime ||
     (b.start_time && String(b.start_time).includes('T')
       ? String(b.start_time).split('T')[1].substring(0, 5)
       : '');
   if (!rawTime) return null;
-  const h = parseInt(String(rawTime).split(':')[0], 10);
+  const parts = String(rawTime).trim().split(':');
+  const h = parseInt(parts[0], 10);
+  const m = parts.length > 1 ? parseInt(parts[1], 10) : 0;
   if (isNaN(h) || h < 0 || h > 23) return null;
-  return h;
+  const safeMin = isNaN(m) || m < 0 || m > 59 ? 0 : m;
+  return h * 60 + safeMin;
+}
+
+export function extractStartHour(b: Match): number | null {
+  const mins = extractStartMinutes(b);
+  return mins === null ? null : Math.floor(mins / 60);
+}
+
+export function extractDurationMinutes(
+  b: Match,
+  startMinutes: number | null
+): number {
+  const explicitDur = Number(
+    (b as any).durationMinutes ??
+      (b as any).duration ??
+      (b as any).duration_minutes
+  );
+  if (Number.isFinite(explicitDur) && explicitDur > 0) {
+    return explicitDur;
+  }
+
+  const rawEnd =
+    (b as any).endTime ||
+    ((b as any).end_time && String((b as any).end_time).includes('T')
+      ? String((b as any).end_time).split('T')[1].substring(0, 5)
+      : (b as any).end_time || '');
+  if (rawEnd && startMinutes !== null) {
+    const endParts = String(rawEnd).trim().split(':');
+    const eh = parseInt(endParts[0], 10);
+    const em = endParts.length > 1 ? parseInt(endParts[1], 10) : 0;
+    if (!isNaN(eh) && eh >= 0 && eh <= 23) {
+      let endMin = eh * 60 + (isNaN(em) || em < 0 || em > 59 ? 0 : em);
+      if (endMin <= startMinutes) endMin += 24 * 60;
+      const diff = endMin - startMinutes;
+      if (diff > 0 && diff <= 12 * 60) {
+        return diff;
+      }
+    }
+  }
+
+  return 60;
 }
 
 export function getBookingRevenue(b: Match): number {
@@ -246,24 +289,49 @@ export function computeDemandAnalytics(params: {
     venue.hours.forEach((h: any) => {
       if (h?.open) {
         const s = parseInt(String(h.start || '18:00').split(':')[0], 10);
-        let e = parseInt(String(h.end || '23:00').split(':')[0], 10);
-        if (e === 0 || h.end === '00:00') e = 24;
+        const endParts = String(h.end || '23:00').split(':');
+        let e = parseInt(endParts[0], 10);
+        const eMin = parseInt(endParts[1] || '0', 10) || 0;
+        if (e === 0 && eMin === 0) e = 24;
         else if (!isNaN(s) && !isNaN(e) && e < s) e = 24 + e;
         if (!isNaN(s) && s < minHour) minHour = s;
-        if (!isNaN(e) && e - 1 > maxHour) maxHour = e - 1;
+        if (!isNaN(e)) {
+          const lastHour = eMin > 0 ? e : e - 1;
+          if (lastHour > maxHour) maxHour = lastHour;
+        }
       }
     });
   }
+
+  const hasAfterHoursAnchor =
+    (minHour > 4 && minHour < 24) ||
+    maxHour >= 22 ||
+    bookings.some((b) => {
+      if (!b) return false;
+      const st = String(b.status || '').toLowerCase().trim();
+      if (st === 'cancelado' || st === 'cancelled') return false;
+      const m = extractStartMinutes(b);
+      return m !== null && m >= 12 * 60;
+    });
+
+  const toDisplayStartMinutes = (startMin: number): number => {
+    const startH = Math.floor(startMin / 60);
+    return startH <= 4 && hasAfterHoursAnchor ? startMin + 24 * 60 : startMin;
+  };
 
   bookings.forEach((b) => {
     if (!b) return;
     const st = String(b.status || '').toLowerCase().trim();
     if (st === 'cancelado' || st === 'cancelled') return;
-    const h = extractStartHour(b);
-    if (h === null) return;
-    const displayH = h <= 4 && maxHour >= 23 ? 24 + h : h;
-    if (displayH < minHour) minHour = displayH;
-    if (displayH > maxHour) maxHour = displayH;
+    const startMin = extractStartMinutes(b);
+    if (startMin === null) return;
+    const durMin = extractDurationMinutes(b, startMin);
+    const displayStart = toDisplayStartMinutes(startMin);
+    const displayEnd = displayStart + durMin;
+    const firstHour = Math.floor(displayStart / 60);
+    const lastHour = Math.floor(Math.max(displayStart, displayEnd - 1) / 60);
+    if (firstHour < minHour) minHour = firstHour;
+    if (lastHour > maxHour) maxHour = lastHour;
   });
 
   if (minHour > maxHour) {
@@ -288,7 +356,7 @@ export function computeDemandAnalytics(params: {
     const bDateStr =
       b.date || (b.start_time ? String(b.start_time).split('T')[0] : '');
     const bDate = safeParseDate(bDateStr ? `${bDateStr}T12:00:00` : b.date);
-    const hour = extractStartHour(b);
+    const startMin = extractStartMinutes(b);
     const isJogo = String(b.createdSource || '').toLowerCase() === 'jogo';
     const revenue = getBookingRevenue(b);
 
@@ -305,21 +373,43 @@ export function computeDemandAnalytics(params: {
       dayTotals.set(dayKey, (dayTotals.get(dayKey) || 0) + 1);
       dayRevenues.set(dayKey, (dayRevenues.get(dayKey) || 0) + revenue);
 
-      if (hour !== null) {
-        const displayH = hour <= 4 && minHour > 4 ? 24 + hour : hour;
-        if (displayH < minHour) minHour = displayH;
-        if (displayH > maxHour) maxHour = displayH;
+      if (startMin !== null) {
+        const durMin = extractDurationMinutes(b, startMin);
+        const displayStart = toDisplayStartMinutes(startMin);
+        const displayEnd = displayStart + durMin;
 
-        const key = `${dayKey}_${displayH}`;
-        const prev = matrix.get(key) || { total: 0, jogo: 0, complex: 0 };
-        matrix.set(key, {
-          total: prev.total + 1,
-          jogo: prev.jogo + (isJogo ? 1 : 0),
-          complex: prev.complex + (isJogo ? 0 : 1),
-        });
+        const firstHour = Math.floor(displayStart / 60);
+        const lastHour = Math.floor(Math.max(displayStart, displayEnd - 1) / 60);
+        if (firstHour < minHour) minHour = firstHour;
+        if (lastHour > maxHour) maxHour = lastHour;
 
-        hourTotals.set(displayH, (hourTotals.get(displayH) || 0) + 1);
-        hourRevenues.set(displayH, (hourRevenues.get(displayH) || 0) + revenue);
+        // Half-hour slot key for the linear chart (e.g., 19:00 -> 19, 19:30 -> 19.5)
+        const lineSlotHour = Math.floor(displayStart / 30) * 0.5;
+        hourTotals.set(lineSlotHour, (hourTotals.get(lineSlotHour) || 0) + 1);
+        hourRevenues.set(
+          lineSlotHour,
+          (hourRevenues.get(lineSlotHour) || 0) + revenue
+        );
+
+        // Exact fractional overlap across hourly heatmap slots
+        for (let slotH = firstHour; slotH <= lastHour; slotH++) {
+          const slotStart = slotH * 60;
+          const slotEnd = (slotH + 1) * 60;
+          const overlapMin = Math.max(
+            0,
+            Math.min(displayEnd, slotEnd) - Math.max(displayStart, slotStart)
+          );
+          if (overlapMin <= 0) continue;
+
+          const weight = overlapMin / 60;
+          const key = `${dayKey}_${slotH}`;
+          const prev = matrix.get(key) || { total: 0, jogo: 0, complex: 0 };
+          matrix.set(key, {
+            total: prev.total + weight,
+            jogo: prev.jogo + (isJogo ? weight : 0),
+            complex: prev.complex + (isJogo ? 0 : weight),
+          });
+        }
 
         const dSet = dayDateSets.get(dayKey) || new Set<string>();
         if (bDateStr) dSet.add(bDateStr);

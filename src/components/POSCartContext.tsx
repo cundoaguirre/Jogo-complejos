@@ -30,7 +30,7 @@ export const POSCartProvider: React.FC<{
   complexId?: string | null;
   children: React.ReactNode 
 }> = ({ complexId, children }) => {
-  const storageKey = `jogo_pos_cart_${complexId || 'B'}`;
+  const storageKey = `jogo_pos_cart_${complexId || 'default'}`;
 
   const [items, setItems] = useState<CartItem[]>(() => {
     if (typeof window !== 'undefined') {

@@ -19,7 +19,7 @@ import {
   arrayUnion,
   arrayRemove 
 } from 'firebase/firestore';
-import { db, auth } from './firebase';
+import { db, auth, handleFirestoreError, OperationType as FirestoreOpType } from './firebase';
 import type { 
   User, Court, Match, Product, ProductCategory, InventoryMovement, ProductBatch,
   POSTransaction, TransactionPayment, TransactionItem, SupportTicket,
@@ -42,14 +42,21 @@ import {
 } from './financialMath';
 import { calculateCancellationFinancialPlan } from './cancellationPolicy';
 import { isBookingPlayed } from './userMetrics';
-import { consumeProductBatchesFifo, type FifoConsumeResult } from './inventoryFifo';
+import { consumeProductBatchesFifo, restoreProductBatches, type FifoConsumeResult } from './inventoryFifo';
 import { 
   normalizeUnifiedCourt, 
   resolveUnifiedSchedule, 
   hoursToWeeklySchedule, 
   doesCrossMidnight 
 } from './complexProfileSync';
-import { findMatchingLocalUser, isSameComplex, normalizePhoneNumber, isGenericPlaceholderName } from './crmActivityIndex';
+import {
+  findMatchingLocalUser,
+  isSameComplex,
+  normalizePhoneNumber,
+  isGenericPlaceholderName,
+  getComplexAliasIds,
+  isUserHiddenForComplex
+} from './crmActivityIndex';
 import { getCourtPriceForDuration, sanitizePricesByDuration } from './scheduleUtils';
 
 export const COMPLEJOS_COLLECTION = 'complejos';
@@ -101,24 +108,128 @@ export function cleanFirestoreDocument<T extends Record<string, any>>(obj: T): T
   return result;
 }
 
-function formatMethodLabel(method?: string): string {
-  const m = String(method || '').toLowerCase().trim();
-  if (m === 'transfer' || m.includes('transf')) return 'Transferencia';
-  if (m === 'mercado_pago' || m === 'mercadopago' || m === 'mp') return 'Mercado Pago';
-  if (
-    m === 'debit' ||
-    m === 'credit' ||
-    m === 'card' ||
-    m.includes('tarj') ||
-    m.includes('débit') ||
-    m.includes('debit') ||
-    m.includes('crédit') ||
-    m.includes('credit')
-  ) {
-    return 'Tarjeta';
+export type SharedSubscriptionFn<T> = ((key: string, cb: (val: T) => void) => () => void) & {
+  getCached: (key: string) => T | undefined;
+};
+
+export function createSharedSubscription<T>(
+  subscribeFn: (key: string, emit: (val: T) => void) => () => void
+): SharedSubscriptionFn<T> {
+  const channels = new Map<string, {
+    listeners: Set<(val: T) => void>;
+    hasValue: boolean;
+    lastValue?: T;
+    unsub?: () => void;
+  }>();
+
+  const subscribe = ((key: string, cb: (val: T) => void) => {
+    let ch = channels.get(key);
+    if (!ch) {
+      ch = { listeners: new Set(), hasValue: false };
+      channels.set(key, ch);
+      ch.unsub = subscribeFn(key, (val: T) => {
+        const entry = channels.get(key);
+        if (!entry) return;
+        entry.hasValue = true;
+        entry.lastValue = val;
+        entry.listeners.forEach(fn => {
+          try {
+            fn(val);
+          } catch (e) {
+            console.warn('[FirestoreSharedSub] Listener error:', e);
+          }
+        });
+      });
+    }
+
+    ch.listeners.add(cb);
+    if (ch.hasValue) {
+      try {
+        cb(ch.lastValue as T);
+      } catch (e) {
+        console.warn('[FirestoreSharedSub] Initial replay error:', e);
+      }
+    }
+
+    return () => {
+      const entry = channels.get(key);
+      if (!entry) return;
+      entry.listeners.delete(cb);
+      if (entry.listeners.size === 0) {
+        try {
+          entry.unsub?.();
+        } catch {}
+        channels.delete(key);
+      }
+    };
+  }) as SharedSubscriptionFn<T>;
+
+  subscribe.getCached = (key: string): T | undefined => {
+    const ch = channels.get(key);
+    return ch && ch.hasValue ? ch.lastValue : undefined;
+  };
+
+  return subscribe;
+}
+
+const subscribeToComplejoDoc = createSharedSubscription<{ exists: boolean; id: string; data: any }>(
+  (targetId, emit) => {
+    try {
+      const compRef = doc(db, COMPLEJOS_COLLECTION, targetId);
+      return onSnapshot(
+        compRef,
+        (snap) => {
+          emit({ exists: snap.exists(), id: snap.id, data: snap.exists() ? snap.data() : null });
+        },
+        (err) => {
+          console.warn(`[Firestore] Error en snapshot compartido complejos/${targetId}:`, err);
+          emit({ exists: false, id: targetId, data: null });
+        }
+      );
+    } catch (e) {
+      console.warn(`[Firestore] Error al suscribir complejos/${targetId}:`, e);
+      emit({ exists: false, id: targetId, data: null });
+      return () => {};
+    }
   }
-  if (m === 'other' || m === 'otro') return 'Otro';
-  return 'Efectivo';
+);
+
+export const NON_MONETARY_PAYMENT_METHODS = new Set([
+  'pendiente',
+  'pending',
+  'fiado',
+  'cuenta corriente',
+  'cuenta_corriente',
+  'cta cte',
+  'cta. cte.',
+  'ctacte',
+  'account',
+  'unpaid',
+  'other',
+  'otro',
+  'ninguno',
+  'none'
+]);
+
+export function normalizeMonetaryPaymentMethod(rawMethod?: string | null): FinancialPaymentMethod | null {
+  const m = String(rawMethod || '').toLowerCase().trim();
+  if (!m || NON_MONETARY_PAYMENT_METHODS.has(m)) return null;
+  if (m === 'cash' || m === 'efectivo' || m.includes('efect')) return 'cash';
+  if (m === 'transfer' || m === 'transferencia' || m.includes('transf')) return 'transfer';
+  if (m === 'mercado_pago' || m === 'mercadopago' || m === 'mp' || m.includes('mercado')) return 'mercado_pago';
+  if (m === 'debit' || m.includes('débit') || m.includes('debit')) return 'debit';
+  if (m === 'credit' || m === 'card' || m === 'tarjeta' || m.includes('tarj') || m.includes('crédit') || m.includes('credit')) return 'credit';
+  if (m === 'mixed' || m === 'mixto') return 'mixed';
+  return null;
+}
+
+function formatMethodLabel(method?: string): string {
+  const norm = normalizeMonetaryPaymentMethod(method);
+  if (norm === 'transfer') return 'Transferencia';
+  if (norm === 'mercado_pago') return 'Mercado Pago';
+  if (norm === 'debit' || norm === 'credit') return 'Tarjeta';
+  if (norm === 'cash') return 'Efectivo';
+  return 'Otro';
 }
 
 function buildSingleMovementPayload(params: {
@@ -150,15 +261,18 @@ function buildSingleMovementPayload(params: {
   movDocData: FinancialMovementDocument;
 } | null {
   const realPayments = (Array.isArray(params.payments) ? params.payments : [])
-    .map(p => ({
-      amount: Math.max(0, Number(p?.amount) || 0),
-      paymentMethod: (p?.paymentMethod || p?.method || 'cash') as FinancialPaymentMethod,
-      notes: p?.notes
-    }))
-    .filter(p => {
-      const m = String(p.paymentMethod || '').toLowerCase().trim();
-      return p.amount > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado' && m !== 'cuenta corriente';
-    });
+    .map(p => {
+      const rawMethod = p?.paymentMethod !== undefined ? p.paymentMethod : p?.method;
+      const normalized = normalizeMonetaryPaymentMethod(rawMethod);
+      return {
+        amount: Math.max(0, Number(p?.amount) || 0),
+        paymentMethod: normalized,
+        notes: p?.notes
+      };
+    })
+    .filter((p): p is { amount: number; paymentMethod: FinancialPaymentMethod; notes: string | undefined } =>
+      p.amount > 0 && p.paymentMethod !== null
+    );
 
   if (realPayments.length === 0) {
     return null;
@@ -567,28 +681,15 @@ export function subscribeToCourts(
   onUpdate: (courts: Court[]) => void
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
-  try {
-    const compRef = doc(db, COMPLEJOS_COLLECTION, targetId);
-    const unsub = onSnapshot(compRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        const courtsArray = Array.isArray(data.courts) ? data.courts : (Array.isArray(data.canchas) ? data.canchas : []);
-        const mappedCourts: Court[] = courtsArray.map((c: any, idx: number) => normalizeUnifiedCourt(c, idx) as unknown as Court);
-        onUpdate(mappedCourts);
-      } else {
-        onUpdate([]);
-      }
-    }, (err) => {
-      console.warn('[Firestore] Error en snapshot de canchas en complejos:', err);
+  return subscribeToComplejoDoc(targetId, ({ exists, data }) => {
+    if (exists && data) {
+      const courtsArray = Array.isArray(data.courts) ? data.courts : (Array.isArray(data.canchas) ? data.canchas : []);
+      const mappedCourts: Court[] = courtsArray.map((c: any, idx: number) => normalizeUnifiedCourt(c, idx) as unknown as Court);
+      onUpdate(mappedCourts);
+    } else {
       onUpdate([]);
-    });
-
-    return () => unsub();
-  } catch (e) {
-    console.error('[Firestore] Error al suscribirse a canchas en complejos:', e);
-    onUpdate([]);
-    return () => {};
-  }
+    }
+  });
 }
 
 /**
@@ -722,49 +823,38 @@ export function subscribeToVenueProfile(
   onUpdate: (profile: any) => void
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
-  try {
-    const compRef = doc(db, COMPLEJOS_COLLECTION, targetId);
-    const unsub = onSnapshot(compRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        const { hours, weeklySchedule, openTime, closeTime, crossesMidnight } = resolveUnifiedSchedule(data);
-        const profile = {
-          id: snap.id,
-          name: data.name || data.company || '',
-          company: data.company || data.name || '',
-          phone: data.phone || '',
-          email: data.email || '',
-          address: data.address || '',
-          instagram: data.instagram || '',
-          description: data.description || data.notes || '',
-          alias: data.alias || '',
-          ownerName: data.ownerName || '',
-          ownerPhone: data.ownerPhone || '',
-          ownerEmail: data.ownerEmail || '',
-          managerName: data.managerName || '',
-          managerPhone: data.managerPhone || '',
-          managerEmail: data.managerEmail || '',
-          contactChannel: data.contactChannel || 'WhatsApp',
-          hours,
-          weeklySchedule,
-          openTime,
-          closeTime,
-          crossesMidnight,
-          services: data.services || {},
-          photos: Array.isArray(data.photos) ? data.photos : [],
-          courts: Array.isArray(data.courts) ? data.courts.map(normalizeUnifiedCourt) : []
-        };
-        onUpdate(profile);
-      }
-    }, (err) => {
-      console.warn('[Firestore] Error escuchando perfil en complejos:', err);
-    });
-
-    return () => unsub();
-  } catch (e) {
-    console.warn('[Firestore] Error subscribing to venue profile:', e);
-    return () => {};
-  }
+  return subscribeToComplejoDoc(targetId, ({ exists, id, data }) => {
+    if (exists && data) {
+      const { hours, weeklySchedule, openTime, closeTime, crossesMidnight } = resolveUnifiedSchedule(data);
+      const profile = {
+        id,
+        name: data.name || data.company || '',
+        company: data.company || data.name || '',
+        phone: data.phone || '',
+        email: data.email || '',
+        address: data.address || '',
+        instagram: data.instagram || '',
+        description: data.description || data.notes || '',
+        alias: data.alias || '',
+        ownerName: data.ownerName || '',
+        ownerPhone: data.ownerPhone || '',
+        ownerEmail: data.ownerEmail || '',
+        managerName: data.managerName || '',
+        managerPhone: data.managerPhone || '',
+        managerEmail: data.managerEmail || '',
+        contactChannel: data.contactChannel || 'WhatsApp',
+        hours,
+        weeklySchedule,
+        openTime,
+        closeTime,
+        crossesMidnight,
+        services: data.services || {},
+        photos: Array.isArray(data.photos) ? data.photos : [],
+        courts: Array.isArray(data.courts) ? data.courts.map(normalizeUnifiedCourt) : []
+      };
+      onUpdate(profile);
+    }
+  });
 }
 
 /**
@@ -818,12 +908,11 @@ export async function saveVenueProfileInFirestore(
  * Escucha reservas filtrando por complejoId / complexId == targetId y opcionalmente por date == selectedDate,
  * fusionando ambas consultas para garantizar sincronización 100% en tiempo real en Vercel y entornos locales.
  */
-export function subscribeToBookings(
-  complexId: string, 
-  onUpdate: (bookings: Match[]) => void,
-  selectedDate?: string
-): () => void {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+const sharedSubscribeBookings = createSharedSubscription<Match[]>((compositeKey, emit) => {
+  const sepIdx = compositeKey.indexOf('::');
+  const targetId = sepIdx >= 0 ? compositeKey.slice(0, sepIdx) : compositeKey;
+  const rawDate = sepIdx >= 0 ? compositeKey.slice(sepIdx + 2) : '*';
+  const selectedDate = rawDate && rawDate !== '*' ? rawDate : undefined;
   const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
 
   try {
@@ -840,7 +929,7 @@ export function subscribeToBookings(
       if (selectedDate) {
         list = list.filter(b => b.date === selectedDate || (b.startTime && String(b.startTime).startsWith(selectedDate)));
       }
-      onUpdate(list);
+      emit(list);
     };
 
     let mapIdx = 0;
@@ -887,67 +976,129 @@ export function subscribeToBookings(
     };
   } catch (err) {
     console.error('[Firestore] Error subscribiendo a bookings:', err);
-    onUpdate([]);
+    emit([]);
     return () => {};
   }
+});
+
+export function subscribeToBookings(
+  complexId: string, 
+  onUpdate: (bookings: Match[]) => void,
+  selectedDate?: string
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  return sharedSubscribeBookings(`${targetId}::${selectedDate || '*'}`, onUpdate);
 }
 
 /**
  * Sincroniza las métricas y estado del usuario en Firestore a partir de sus reservas reales
  */
-export async function syncUserMetricsWithBookings(userId: string | number, userPhone?: string, complexId?: string): Promise<void> {
+export async function syncUserMetricsWithBookings(
+  userId: string | number,
+  userPhone?: string,
+  complexId?: string,
+  preloadedUserData?: any
+): Promise<void> {
   const uId = String(userId || '');
   if ((!uId || uId === '0') && !userPhone) return;
 
   try {
     const colRef = collection(db, BOOKINGS_COLLECTION);
     let bookings: any[] = [];
+    const normalizedComplexKey = complexId ? (complexId === 'complejo_central' ? 'B' : complexId) : undefined;
 
-    // Buscar doc de usuario por ID
+    // Buscar doc de usuario primero en memoria (rawClientsByComplexMap) antes de ir a Firestore
     let targetDocRef = uId && uId !== '0' ? doc(db, USERS_COLLECTION, uId) : null;
-    let uSnap = targetDocRef ? await getDoc(targetDocRef) : null;
+    let uData: any = preloadedUserData || null;
+    let resolvedUserDocId: string = uId;
 
-    // Si no se encontró por ID pero hay userPhone, buscar por teléfono
-    if ((!uSnap || !uSnap.exists()) && userPhone) {
-      const usersCol = collection(db, USERS_COLLECTION);
-      const qUser = query(usersCol, where('phone', '==', String(userPhone).trim()));
-      const userSnap = await getDocs(qUser);
-      if (!userSnap.empty) {
-        let bestDoc = userSnap.docs[0];
-        if (complexId) {
-          const matched = userSnap.docs.find(d => {
-            const org = d.data().originComplejoId || d.data().complejoId;
-            return org && isSameComplex(org, complexId);
-          });
-          if (matched) bestDoc = matched;
+    if (!uData && uId && uId !== '0' && normalizedComplexKey) {
+      const cachedRaw = rawClientsByComplexMap.get(normalizedComplexKey)?.get(uId);
+      if (cachedRaw) uData = cachedRaw;
+    }
+
+    if (!uData) {
+      let uSnap = targetDocRef ? await getDoc(targetDocRef) : null;
+
+      // Si no se encontró por ID pero hay userPhone, buscar en caché primero y luego en Firestore
+      if ((!uSnap || !uSnap.exists()) && userPhone) {
+        const cleanPhone = String(userPhone).trim();
+        if (normalizedComplexKey) {
+          const cachedMap = rawClientsByComplexMap.get(normalizedComplexKey);
+          if (cachedMap) {
+            const matchedCached = Array.from(cachedMap.values()).find(
+              u => String(u.phone || '').trim() === cleanPhone
+            );
+            if (matchedCached?.id) {
+              targetDocRef = doc(db, USERS_COLLECTION, String(matchedCached.id));
+              uData = matchedCached;
+              resolvedUserDocId = String(matchedCached.id);
+            }
+          }
         }
-        targetDocRef = doc(db, USERS_COLLECTION, bestDoc.id);
-        uSnap = bestDoc;
+        if (!uData) {
+          const usersCol = collection(db, USERS_COLLECTION);
+          const qUser = query(usersCol, where('phone', '==', cleanPhone));
+          const userSnap = await getDocs(qUser);
+          if (!userSnap.empty) {
+            let bestDoc = userSnap.docs[0];
+            if (complexId) {
+              const matched = userSnap.docs.find(d => {
+                const org = d.data().originComplejoId || d.data().complejoId;
+                return org && isSameComplex(org, complexId);
+              });
+              if (matched) bestDoc = matched;
+            }
+            targetDocRef = doc(db, USERS_COLLECTION, bestDoc.id);
+            uSnap = bestDoc;
+          }
+        }
+      }
+
+      if (!uData) {
+        if (!targetDocRef || !uSnap || !uSnap.exists()) return;
+        uData = uSnap.data();
+        resolvedUserDocId = uSnap.id;
       }
     }
 
-    if (!targetDocRef || !uSnap || !uSnap.exists()) return;
+    if (!targetDocRef || !uData) return;
 
-    const uData = uSnap.data();
     const effectiveComplexId = complexId || uData.originComplejoId || uData.originComplexId || uData.complejoId || uData.complexId;
+    const effectiveCacheKey = effectiveComplexId ? (effectiveComplexId === 'complejo_central' ? 'B' : effectiveComplexId) : undefined;
+    const cachedBookings = effectiveCacheKey ? sharedSubscribeBookings.getCached(`${effectiveCacheKey}::*`) : undefined;
 
-    if (uId && uId !== '0') {
-      const q = query(colRef, where('userId', '==', uId));
-      const snap = await getDocs(q);
-      bookings = snap.docs.map(d => d.data());
-    }
+    if (cachedBookings) {
+      // 0 lecturas a Firestore: usar caché en tiempo real de bookings ya suscripta
+      bookings = cachedBookings.filter(b => {
+        const matchId = uId && uId !== '0' && String((b as any).userId || (b as any).host_id || '') === uId;
+        const matchPhone = userPhone && String((b as any).userPhone || (b as any).host_phone || '').trim() === String(userPhone).trim();
+        return matchId || matchPhone;
+      });
+    } else {
+      if (uId && uId !== '0') {
+        const q = effectiveCacheKey
+          ? query(colRef, where('complejoId', '==', effectiveCacheKey), where('userId', '==', uId))
+          : query(colRef, where('userId', '==', uId));
+        const snap = await getDocs(q);
+        bookings = snap.docs.map(d => d.data());
+      }
 
-    if (bookings.length === 0 && userPhone) {
-      const qPhone = query(colRef, where('userPhone', '==', String(userPhone).trim()));
-      const snapPhone = await getDocs(qPhone);
-      bookings = snapPhone.docs.map(d => d.data());
+      if (bookings.length === 0 && userPhone) {
+        const cleanPhone = String(userPhone).trim();
+        const qPhone = effectiveCacheKey
+          ? query(colRef, where('complejoId', '==', effectiveCacheKey), where('userPhone', '==', cleanPhone))
+          : query(colRef, where('userPhone', '==', cleanPhone));
+        const snapPhone = await getDocs(qPhone);
+        bookings = snapPhone.docs.map(d => d.data());
+      }
     }
 
     // Filtrar estrictamente por complejo para aislar las métricas del jugador
     if (effectiveComplexId) {
       bookings = bookings.filter(b => {
         const bComp = b.complejoId || b.complexId;
-        return isSameComplex(bComp, effectiveComplexId);
+        return !bComp || isSameComplex(bComp, effectiveComplexId);
       });
     }
 
@@ -977,7 +1128,7 @@ export async function syncUserMetricsWithBookings(userId: string | number, userP
       lastGameDate,
       updatedAt: new Date().toISOString()
     });
-    console.log(`[Firestore] Métricas de ciclo de vida actualizadas para usuario ${uSnap.id}: ${totalBookings} reservas, ${totalPlayed} jugados`);
+    console.log(`[Firestore] Métricas de ciclo de vida actualizadas para usuario ${resolvedUserDocId}: ${totalBookings} reservas, ${totalPlayed} jugados`);
   } catch (err) {
     console.warn('[Firestore] Error sincronizando métricas de usuario:', err);
   }
@@ -1007,30 +1158,39 @@ export function intervalsOverlap(startA: number, endA: number, startB: number, e
  * Identifies all courts that physically share space with targetCourtId
  * (e.g. 1 large court that can be split into 2 smaller courts)
  */
+export function getOverlappingCourtIdsFromList(data: any, targetCourtId: string): string[] {
+  const targetStr = String(targetCourtId);
+  if (!data || typeof data !== 'object') return [targetStr];
+  const courtsList = Array.isArray(data.courts) ? data.courts : (Array.isArray(data.canchas) ? data.canchas : []);
+  const overlapping = new Set<string>([targetStr]);
+
+  const targetCourt = courtsList.find((c: any) => String(c.id) === targetStr);
+  if (targetCourt && Array.isArray(targetCourt.blockedCourts)) {
+    targetCourt.blockedCourts.forEach((id: any) => overlapping.add(String(id)));
+  }
+
+  courtsList.forEach((c: any) => {
+    if (Array.isArray(c.blockedCourts) && c.blockedCourts.some((id: any) => String(id) === targetStr)) {
+      overlapping.add(String(c.id));
+    }
+  });
+
+  return Array.from(overlapping);
+}
+
 export async function getOverlappingCourtIds(complexId: string, targetCourtId: string): Promise<string[]> {
   try {
-    const compRef = doc(db, COMPLEJOS_COLLECTION, complexId);
+    const cacheKey = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+    const cachedComp = subscribeToComplejoDoc.getCached(cacheKey) || subscribeToComplejoDoc.getCached(complexId);
+    if (cachedComp) {
+      return cachedComp.exists && cachedComp.data
+        ? getOverlappingCourtIdsFromList(cachedComp.data, targetCourtId)
+        : [String(targetCourtId)];
+    }
+    const compRef = doc(db, COMPLEJOS_COLLECTION, cacheKey);
     const snap = await getDoc(compRef);
     if (!snap.exists()) return [String(targetCourtId)];
-    const data = snap.data();
-    const courtsList = Array.isArray(data.courts) ? data.courts : (Array.isArray(data.canchas) ? data.canchas : []);
-    const targetStr = String(targetCourtId);
-    const overlapping = new Set<string>([targetStr]);
-    
-    // Direct blocked courts
-    const targetCourt = courtsList.find((c: any) => String(c.id) === targetStr);
-    if (targetCourt && Array.isArray(targetCourt.blockedCourts)) {
-      targetCourt.blockedCourts.forEach((id: any) => overlapping.add(String(id)));
-    }
-    
-    // Reverse blocked courts
-    courtsList.forEach((c: any) => {
-      if (Array.isArray(c.blockedCourts) && c.blockedCourts.some((id: any) => String(id) === targetStr)) {
-        overlapping.add(String(c.id));
-      }
-    });
-    
-    return Array.from(overlapping);
+    return getOverlappingCourtIdsFromList(snap.data(), targetCourtId);
   } catch (e) {
     console.warn('[BookingLock] Error reading overlapping courts:', e);
     return [String(targetCourtId)];
@@ -1075,20 +1235,42 @@ export async function createBookingInFirestore(data: {
   const durationMinutes = Number(data.durationMinutes) || calculateDurationMinutes(startTime, endTime);
   const startMin = timeStringToMinutes(startTime);
   const endMin = timeStringToMinutes(endTime);
-  const price = Number(data.price) || 0;
-  const deposit = Number(data.deposit) || 0;
-  
-  const paymentStatus = data.paymentStatus 
+  const price = Math.max(0, Number(data.price) || 0);
+  const deposit = Math.max(0, Number(data.deposit) || 0);
+  if (price > 0 && deposit > price + 0.01) {
+    throw new Error(`La seña o pago inicial ($${deposit.toLocaleString()}) no puede superar el precio de la reserva ($${price.toLocaleString()}).`);
+  }
+
+  const paymentStatus = data.paymentStatus
     ? (data.paymentStatus === 'paid' ? 'pagado' : (data.paymentStatus === 'partial' ? 'seña' : data.paymentStatus))
     : (deposit >= price && price > 0 ? 'pagado' : (deposit > 0 ? 'seña' : 'pendiente'));
 
   const status = data.status === 'confirmed' ? 'confirmado' : (data.status === 'cancelled' ? 'cancelado' : (data.status || 'confirmado'));
-  const resolvedUserId = String(data.userId || data.host_id || '0');
+  const rawUserIdInput = String(data.userId || data.host_id || '0').trim();
+  let resolvedUserId = rawUserIdInput;
   let resolvedUserName = resolveClientName(data);
 
-  if (resolvedUserName === 'NN' && resolvedUserId && resolvedUserId !== '0') {
+  if (!resolvedUserId || resolvedUserId === '0' || resolvedUserId.startsWith('derived_')) {
+    const cachedMatch = findHiddenOrExistingClientInCache(targetComplexId, {
+      id: rawUserIdInput,
+      phone: data.userPhone || data.clientPhone,
+      canonicalId: data.canonicalId || (data as any).canonicalUserId
+    });
+    if (cachedMatch?.id && !String(cachedMatch.id).startsWith('derived_')) {
+      resolvedUserId = String(cachedMatch.id);
+      if (resolvedUserName === 'NN' && cachedMatch.name && !isGenericClientPlaceholder(cachedMatch.name)) {
+        resolvedUserName = cachedMatch.name.trim();
+      }
+    }
+  }
+
+  const effectiveReactivateUserId = (resolvedUserId && resolvedUserId !== '0' && !resolvedUserId.startsWith('derived_'))
+    ? resolvedUserId
+    : null;
+
+  if (resolvedUserName === 'NN' && effectiveReactivateUserId) {
     try {
-      const uSnap = await getDoc(doc(db, USERS_COLLECTION, resolvedUserId));
+      const uSnap = await getDoc(doc(db, USERS_COLLECTION, effectiveReactivateUserId));
       if (uSnap.exists()) {
         const uData = uSnap.data();
         if (uData.name && !isGenericClientPlaceholder(uData.name)) {
@@ -1100,11 +1282,8 @@ export async function createBookingInFirestore(data: {
     }
   }
 
-  // Find all courts that physically share space with this court
   const affectedCourts = await getOverlappingCourtIds(targetComplexId, resolvedCourtId);
 
-  // Pre-fetch any existing active bookings from canonical /bookings for this date to ensure 100% reconciliation
-  // even if this is the very first booking or if an ERP booking was created directly
   let initialBookingsSeed: Record<string, any> = {};
   try {
     const qExisting = query(
@@ -1138,11 +1317,9 @@ export async function createBookingInFirestore(data: {
     console.warn('[BookingLock] Notice pre-reading existing bookings:', seedErr);
   }
 
-  // Pre-allocate new booking reference
   const newBookingRef = doc(collection(db, BOOKINGS_COLLECTION));
   const newBookingId = newBookingRef.id;
 
-  // Resolución segura de identificadores canónicos e históricos (omitir si están ausentes/vacíos)
   const rawCanonId = data.canonicalId || (data as any).canonicalUserId || (data as any).personId || (data as any).erpUserId;
   const validCanonId = typeof rawCanonId === 'string' && rawCanonId.trim() ? rawCanonId.trim() : (typeof rawCanonId === 'number' ? String(rawCanonId) : null);
 
@@ -1156,6 +1333,38 @@ export async function createBookingInFirestore(data: {
   const validHistIds = Array.isArray(rawHistIds)
     ? rawHistIds.map((h: any) => String(h || '').trim()).filter(Boolean)
     : [];
+
+  const bookingPhone = (data.userPhone || data.clientPhone || '').trim();
+  const bookingClientId = (resolvedUserId && resolvedUserId !== '0') ? resolvedUserId : null;
+  const ticketCode = `B-${newBookingId.slice(0, 6).toUpperCase()}`;
+  const idemKey = data.idempotencyKey ? String(data.idempotencyKey) : `booking_dep_${newBookingId}`;
+
+  const rawPayments: Array<{ amount: number; paymentMethod?: FinancialPaymentMethod | string; method?: string; notes?: string }> =
+    Array.isArray(data.payments)
+      ? data.payments
+      : (deposit > 0 ? [{ amount: deposit, paymentMethod: data.paymentMethod !== undefined ? data.paymentMethod : 'cash' }] : []);
+
+  const movCategory: FinancialMovementCategory = deposit >= price && price > 0 ? 'booking_settlement' : 'booking_deposit';
+  const built = (price > 0 || deposit > 0)
+    ? buildSingleMovementPayload({
+        payments: rawPayments,
+        complexId: targetComplexId,
+        operationId: `${newBookingId}-booking`,
+        bookingId: newBookingId,
+        ticketCode,
+        flow: 'income',
+        category: movCategory,
+        responsibleName: resolvedUserName,
+        userId: bookingClientId,
+        userPhone: bookingPhone,
+        operatorId: auth.currentUser?.uid || data.ownerId || 'pos_operator',
+        notes: data.notes || `Cobro reserva ${resolvedCourtName} ${data.date} ${startTime}`,
+        idempotencyKey: idemKey
+      })
+    : null;
+
+  const actualCollected = built ? built.totalAmount : (Array.isArray(data.payments) ? 0 : deposit);
+  const trackedKeys = built ? [idemKey] : [];
 
   const payload: Record<string, any> = {
     id: newBookingId,
@@ -1171,22 +1380,25 @@ export async function createBookingInFirestore(data: {
     endTime,
     durationMinutes,
     price,
-    deposit,
+    deposit: actualCollected,
+    amount_paid: actualCollected,
     status,
-    paymentStatus,
+    paymentStatus: actualCollected >= price && price > 0 ? 'pagado' : (actualCollected > 0 ? 'seña' : 'pendiente'),
+    payment_status: actualCollected >= price && price > 0 ? 'paid' : (actualCollected > 0 ? 'partial' : 'pending'),
     userId: resolvedUserId,
     host_id: resolvedUserId,
     userName: resolvedUserName,
     clientName: resolvedUserName,
     host_name: resolvedUserName,
-    userPhone: (data.userPhone || data.clientPhone || '').trim(),
-    clientPhone: (data.userPhone || data.clientPhone || '').trim(),
+    userPhone: bookingPhone,
+    clientPhone: bookingPhone,
     userEmail: (data.userEmail || data.clientEmail || '').trim(),
     clientEmail: (data.userEmail || data.clientEmail || '').trim(),
     notes: data.notes || '',
     createdSource: data.createdSource === 'jogo' ? 'jogo' : 'complejo',
     retainedAmount: Number(data.retainedAmount ?? 0),
     totalRefunded: Number(data.totalRefunded ?? 0),
+    ...(trackedKeys.length > 0 ? { idempotencyKey: idemKey, idempotencyKeys: trackedKeys } : {}),
     ...(validCanonId ? { canonicalId: validCanonId, canonicalUserId: validCanonId } : {}),
     ...(validCanonName ? { canonicalName: validCanonName } : {}),
     ...(validHistId ? { historicalId: validHistId } : {}),
@@ -1197,18 +1409,19 @@ export async function createBookingInFirestore(data: {
     updatedAt: new Date().toISOString()
   };
 
-  // ATOMIC MUTUAL EXCLUSION LOCK TRANSACTION
   await runTransaction(db, async (transaction) => {
-    // 1. Read deterministic lock documents for all affected courts
-    const lockRefs = affectedCourts.map(cid => 
+    const lockRefs = affectedCourts.map(cid =>
       doc(db, BOOKING_LOCKS_COLLECTION, `${targetComplexId}__${cid}__${data.date}`)
     );
-    
-    const lockSnaps = await Promise.all(lockRefs.map(ref => transaction.get(ref)));
-    
-    // 2. Aggregate active bookings from all locks + initial seed
+    const userRef = effectiveReactivateUserId ? doc(db, USERS_COLLECTION, effectiveReactivateUserId) : null;
+
+    const [lockSnaps, userSnap] = await Promise.all([
+      Promise.all(lockRefs.map(ref => transaction.get(ref))),
+      userRef ? transaction.get(userRef) : Promise.resolve(null)
+    ]);
+
     const activeMap: Record<string, any> = { ...initialBookingsSeed };
-    
+
     lockSnaps.forEach(snap => {
       if (snap.exists()) {
         const lockData = snap.data();
@@ -1225,12 +1438,11 @@ export async function createBookingInFirestore(data: {
       }
     });
 
-    // 3. Collision Detection against all active intervals
     for (const [existingId, existing] of Object.entries(activeMap)) {
       if (existingId === newBookingId) continue;
       const exStartMin = existing.startMin ?? timeStringToMinutes(existing.startTime);
       const exEndMin = existing.endMin ?? timeStringToMinutes(existing.endTime);
-      
+
       if (intervalsOverlap(startMin, endMin, exStartMin, exEndMin)) {
         const cName = existing.courtName || resolvedCourtName;
         throw new Error(
@@ -1239,7 +1451,6 @@ export async function createBookingInFirestore(data: {
       }
     }
 
-    // 4. Register new booking in schedule lock for all affected courts
     const newLockEntry = {
       bookingId: newBookingId,
       courtId: resolvedCourtId,
@@ -1256,8 +1467,9 @@ export async function createBookingInFirestore(data: {
       const cid = affectedCourts[i];
       const snap = lockSnaps[i];
       const existingBookings = snap.exists() ? (snap.data().bookings || {}) : {};
-      
+
       transaction.set(lockRefs[i], {
+        complexId: targetComplexId,
         complejoId: targetComplexId,
         courtId: cid,
         date: data.date,
@@ -1269,19 +1481,13 @@ export async function createBookingInFirestore(data: {
       }, { merge: true });
     }
 
-    // 5. Write canonical booking document into /bookings (sanitizado contra campos undefined)
     transaction.set(newBookingRef, cleanFirestoreDocument(payload));
 
-    // 6. Motor Financiero Unificado: Registrar operación comercial y movimiento de seña si corresponde
-    if (price > 0 || deposit > 0) {
+    if (price > 0 || actualCollected > 0) {
       const opRef = doc(db, OPERATIONS_COLLECTION, `${newBookingId}-booking`);
-      const ticketCode = `B-${newBookingId.slice(0, 6).toUpperCase()}`;
-      const amountPending = Math.max(0, price - deposit);
-      const initialPaymentStatus: OperationPaymentStatus = 
-        deposit >= price && price > 0 ? 'paid' : (deposit > 0 ? 'partial' : 'unpaid');
-
-      const bookingClientId = (resolvedUserId && resolvedUserId !== '0') ? resolvedUserId : null;
-      const bookingPhone = (payload.userPhone || '').trim();
+      const amountPending = Math.max(0, price - actualCollected);
+      const initialPaymentStatus: OperationPaymentStatus =
+        actualCollected >= price && price > 0 ? 'paid' : (actualCollected > 0 ? 'partial' : 'unpaid');
 
       transaction.set(opRef, {
         id: `${newBookingId}-booking`,
@@ -1298,41 +1504,19 @@ export async function createBookingInFirestore(data: {
         userPhone: bookingPhone,
         clientPhone: bookingPhone,
         contractualAmount: price,
-        totalCollected: deposit,
+        totalCollected: actualCollected,
         totalRefunded: 0,
-        netCollected: deposit,
+        netCollected: actualCollected,
         retainedAmount: 0,
         amountPending,
         paymentStatus: initialPaymentStatus,
         currentAccountAssigned: false,
         currentAccountDebtAmount: 0,
+        ...(trackedKeys.length > 0 ? { idempotencyKey: idemKey, idempotencyKeys: trackedKeys } : {}),
         notes: payload.notes || `Reserva ${resolvedCourtName} ${data.date} ${startTime}`,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         createdBy: auth.currentUser?.uid || payload.ownerId || 'pos_operator'
-      });
-
-      const rawPayments: Array<{ amount: number; paymentMethod: FinancialPaymentMethod; notes?: string }> =
-        (Array.isArray(data.payments) && data.payments.length > 0)
-          ? data.payments
-          : (deposit > 0 ? [{ amount: deposit, paymentMethod: (data.paymentMethod as FinancialPaymentMethod) || 'cash' }] : []);
-
-      const movCategory: FinancialMovementCategory = deposit >= price ? 'booking_settlement' : 'booking_deposit';
-      const idemKey = `booking_dep_${newBookingId}`;
-      const built = buildSingleMovementPayload({
-        payments: rawPayments,
-        complexId: targetComplexId,
-        operationId: `${newBookingId}-booking`,
-        bookingId: newBookingId,
-        ticketCode,
-        flow: 'income',
-        category: movCategory,
-        responsibleName: resolvedUserName,
-        userId: bookingClientId,
-        userPhone: bookingPhone,
-        operatorId: auth.currentUser?.uid || payload.ownerId || 'pos_operator',
-        notes: payload.notes || `Cobro reserva ${resolvedCourtName} ${data.date} ${startTime}`,
-        idempotencyKey: idemKey
       });
 
       if (built) {
@@ -1354,6 +1538,14 @@ export async function createBookingInFirestore(data: {
           createdAt: serverTimestamp(),
           completedAt: serverTimestamp()
         });
+      }
+    }
+
+    // Reactivar usuario si estaba oculto o sin asociar en este complejo (sin alterar su origen ni otros complejos)
+    if (userRef && userSnap && userSnap.exists()) {
+      const reactivatePatch = buildUserReactivationPatch(userSnap.data(), targetComplexId);
+      if (reactivatePatch) {
+        transaction.update(userRef, reactivatePatch);
       }
     }
   });
@@ -1380,85 +1572,98 @@ export async function updateBookingInFirestore(
 ): Promise<void> {
   const strBookingId = String(bookingId);
   const docRef = doc(db, BOOKINGS_COLLECTION, strBookingId);
+  const opRef = doc(db, OPERATIONS_COLLECTION, `${strBookingId}-booking`);
 
   const isScheduleChange = Boolean(
-    patch.date !== undefined || 
-    patch.courtId !== undefined || 
-    patch.court_id !== undefined || 
-    patch.startTime !== undefined || 
-    patch.endTime !== undefined || 
+    patch.date !== undefined ||
+    patch.courtId !== undefined ||
+    patch.court_id !== undefined ||
+    patch.startTime !== undefined ||
+    patch.endTime !== undefined ||
     patch.status !== undefined
   );
 
-  if (isScheduleChange) {
-    await runTransaction(db, async (transaction) => {
-      const bSnap = await transaction.get(docRef);
-      if (!bSnap.exists()) {
-        throw new Error('Reserva no encontrada');
+  const editIdemKey = patch.idempotencyKey ? String(patch.idempotencyKey).trim() : null;
+  const idemRef = editIdemKey ? doc(db, IDEMPOTENCY_COLLECTION, editIdemKey) : null;
+
+  await runTransaction(db, async (transaction) => {
+    // --- FASE 1: TODAS LAS LECTURAS ANTES DE CUALQUIER ESCRITURA ---
+    const bSnap = await transaction.get(docRef);
+    if (!bSnap.exists()) {
+      throw new Error('Reserva no encontrada');
+    }
+
+    const curr = bSnap.data();
+    const targetComplexId = (!curr.complejoId && !curr.complexId)
+      ? (patch.complejoId || patch.complexId || 'B')
+      : ((curr.complejoId === 'complejo_central' ? 'B' : curr.complejoId) || (curr.complexId === 'complejo_central' ? 'B' : curr.complexId));
+
+    const opSnap = await transaction.get(opRef);
+    const opData = opSnap.exists() ? opSnap.data() : null;
+    const idemSnap = idemRef ? await transaction.get(idemRef) : null;
+    const compSnap = isScheduleChange
+      ? await transaction.get(doc(db, COMPLEJOS_COLLECTION, targetComplexId))
+      : null;
+
+    let effectiveUserId = String(patch.userId || curr.userId || opData?.userId || '').trim();
+    if (!effectiveUserId || effectiveUserId === '0' || effectiveUserId.startsWith('derived_')) {
+      const cachedMatch = findHiddenOrExistingClientInCache(targetComplexId, {
+        id: effectiveUserId,
+        phone: patch.userPhone || patch.clientPhone || curr.userPhone || curr.clientPhone,
+        canonicalId: patch.canonicalId || curr.canonicalId
+      });
+      if (cachedMatch?.id && !String(cachedMatch.id).startsWith('derived_')) {
+        effectiveUserId = String(cachedMatch.id);
       }
+    }
+    const userRef = (effectiveUserId && effectiveUserId !== '0' && !effectiveUserId.startsWith('derived_'))
+      ? doc(db, USERS_COLLECTION, effectiveUserId)
+      : null;
+    const userSnap = userRef ? await transaction.get(userRef) : null;
 
-      const curr = bSnap.data();
-      const targetComplexId = curr.complejoId || 'B';
-      const oldCourtId = String(curr.courtId || curr.court_id || 'c_1');
-      const oldDate = curr.date;
-      const newCourtId = String(patch.courtId || patch.court_id || oldCourtId);
-      const newDate = patch.date || oldDate;
-      const newStart = patch.startTime || curr.startTime || '18:00';
-      const newEnd = patch.endTime || curr.endTime || '19:00';
-      const newStatus = patch.status !== undefined ? patch.status : curr.status;
-      const isCancelled = newStatus === 'cancelado' || newStatus === 'cancelled';
+    const oldCourtId = String(curr.courtId || curr.court_id || 'c_1');
+    const oldDate = curr.date;
+    const newCourtId = String(patch.courtId || patch.court_id || oldCourtId);
+    const newDate = patch.date || oldDate;
+    const newStart = patch.startTime || curr.startTime || '18:00';
+    const newEnd = patch.endTime || curr.endTime || '19:00';
+    const newStatus = patch.status !== undefined ? patch.status : curr.status;
+    const isCancelled = newStatus === 'cancelado' || newStatus === 'cancelled' ||
+      patch.paymentStatus === 'cancelled' || patch.payment_status === 'cancelled';
 
-      const oldAffectedCourts = await getOverlappingCourtIds(targetComplexId, oldCourtId);
-      const newAffectedCourts = await getOverlappingCourtIds(targetComplexId, newCourtId);
+    let oldAffectedCourts: string[] = [];
+    let newAffectedCourts: string[] = [];
+    let oldLockRefs: ReturnType<typeof doc>[] = [];
+    let oldLockSnaps: any[] = [];
+    let newLockRefs: ReturnType<typeof doc>[] = [];
+    let newLockSnaps: any[] = [];
 
-      // Lock old schedule
-      const oldLockRefs = oldAffectedCourts.map(cid => 
+    if (isScheduleChange) {
+      const compData = compSnap && compSnap.exists() ? compSnap.data() : null;
+      oldAffectedCourts = getOverlappingCourtIdsFromList(compData, oldCourtId);
+      newAffectedCourts = getOverlappingCourtIdsFromList(compData, newCourtId);
+
+      oldLockRefs = oldAffectedCourts.map(cid =>
         doc(db, BOOKING_LOCKS_COLLECTION, `${targetComplexId}__${cid}__${oldDate}`)
       );
-      const oldLockSnaps = await Promise.all(oldLockRefs.map(ref => transaction.get(ref)));
+      oldLockSnaps = await Promise.all(oldLockRefs.map(ref => transaction.get(ref)));
 
-      const sanitizedPatch: Record<string, any> = { ...patch };
-      if (curr.createdSource === 'jogo') {
-        sanitizedPatch.createdSource = 'jogo';
+      if (!isCancelled) {
+        newLockRefs = newAffectedCourts.map(cid =>
+          doc(db, BOOKING_LOCKS_COLLECTION, `${targetComplexId}__${cid}__${newDate}`)
+        );
+        newLockSnaps = await Promise.all(newLockRefs.map(ref => transaction.get(ref)));
       }
+    }
 
-      // If cancelling: release from lock and update booking
-      if (isCancelled) {
-        if (curr.createdSource === 'jogo') {
-          throw new Error('Las reservas generadas por Jogo no pueden cancelarse ni eliminarse desde el complejo.');
-        }
-        for (let i = 0; i < oldAffectedCourts.length; i++) {
-          const snap = oldLockSnaps[i];
-          if (snap.exists()) {
-            const bMap = { ...(snap.data().bookings || {}) };
-            delete bMap[strBookingId];
-            transaction.set(oldLockRefs[i], {
-              bookings: bMap,
-              updatedAt: serverTimestamp()
-            }, { merge: true });
-          }
-        }
+    // --- FASE 2: VALIDACIONES Y CÁLCULOS ---
+    if (isCancelled && curr.createdSource === 'jogo') {
+      throw new Error('Las reservas generadas por Jogo no pueden cancelarse ni eliminarse desde el complejo.');
+    }
 
-        transaction.update(docRef, cleanFirestoreDocument({
-          ...sanitizedPatch,
-          status: 'cancelado',
-          cancelledSource: 'complejo',
-          cancelledAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }));
-        return;
-      }
-
-      // If rescheduling or changing times/courts: check conflicts in new schedule
-      const newLockRefs = newAffectedCourts.map(cid => 
-        doc(db, BOOKING_LOCKS_COLLECTION, `${targetComplexId}__${cid}__${newDate}`)
-      );
-      const newLockSnaps = await Promise.all(newLockRefs.map(ref => transaction.get(ref)));
-
+    if (isScheduleChange && !isCancelled) {
       const startMin = timeStringToMinutes(newStart);
       const endMin = timeStringToMinutes(newEnd);
-
-      // Check overlaps in new schedule (excluding this booking itself)
       newLockSnaps.forEach(snap => {
         if (snap.exists()) {
           const bMap = snap.data().bookings || {};
@@ -1476,9 +1681,121 @@ export async function updateBookingInFirestore(
           });
         }
       });
+    }
 
-      // Release from old lock if court or date changed
-      if (oldCourtId !== newCourtId || oldDate !== newDate) {
+    // Saneamiento de campos transitorios antes de persistir en /bookings
+    const sanitizedPatch: Record<string, any> = { ...patch };
+    delete sanitizedPatch.payments;
+    delete sanitizedPatch.deltaPaid;
+    delete sanitizedPatch.deltaPayments;
+    delete sanitizedPatch.previousDeposit;
+    delete sanitizedPatch.idempotencyKey;
+    delete sanitizedPatch.paymentMethod;
+
+    if (curr.createdSource === 'jogo') {
+      sanitizedPatch.createdSource = 'jogo';
+    } else if (sanitizedPatch.createdSource !== undefined && sanitizedPatch.createdSource !== 'jogo') {
+      sanitizedPatch.createdSource = 'complejo';
+    }
+
+    const currPrice = Math.max(0, Number(curr.price ?? curr.price_total ?? opData?.contractualAmount ?? 0));
+    const currPaid = Math.max(0, Number(opData?.totalCollected ?? curr.deposit ?? curr.amount_paid ?? 0));
+    const nextPrice = patch.price !== undefined
+      ? Math.max(0, Number(patch.price) || 0)
+      : (patch.price_total !== undefined ? Math.max(0, Number(patch.price_total) || 0) : currPrice);
+
+    const hasExplicitDelta = patch.deltaPaid !== undefined || patch.deltaPayments !== undefined;
+    const isIdemCompleted = Boolean(idemSnap && idemSnap.exists() && idemSnap.data()?.status === 'completed');
+
+    const deltaPaymentsList: Array<{ amount: number; paymentMethod?: FinancialPaymentMethod | string; method?: string; notes?: string }> =
+      Array.isArray(patch.deltaPayments) && patch.deltaPayments.length > 0
+        ? patch.deltaPayments
+        : (Number(patch.deltaPaid || 0) > 0
+            ? [{ amount: Number(patch.deltaPaid), paymentMethod: normalizeMonetaryPaymentMethod(patch.paymentMethod) || 'cash' }]
+            : []);
+
+    const ticketCode = opData?.ticketCode || `B-${strBookingId.slice(0, 6).toUpperCase()}`;
+    const resolvedClientName = resolveClientName({ ...curr, ...patch }, null, opData);
+    const resolvedClientPhone = resolveClientPhone({ ...curr, ...patch }, null, opData);
+    const bookingClientId = (effectiveUserId && effectiveUserId !== '0') ? effectiveUserId : null;
+
+    const movementIdemKey = editIdemKey || `booking_edit_${strBookingId}_${Date.now()}`;
+    const provisionalNextPaid = currPaid + deltaPaymentsList.reduce((s, p) => s + Math.max(0, Number(p.amount) || 0), 0);
+    const deltaCategory: FinancialMovementCategory =
+      (provisionalNextPaid >= nextPrice && nextPrice > 0) ? 'booking_settlement' : 'booking_deposit';
+
+    const builtDeltaMov = (!isCancelled && !isIdemCompleted && deltaPaymentsList.length > 0)
+      ? buildSingleMovementPayload({
+          payments: deltaPaymentsList,
+          complexId: targetComplexId,
+          operationId: `${strBookingId}-booking`,
+          bookingId: strBookingId,
+          ticketCode,
+          flow: 'income',
+          category: deltaCategory,
+          responsibleName: resolvedClientName,
+          userId: bookingClientId,
+          userPhone: resolvedClientPhone,
+          operatorId: auth.currentUser?.uid || curr.ownerId || 'pos_operator',
+          notes: patch.notes || `Cobro reserva ${patch.courtName || curr.courtName || 'Cancha'} ${newDate} ${newStart}`,
+          idempotencyKey: movementIdemKey
+        })
+      : null;
+
+    const deltaPaidAmount = builtDeltaMov ? builtDeltaMov.totalAmount : 0;
+    const nextTotalPaid = isCancelled
+      ? currPaid
+      : (hasExplicitDelta
+          ? Math.max(0, currPaid + deltaPaidAmount)
+          : (patch.deposit !== undefined
+              ? Math.max(0, Number(patch.deposit) || 0)
+              : (patch.amount_paid !== undefined ? Math.max(0, Number(patch.amount_paid) || 0) : currPaid)));
+
+    if (!isCancelled && nextPrice > 0 && nextTotalPaid > nextPrice + 0.01) {
+      throw new Error(`El monto cobrado ($${nextTotalPaid.toLocaleString()}) no puede superar el precio total de la reserva ($${nextPrice.toLocaleString()}).`);
+    }
+
+    const totalRefunded = Number(opData?.totalRefunded ?? curr.totalRefunded ?? 0);
+    const opBalances = calculateFinancialBalances({
+      contractualAmount: nextPrice,
+      totalCollected: nextTotalPaid,
+      totalRefunded,
+      isCancelled,
+      retainDepositOnCancel: true
+    });
+
+    const bookingPayStatusEs = isCancelled
+      ? 'cancelled'
+      : (nextTotalPaid >= nextPrice && nextPrice > 0 ? 'pagado' : (nextTotalPaid > 0 ? 'seña' : 'pendiente'));
+    const bookingPayStatusEn = isCancelled
+      ? 'cancelled'
+      : (nextTotalPaid >= nextPrice && nextPrice > 0 ? 'paid' : (nextTotalPaid > 0 ? 'partial' : 'pending'));
+
+    if (hasExplicitDelta || patch.price !== undefined || patch.price_total !== undefined) {
+      sanitizedPatch.deposit = nextTotalPaid;
+      sanitizedPatch.amount_paid = nextTotalPaid;
+      sanitizedPatch.hostAmountPaid = nextTotalPaid;
+      sanitizedPatch.host_amount_paid = nextTotalPaid;
+      sanitizedPatch.amountPending = opBalances.amountPending;
+      sanitizedPatch.paymentStatus = bookingPayStatusEs;
+      sanitizedPatch.payment_status = bookingPayStatusEn;
+    }
+
+    if (builtDeltaMov && deltaPaidAmount > 0) {
+      sanitizedPatch.idempotencyKeys = arrayUnion(movementIdemKey);
+    }
+
+    let clearedDebt = 0;
+    let remainingOpDebt = Number(opData?.currentAccountDebtAmount || 0);
+    if (deltaPaidAmount > 0 && remainingOpDebt > 0) {
+      const clearing = calculateCurrentAccountClearing(remainingOpDebt, deltaPaidAmount);
+      clearedDebt = clearing.clearedDebtAmount;
+      remainingOpDebt = clearing.remainingOperationDebt;
+    }
+
+    // --- FASE 3: TODAS LAS ESCRITURAS ATÓMICAS ---
+    if (isScheduleChange) {
+      if (isCancelled) {
         for (let i = 0; i < oldAffectedCourts.length; i++) {
           const snap = oldLockSnaps[i];
           if (snap.exists()) {
@@ -1490,94 +1807,92 @@ export async function updateBookingInFirestore(
             }, { merge: true });
           }
         }
+      } else {
+        if (oldCourtId !== newCourtId || oldDate !== newDate) {
+          for (let i = 0; i < oldAffectedCourts.length; i++) {
+            const snap = oldLockSnaps[i];
+            if (snap.exists()) {
+              const bMap = { ...(snap.data().bookings || {}) };
+              delete bMap[strBookingId];
+              transaction.set(oldLockRefs[i], {
+                bookings: bMap,
+                updatedAt: serverTimestamp()
+              }, { merge: true });
+            }
+          }
+        }
+
+        const startMin = timeStringToMinutes(newStart);
+        const endMin = timeStringToMinutes(newEnd);
+        const newLockEntry = {
+          bookingId: strBookingId,
+          courtId: newCourtId,
+          courtName: patch.courtName || curr.courtName || 'Cancha',
+          startTime: newStart,
+          endTime: newEnd,
+          startMin,
+          endMin,
+          userName: resolvedClientName,
+          status: newStatus || 'confirmado'
+        };
+
+        for (let i = 0; i < newAffectedCourts.length; i++) {
+          const snap = newLockSnaps[i];
+          const existingBookings = snap.exists() ? (snap.data().bookings || {}) : {};
+          transaction.set(newLockRefs[i], {
+            complexId: targetComplexId,
+            complejoId: targetComplexId,
+            courtId: newAffectedCourts[i],
+            date: newDate,
+            bookings: {
+              ...existingBookings,
+              [strBookingId]: newLockEntry
+            },
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        }
       }
+    }
 
-      // Register into new lock
-      const newLockEntry = {
-        bookingId: strBookingId,
-        courtId: newCourtId,
-        courtName: patch.courtName || curr.courtName || 'Cancha',
-        startTime: newStart,
-        endTime: newEnd,
-        startMin,
-        endMin,
-        userName: patch.userName || patch.clientName || curr.userName || 'Cliente',
-        status: newStatus || 'confirmado'
-      };
-
-      for (let i = 0; i < newAffectedCourts.length; i++) {
-        const snap = newLockSnaps[i];
-        const existingBookings = snap.exists() ? (snap.data().bookings || {}) : {};
-        transaction.set(newLockRefs[i], {
-          complejoId: targetComplexId,
-          courtId: newAffectedCourts[i],
-          date: newDate,
-          bookings: {
-            ...existingBookings,
-            [strBookingId]: newLockEntry
-          },
-          updatedAt: serverTimestamp()
-        }, { merge: true });
-      }
-
-      // Update booking document
+    if (isCancelled) {
+      transaction.update(docRef, cleanFirestoreDocument({
+        ...sanitizedPatch,
+        status: 'cancelado',
+        cancelledSource: 'complejo',
+        cancelledAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }));
+    } else {
       transaction.update(docRef, cleanFirestoreDocument({
         ...sanitizedPatch,
         updatedAt: new Date().toISOString()
       }));
-    });
-  } else {
-    // Pure metadata update (e.g. payment, deposit, notes)
-    const sanitizedPatch: Record<string, any> = { ...patch };
-    const isCancelPatch =
-      sanitizedPatch.status === 'cancelado' ||
-      sanitizedPatch.status === 'cancelled' ||
-      sanitizedPatch.paymentStatus === 'cancelled' ||
-      sanitizedPatch.payment_status === 'cancelled';
-
-    if (isCancelPatch || (sanitizedPatch.createdSource !== undefined && sanitizedPatch.createdSource !== 'jogo')) {
-      const existingSnap = await getDoc(docRef);
-      const existingData = existingSnap.exists() ? existingSnap.data() : null;
-      if (isCancelPatch && existingData?.createdSource === 'jogo') {
-        throw new Error('Las reservas generadas por Jogo no pueden cancelarse ni eliminarse desde el complejo.');
-      }
-      if (sanitizedPatch.createdSource !== undefined && sanitizedPatch.createdSource !== 'jogo') {
-        if (existingData?.createdSource === 'jogo') {
-          sanitizedPatch.createdSource = 'jogo';
-        } else {
-          sanitizedPatch.createdSource = 'complejo';
-        }
-      }
     }
-    await updateDoc(docRef, cleanFirestoreDocument({
-      ...sanitizedPatch,
-      updatedAt: new Date().toISOString()
-    }));
-  }
 
-  // Lifecycle metrics synchronization
-  const finalUserId = patch.userId;
-  const finalPhone = patch.userPhone || patch.clientPhone;
-  if ((finalUserId && finalUserId !== '0') || finalPhone) {
-    syncUserMetricsWithBookings(finalUserId || '', finalPhone);
-  }
-
-  // Also sync status and paymentStatus into /operations/${strBookingId}-booking if present
-  try {
-    const opRef = doc(db, OPERATIONS_COLLECTION, `${strBookingId}-booking`);
-    const opSnap = await getDoc(opRef);
     if (opSnap.exists()) {
-      const isCancelled = patch.status === 'cancelado' || patch.status === 'cancelled';
       const opPatch: Record<string, any> = {
         updatedAt: serverTimestamp()
       };
       if (isCancelled) {
         opPatch.paymentStatus = 'cancelled';
         opPatch.status = 'cancelado';
-      } else if (patch.status) {
-        opPatch.status = patch.status;
-        if (patch.payment_status || patch.paymentStatus) {
-          opPatch.paymentStatus = patch.payment_status || patch.paymentStatus;
+        opPatch.amountPending = 0;
+      } else {
+        if (patch.status) {
+          opPatch.status = patch.status;
+        }
+        if (hasExplicitDelta || patch.price !== undefined || patch.price_total !== undefined) {
+          opPatch.contractualAmount = nextPrice;
+          opPatch.totalCollected = nextTotalPaid;
+          opPatch.netCollected = opBalances.netCollected;
+          opPatch.amountPending = opBalances.amountPending;
+          opPatch.paymentStatus = opBalances.paymentStatus;
+          if (deltaPaidAmount > 0 && opData?.currentAccountDebtAmount > 0) {
+            opPatch.currentAccountDebtAmount = remainingOpDebt;
+          }
+        } else if (patch.payment_status || patch.paymentStatus) {
+          const ps = patch.payment_status || patch.paymentStatus;
+          opPatch.paymentStatus = ps === 'pagado' ? 'paid' : (ps === 'seña' ? 'partial' : (ps === 'pendiente' ? 'unpaid' : ps));
         }
       }
       if (patch.userName || patch.clientName) {
@@ -1588,129 +1903,379 @@ export async function updateBookingInFirestore(
         opPatch.userPhone = patch.userPhone || patch.clientPhone;
         opPatch.clientPhone = patch.userPhone || patch.clientPhone;
       }
-      await updateDoc(opRef, cleanFirestoreDocument(opPatch));
+      if (builtDeltaMov && deltaPaidAmount > 0) {
+        opPatch.idempotencyKeys = arrayUnion(movementIdemKey);
+      }
+      transaction.update(opRef, cleanFirestoreDocument(opPatch));
+    } else if (!isCancelled && (nextPrice > 0 || nextTotalPaid > 0)) {
+      transaction.set(opRef, {
+        id: `${strBookingId}-booking`,
+        complexId: targetComplexId,
+        complejoId: targetComplexId,
+        ticketCode,
+        operationType: 'court_booking',
+        bookingId: strBookingId,
+        responsibleType: bookingClientId ? 'user' : 'anonymous',
+        userId: bookingClientId,
+        clientId: bookingClientId,
+        userName: resolvedClientName,
+        clientName: resolvedClientName,
+        userPhone: resolvedClientPhone,
+        clientPhone: resolvedClientPhone,
+        contractualAmount: nextPrice,
+        totalCollected: nextTotalPaid,
+        totalRefunded: 0,
+        netCollected: opBalances.netCollected,
+        retainedAmount: 0,
+        amountPending: opBalances.amountPending,
+        paymentStatus: opBalances.paymentStatus,
+        currentAccountAssigned: false,
+        currentAccountDebtAmount: 0,
+        ...(builtDeltaMov ? { idempotencyKey: movementIdemKey, idempotencyKeys: [movementIdemKey] } : {}),
+        notes: patch.notes || curr.notes || `Reserva ${patch.courtName || curr.courtName || 'Cancha'} ${newDate} ${newStart}`,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        createdBy: auth.currentUser?.uid || curr.ownerId || 'pos_operator'
+      });
     }
-  } catch (err) {
-    console.warn('[Firestore] Error syncing linked operation on booking update:', err);
+
+    if (builtDeltaMov && deltaPaidAmount > 0) {
+      const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtDeltaMov.movId);
+      transaction.set(movRef, builtDeltaMov.movDocData);
+
+      const targetIdemRef = idemRef || doc(db, IDEMPOTENCY_COLLECTION, movementIdemKey);
+      transaction.set(targetIdemRef, {
+        idempotencyKey: movementIdemKey,
+        complexId: targetComplexId,
+        complejoId: targetComplexId,
+        operationId: `${strBookingId}-booking`,
+        bookingId: strBookingId,
+        amount: builtDeltaMov.totalAmount,
+        paymentMethod: builtDeltaMov.paymentMethod,
+        flow: 'income',
+        status: 'completed',
+        movementId: builtDeltaMov.movId,
+        createdAt: serverTimestamp(),
+        completedAt: serverTimestamp()
+      });
+    }
+
+    if (userRef && userSnap && userSnap.exists()) {
+      const uData = userSnap.data();
+      const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
+      const isOwnOrigin = !uOrigin || isSameComplex(uOrigin, targetComplexId);
+      const userPatch: Record<string, any> = !isCancelled
+        ? (buildUserReactivationPatch(uData, targetComplexId) || {})
+        : {};
+
+      if (clearedDebt > 0 && isOwnOrigin) {
+        const currentUserDebt = Math.max(0, Number(uData?.debt || 0));
+        userPatch.debt = Math.max(0, currentUserDebt - clearedDebt);
+        userPatch.updatedAt = serverTimestamp();
+      }
+
+      if (Object.keys(userPatch).length > 0) {
+        transaction.update(userRef, userPatch);
+      }
+    }
+  });
+
+  // Lifecycle metrics synchronization
+  const finalUserId = patch.userId;
+  const finalPhone = patch.userPhone || patch.clientPhone;
+  if ((finalUserId && finalUserId !== '0') || finalPhone) {
+    syncUserMetricsWithBookings(finalUserId || '', finalPhone);
   }
 }
 
 /**
- * Elimina DEFINITIVAMENTE una reserva de Jogo y TODOS sus datos asociados exclusivamente a ella:
+ * Elimina DEFINITIVAMENTE una reserva y TODOS sus datos asociados exclusivamente a ella:
  * - Documento de la reserva en 'bookings'
  * - Liberación del bloqueo de horario en 'booking_locks'
  * - Operaciones comerciales generadas exclusivamente por ella en 'operations'
  * - Movimientos financieros generados exclusivamente por ella en 'financial_movements'
  * - Transacciones históricas vinculadas en 'transactions'
+ * - Claves de idempotencia vinculadas (verificando existencia previa antes de borrar)
  * - Usuarios creados exclusivamente para esta reserva (si no tienen otras reservas ni operaciones)
  */
 export async function permanentlyDeleteBookingInFirestore(bookingId: string | number): Promise<{ success: boolean; deletedUserId?: string | null }> {
   const strId = String(bookingId);
   const docRef = doc(db, BOOKINGS_COLLECTION, strId);
-  
-  // 1. Obtener datos de la reserva antes de eliminar
+
+  // 1. Obtener datos de la reserva antes de eliminar (1 lectura autoritativa de seguridad)
   const bookingSnap = await getDoc(docRef);
   if (!bookingSnap.exists()) {
     return { success: true };
   }
-  
+
   const bData = bookingSnap.data();
   if (bData?.createdSource === 'jogo') {
     throw new Error('Las reservas generadas por Jogo no pueden cancelarse ni eliminarse desde el complejo.');
   }
   const userId = bData.userId || bData.host_id || null;
-  const targetComplexId = bData.complejoId || bData.complexId || 'B';
+  const rawComplex = bData.complejoId || bData.complexId || 'B';
+  const targetComplexId = rawComplex === 'complejo_central' ? 'B' : rawComplex;
+  const complexCandidates = (targetComplexId === 'B' || rawComplex === 'complejo_central')
+    ? ['B', 'complejo_central']
+    : [targetComplexId];
   const courtId = String(bData.courtId || bData.court_id || 'c_1');
   const date = bData.date;
 
-  // 2. Liberar el bloqueo en booking_locks
+  // 2. Liberar el bloqueo en booking_locks sin getDoc previo (0 lecturas; ignora 'not-found')
   try {
     const affectedCourts = await getOverlappingCourtIds(targetComplexId, courtId);
-    const lockRefs = affectedCourts.map(cid => 
+    const lockRefs = affectedCourts.map(cid =>
       doc(db, BOOKING_LOCKS_COLLECTION, `${targetComplexId}__${cid}__${date}`)
     );
-    const lockSnaps = await Promise.all(lockRefs.map(ref => getDoc(ref)));
 
-    for (let i = 0; i < affectedCourts.length; i++) {
-      const lSnap = lockSnaps[i];
-      if (lSnap.exists()) {
+    await Promise.all(
+      lockRefs.map(async (lockRef) => {
         try {
-          await updateDoc(lockRefs[i], {
+          await updateDoc(lockRef, {
             [`bookings.${strId}`]: deleteField(),
             updatedAt: serverTimestamp()
           });
-        } catch {
-          const bMap = { ...(lSnap.data().bookings || {}) };
-          if (bMap[strId]) {
-            delete bMap[strId];
-            await setDoc(lockRefs[i], {
-              bookings: bMap,
-              updatedAt: serverTimestamp()
-            }, { merge: true });
+        } catch (lockErr: any) {
+          if (lockErr?.code === 'not-found') return;
+          const lSnap = await getDoc(lockRef).catch(() => null);
+          if (lSnap && lSnap.exists()) {
+            const bMap = { ...(lSnap.data().bookings || {}) };
+            if (bMap[strId]) {
+              delete bMap[strId];
+              await setDoc(lockRef, {
+                bookings: bMap,
+                updatedAt: serverTimestamp()
+              }, { merge: true });
+            }
           }
         }
-      }
-    }
+      })
+    );
   } catch (err) {
     console.warn('[Firestore] Error releasing booking lock during permanent delete:', err);
   }
 
-  // 3. Buscar y eliminar operaciones comerciales exclusivas en batch
+  // 3. Recolectar documentos existentes priorizando caché en memoria (0 lecturas) y queries acotadas
   const batch = writeBatch(db);
+  const directOpId = `${strId}-booking`;
+  const directOpRef = doc(db, OPERATIONS_COLLECTION, directOpId);
+  let debtToRevert = 0;
 
-  // 3.1 Operación directa por ID: `${strId}-booking`
-  const directOpRef = doc(db, OPERATIONS_COLLECTION, `${strId}-booking`);
-  batch.delete(directOpRef);
-
-  // 3.2 Operaciones con bookingId === strId
-  try {
-    const opsQuery = query(collection(db, OPERATIONS_COLLECTION), where('bookingId', '==', strId));
-    const opsSnap = await getDocs(opsQuery);
-    opsSnap.forEach(opDoc => {
-      if (opDoc.id !== `${strId}-booking`) {
-        batch.delete(opDoc.ref);
-      }
-    });
-  } catch (err) {
-    console.warn('[Firestore] Error querying operations to delete:', err);
+  const trackedIdemKeys = new Set<string>([`booking_dep_${strId}`]);
+  if (bData.idempotencyKey) trackedIdemKeys.add(String(bData.idempotencyKey));
+  if (Array.isArray(bData.idempotencyKeys)) {
+    bData.idempotencyKeys.forEach((k: any) => k && trackedIdemKeys.add(String(k)));
   }
 
-  // 4. Buscar y eliminar movimientos financieros exclusivos
-  try {
-    const movsByBooking = query(collection(db, FINANCIAL_MOVEMENTS_COLLECTION), where('bookingId', '==', strId));
-    const movsByOp = query(collection(db, FINANCIAL_MOVEMENTS_COLLECTION), where('operationId', '==', `${strId}-booking`));
-    
-    const [snapByBooking, snapByOp] = await Promise.all([
-      getDocs(movsByBooking),
-      getDocs(movsByOp)
-    ]);
+  const deletedOpIds = new Set<string>([directOpId]);
+  const cachedOps = sharedSubscribeOperations.getCached(targetComplexId);
 
-    const seenMovIds = new Set<string>();
-    snapByBooking.forEach(mDoc => {
-      if (!seenMovIds.has(mDoc.id)) {
-        seenMovIds.add(mDoc.id);
-        batch.delete(mDoc.ref);
+  if (cachedOps) {
+    const matchingOps = cachedOps.filter(
+      op => op.id === directOpId || op.bookingId === strId
+    );
+    matchingOps.forEach(opD => {
+      deletedOpIds.add(opD.id);
+      debtToRevert += Number(opD.currentAccountDebtAmount || 0);
+      if (opD.idempotencyKey) trackedIdemKeys.add(String(opD.idempotencyKey));
+      if (Array.isArray((opD as any).idempotencyKeys)) {
+        (opD as any).idempotencyKeys.forEach((k: any) => k && trackedIdemKeys.add(String(k)));
       }
+      batch.delete(doc(db, OPERATIONS_COLLECTION, opD.id));
     });
-    snapByOp.forEach(mDoc => {
-      if (!seenMovIds.has(mDoc.id)) {
-        seenMovIds.add(mDoc.id);
-        batch.delete(mDoc.ref);
+  } else {
+    const directOpSnap = await getDoc(directOpRef);
+    if (directOpSnap.exists()) {
+      const opD = directOpSnap.data();
+      debtToRevert += Number(opD.currentAccountDebtAmount || 0);
+      if (opD.idempotencyKey) trackedIdemKeys.add(String(opD.idempotencyKey));
+      if (Array.isArray(opD.idempotencyKeys)) {
+        opD.idempotencyKeys.forEach((k: any) => k && trackedIdemKeys.add(String(k)));
       }
-    });
-  } catch (err) {
-    console.warn('[Firestore] Error querying financial movements to delete:', err);
+      batch.delete(directOpRef);
+    }
+
+    try {
+      const runOpsQuery = async (field: 'complexId' | 'complejoId', cid: string) => {
+        try {
+          return await getDocs(
+            query(
+              collection(db, OPERATIONS_COLLECTION),
+              where(field, '==', cid),
+              where('bookingId', '==', strId)
+            )
+          );
+        } catch (qErr: any) {
+          if (qErr?.code === 'failed-precondition') {
+            return await getDocs(query(collection(db, OPERATIONS_COLLECTION), where(field, '==', cid)));
+          }
+          throw qErr;
+        }
+      };
+
+      const opSnaps = await Promise.all(
+        complexCandidates.flatMap(cid => [
+          runOpsQuery('complexId', cid),
+          runOpsQuery('complejoId', cid)
+        ])
+      );
+      opSnaps.forEach(snap => {
+        snap.forEach(opDoc => {
+          const opD = opDoc.data();
+          if (opD.bookingId === strId && !deletedOpIds.has(opDoc.id)) {
+            deletedOpIds.add(opDoc.id);
+            debtToRevert += Number(opD.currentAccountDebtAmount || 0);
+            if (opD.idempotencyKey) trackedIdemKeys.add(String(opD.idempotencyKey));
+            if (Array.isArray(opD.idempotencyKeys)) {
+              opD.idempotencyKeys.forEach((k: any) => k && trackedIdemKeys.add(String(k)));
+            }
+            batch.delete(opDoc.ref);
+          }
+        });
+      });
+    } catch (err) {
+      console.warn('[Firestore] Error querying operations to delete:', err);
+    }
   }
 
-  // 5. Buscar y eliminar transacciones históricas vinculadas
+  // 4. Movimientos financieros: caché compartida primero (0 lecturas), luego queries acotadas por bookingId/operationId
+  const cachedMovs = sharedSubscribeFinancialMovements.getCached(targetComplexId);
+  if (cachedMovs) {
+    cachedMovs.forEach(mD => {
+      if (mD.bookingId === strId || (mD.operationId && deletedOpIds.has(String(mD.operationId)))) {
+        if (mD.idempotencyKey) trackedIdemKeys.add(String(mD.idempotencyKey));
+        batch.delete(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, mD.id));
+      }
+    });
+  } else {
+    try {
+      const runMovsQuery = async (field: 'complexId' | 'complejoId', cid: string) => {
+        try {
+          const [byBooking, ...byOps] = await Promise.all([
+            getDocs(
+              query(
+                collection(db, FINANCIAL_MOVEMENTS_COLLECTION),
+                where(field, '==', cid),
+                where('bookingId', '==', strId)
+              )
+            ),
+            ...Array.from(deletedOpIds).map(opKey =>
+              getDocs(
+                query(
+                  collection(db, FINANCIAL_MOVEMENTS_COLLECTION),
+                  where(field, '==', cid),
+                  where('operationId', '==', opKey)
+                )
+              )
+            )
+          ]);
+          return [byBooking, ...byOps];
+        } catch (qErr: any) {
+          if (qErr?.code === 'failed-precondition') {
+            return [await getDocs(query(collection(db, FINANCIAL_MOVEMENTS_COLLECTION), where(field, '==', cid)))];
+          }
+          throw qErr;
+        }
+      };
+
+      const movSnapGroups = await Promise.all(
+        complexCandidates.flatMap(cid => [
+          runMovsQuery('complexId', cid),
+          runMovsQuery('complejoId', cid)
+        ])
+      );
+      const seenMovIds = new Set<string>();
+      movSnapGroups.flat().forEach(snap => {
+        snap.forEach(mDoc => {
+          const mD = mDoc.data();
+          if (
+            !seenMovIds.has(mDoc.id) &&
+            (mD.bookingId === strId || (mD.operationId && deletedOpIds.has(String(mD.operationId))))
+          ) {
+            seenMovIds.add(mDoc.id);
+            if (mD.idempotencyKey) trackedIdemKeys.add(String(mD.idempotencyKey));
+            batch.delete(mDoc.ref);
+          }
+        });
+      });
+    } catch (err) {
+      console.warn('[Firestore] Error querying financial movements to delete:', err);
+    }
+  }
+
+  // 5. Transacciones históricas vinculadas: caché compartida primero (0 lecturas), luego queries acotadas
+  const cachedTxs = sharedSubscribeTransactions.getCached(targetComplexId);
+  if (cachedTxs) {
+    cachedTxs.forEach(tD => {
+      if (tD.bookingId === strId || (tD.operationId && deletedOpIds.has(String(tD.operationId)))) {
+        batch.delete(doc(db, TRANSACTIONS_COLLECTION, tD.id));
+      }
+    });
+  } else {
+    try {
+      const runTxQuery = async (field: 'complexId' | 'complejoId', cid: string) => {
+        try {
+          const [byBooking, ...byOps] = await Promise.all([
+            getDocs(
+              query(
+                collection(db, TRANSACTIONS_COLLECTION),
+                where(field, '==', cid),
+                where('bookingId', '==', strId)
+              )
+            ),
+            ...Array.from(deletedOpIds).map(opKey =>
+              getDocs(
+                query(
+                  collection(db, TRANSACTIONS_COLLECTION),
+                  where(field, '==', cid),
+                  where('operationId', '==', opKey)
+                )
+              )
+            )
+          ]);
+          return [byBooking, ...byOps];
+        } catch (qErr: any) {
+          if (qErr?.code === 'failed-precondition') {
+            return [await getDocs(query(collection(db, TRANSACTIONS_COLLECTION), where(field, '==', cid)))];
+          }
+          throw qErr;
+        }
+      };
+
+      const txSnapGroups = await Promise.all(
+        complexCandidates.flatMap(cid => [
+          runTxQuery('complexId', cid),
+          runTxQuery('complejoId', cid)
+        ])
+      );
+      const seenTxIds = new Set<string>();
+      txSnapGroups.flat().forEach(snap => {
+        snap.forEach(tDoc => {
+          const tD = tDoc.data();
+          if (!seenTxIds.has(tDoc.id) && (tD.bookingId === strId || (tD.operationId && deletedOpIds.has(String(tD.operationId))))) {
+            seenTxIds.add(tDoc.id);
+            batch.delete(tDoc.ref);
+          }
+        });
+      });
+    } catch (err) {
+      console.warn('[Firestore] Error querying legacy transactions to delete:', err);
+    }
+  }
+
+  // 5.1 Limpiar claves de idempotencia rastreadas por doc() directo (compatible con firestore.rules)
   try {
-    const txQuery = query(collection(db, TRANSACTIONS_COLLECTION), where('bookingId', '==', strId));
-    const txSnap = await getDocs(txQuery);
-    txSnap.forEach(tDoc => {
-      batch.delete(tDoc.ref);
+    const idemRefs = Array.from(trackedIdemKeys).filter(Boolean).map(k => doc(db, IDEMPOTENCY_COLLECTION, k));
+    const idemSnaps = await Promise.all(
+      idemRefs.map(ref => getDoc(ref).catch(() => null))
+    );
+    idemSnaps.forEach(snap => {
+      if (snap && snap.exists()) {
+        batch.delete(snap.ref);
+      }
     });
   } catch (err) {
-    console.warn('[Firestore] Error querying legacy transactions to delete:', err);
+    console.warn('[Firestore] Error cleaning tracked idempotency keys:', err);
   }
 
   // 6. Eliminar el documento principal de la reserva
@@ -1719,28 +2284,57 @@ export async function permanentlyDeleteBookingInFirestore(bookingId: string | nu
   // Ejecutar el lote atómico de eliminación
   await batch.commit();
 
-  // 7. Evaluar el usuario / cliente asociado: eliminar SOLO si fue creado exclusivamente para esta reserva
+  // 6.1 & 7. Leer documento del usuario una sola vez (priorizando caché compartida) para deuda + limpieza
+  let cachedUserData: any = null;
+  let userExists = false;
+  if (userId && String(userId) !== '0') {
+    const strUserId = String(userId);
+    const userDocRef = doc(db, USERS_COLLECTION, strUserId);
+    const rawUserInMemory = rawClientsByComplexMap.get(targetComplexId)?.get(strUserId);
+
+    if (rawUserInMemory) {
+      cachedUserData = rawUserInMemory;
+      userExists = true;
+    } else {
+      try {
+        const userSnap = await getDoc(userDocRef);
+        if (userSnap.exists()) {
+          cachedUserData = userSnap.data();
+          userExists = true;
+        }
+      } catch (readErr) {
+        console.warn('[Firestore] Error reading user during booking delete:', readErr);
+      }
+    }
+
+    if (debtToRevert > 0 && userExists && cachedUserData) {
+      try {
+        const uOrigin = cachedUserData?.originComplejoId || cachedUserData?.originComplexId || cachedUserData?.complejoId || cachedUserData?.complexId;
+        if (!uOrigin || isSameComplex(uOrigin, targetComplexId)) {
+          const currentDebt = Math.max(0, Number(cachedUserData?.debt || 0));
+          const nextDebt = Math.max(0, currentDebt - debtToRevert);
+          cachedUserData = { ...cachedUserData, debt: nextDebt };
+          await updateDoc(userDocRef, {
+            debt: nextDebt,
+            updatedAt: serverTimestamp()
+          });
+        }
+      } catch (debtErr) {
+        console.warn('[Firestore] Error reverting booking debt on delete:', debtErr);
+      }
+    }
+  }
+
+  // 7. Evaluar el usuario / cliente asociado: ocultar SOLO si fue placeholder creado exclusivamente para esta reserva
   let deletedUserId: string | null = null;
   if (userId && String(userId) !== '0') {
     const strUserId = String(userId);
+    const userDocRef = doc(db, USERS_COLLECTION, strUserId);
     try {
-      // Verificar si el usuario tiene OTRAS reservas en el sistema
-      const otherBookingsQuery = query(collection(db, BOOKINGS_COLLECTION), where('userId', '==', strUserId));
-      const otherBookingsSnap = await getDocs(otherBookingsQuery);
-      const remainingBookings = otherBookingsSnap.docs.filter(d => d.id !== strId);
-
-      // Verificar si el usuario tiene OTRAS operaciones comerciales
-      const otherOpsQuery = query(collection(db, OPERATIONS_COLLECTION), where('userId', '==', strUserId));
-      const otherOpsSnap = await getDocs(otherOpsQuery);
-      const remainingOps = otherOpsSnap.docs.filter(d => d.data().bookingId !== strId && d.id !== `${strId}-booking`);
-
-      // Verificar perfil en /users
-      const userDocRef = doc(db, USERS_COLLECTION, strUserId);
-      const userSnap = await getDoc(userDocRef);
       const isCurrentAuthUser = auth.currentUser?.uid === strUserId;
-      const uData = userSnap.exists() ? userSnap.data() : null;
+      const uData = cachedUserData;
       const isActivatedOrAdmin = uData && (
-        uData.category === 'admin' || 
+        uData.category === 'admin' ||
         uData.isActivated === true ||
         uData.isOwner === true
       );
@@ -1751,17 +2345,77 @@ export async function permanentlyDeleteBookingInFirestore(bookingId: string | nu
         (uData.phone && uData.name && !isGenericPlaceholderName(uData.name))
       );
 
-      if (remainingBookings.length === 0 && remainingOps.length === 0 && !isCurrentAuthUser && !isActivatedOrAdmin && !isPermanentOrForeignUser && userSnap.exists()) {
-        // Creado exclusivamente para esta reserva como invitado efímero y sin otras relaciones: eliminar usuario
-        await deleteDoc(userDocRef);
+      // Si es usuario real/permanente, evitar por completo escanear reservas/operaciones del complejo
+      if (!userExists || isCurrentAuthUser || isActivatedOrAdmin || isPermanentOrForeignUser) {
+        if (userExists) {
+          await syncUserMetricsWithBookings(strUserId, uData?.phone, targetComplexId, uData);
+        }
+        return { success: true, deletedUserId: null };
+      }
+
+      // Solo para posibles placeholders temporales: revisar cachés primero (0 lecturas)
+      const cachedBookingsList = sharedSubscribeBookings.getCached(`${targetComplexId}::*`);
+      let hasRemainingBooking = false;
+      if (cachedBookingsList) {
+        hasRemainingBooking = cachedBookingsList.some(
+          d => String(d.id) !== strId && String((d as any).userId || (d as any).host_id || '') === strUserId
+        );
+      } else {
+        const otherBookingsSnaps = await Promise.all(
+          complexCandidates.map(async (cid) => {
+            try {
+              return await getDocs(
+                query(collection(db, BOOKINGS_COLLECTION), where('complejoId', '==', cid), where('userId', '==', strUserId), limit(2))
+              );
+            } catch {
+              return await getDocs(query(collection(db, BOOKINGS_COLLECTION), where('complejoId', '==', cid)));
+            }
+          })
+        );
+        hasRemainingBooking = otherBookingsSnaps
+          .flatMap(s => s.docs)
+          .some(d => d.id !== strId && String(d.data().userId || d.data().host_id || '') === strUserId);
+      }
+
+      let hasRemainingOp = false;
+      if (!hasRemainingBooking) {
+        const cachedOpsList = sharedSubscribeOperations.getCached(targetComplexId);
+        if (cachedOpsList) {
+          hasRemainingOp = cachedOpsList.some(
+            d => d.bookingId !== strId && !deletedOpIds.has(d.id) && String(d.userId || (d as any).clientId || '') === strUserId
+          );
+        } else {
+          const otherOpsSnaps = await Promise.all(
+            complexCandidates.map(async (cid) => {
+              try {
+                return await getDocs(
+                  query(collection(db, OPERATIONS_COLLECTION), where('complejoId', '==', cid), where('userId', '==', strUserId), limit(5))
+                );
+              } catch {
+                return await getDocs(query(collection(db, OPERATIONS_COLLECTION), where('complejoId', '==', cid)));
+              }
+            })
+          );
+          hasRemainingOp = otherOpsSnaps
+            .flatMap(s => s.docs)
+            .some(d => d.data().bookingId !== strId && !deletedOpIds.has(d.id) && String(d.data().userId || d.data().clientId || '') === strUserId);
+        }
+      }
+
+      if (!hasRemainingBooking && !hasRemainingOp) {
+        const aliases = getComplexAliasIds(targetComplexId);
+        await updateDoc(userDocRef, {
+          hiddenForComplexIds: arrayUnion(...aliases),
+          associatedComplexIds: arrayRemove(...aliases),
+          updatedAt: new Date().toISOString()
+        });
         deletedUserId = strUserId;
       } else {
-        // Conservar perfil y sincronizar métricas acotadas a este complejo
-        syncUserMetricsWithBookings(strUserId, undefined, targetComplexId);
+        await syncUserMetricsWithBookings(strUserId, uData?.phone, targetComplexId, uData);
       }
     } catch (err) {
       console.warn('[Firestore] Error checking/cleaning associated user:', err);
-      syncUserMetricsWithBookings(strUserId, undefined, targetComplexId);
+      await syncUserMetricsWithBookings(strUserId, cachedUserData?.phone, targetComplexId, cachedUserData);
     }
   }
 
@@ -1892,20 +2546,100 @@ export async function updateSupportTicketStatusInFirestore(ticketId: string, sta
 // 2.3. Colección Canónica: users (Clientes y jugadores del complejo)
 // =========================================================================
 
+// Caché en memoria de fichas crudas de /users (incluyendo ocultas) por complejo para evitar lecturas extra
+const rawClientsByComplexMap = new Map<string, Map<string, User>>();
+
+export function getHiddenClientsForComplex(complexId?: string | null): User[] {
+  if (!complexId) return [];
+  const targetId = complexId === 'complejo_central' ? 'B' : complexId;
+  const rawMap = rawClientsByComplexMap.get(targetId);
+  if (!rawMap) return [];
+  const hidden: User[] = [];
+  rawMap.forEach((user) => {
+    if (isUserHiddenForComplex(user, targetId)) {
+      hidden.push(user);
+    }
+  });
+  return hidden;
+}
+
+export function findHiddenOrExistingClientInCache(
+  complexId: string | undefined | null,
+  criteria: {
+    id?: string | number | null;
+    phone?: string | null;
+    canonicalId?: string | null;
+  }
+): User | null {
+  if (!complexId) return null;
+  const targetId = complexId === 'complejo_central' ? 'B' : complexId;
+  const rawMap = rawClientsByComplexMap.get(targetId);
+  if (!rawMap || rawMap.size === 0) return null;
+
+  const rawId = criteria.id !== undefined && criteria.id !== null ? String(criteria.id).trim() : '';
+  const validId = rawId && rawId !== '0' && !rawId.startsWith('derived_') ? rawId : '';
+  const validCanon = criteria.canonicalId ? String(criteria.canonicalId).trim() : '';
+  const normPhone = normalizePhoneNumber(criteria.phone);
+
+  if (validId && rawMap.has(validId)) {
+    return rawMap.get(validId)!;
+  }
+
+  for (const u of rawMap.values()) {
+    const uCanon = u.canonicalId || u.canonicalUserId || (u as any).personId || (u as any).erpUserId;
+    if (validCanon && (String(uCanon || '').trim() === validCanon || String(u.id).trim() === validCanon)) {
+      return u;
+    }
+    if (normPhone && normalizePhoneNumber(u.phone) === normPhone) {
+      return u;
+    }
+  }
+  return null;
+}
+
+function buildUserReactivationPatch(uData: Record<string, any> | undefined, targetComplexId: string): Record<string, any> | null {
+  if (!uData || !targetComplexId) return null;
+  const aliases = getComplexAliasIds(targetComplexId);
+  const hiddenArr = Array.isArray(uData.hiddenForComplexIds) ? uData.hiddenForComplexIds.map(String) : [];
+  const legacyDeletedArr = Array.isArray(uData.deletedByComplexIds) ? uData.deletedByComplexIds.map(String) : [];
+  const assocArr = Array.isArray(uData.associatedComplexIds) ? uData.associatedComplexIds.map(String) : [];
+
+  const isHiddenHere = aliases.some(a => hiddenArr.includes(a) || legacyDeletedArr.includes(a));
+  const isAssociatedHere = assocArr.includes(targetComplexId);
+  const uOrigin = uData.originComplejoId || uData.originComplexId || uData.complejoId || uData.complexId;
+  const isOwnOrigin = !uOrigin || isSameComplex(uOrigin, targetComplexId);
+  const needsStatusReactivate = isOwnOrigin && uData.status === 'inactivo';
+
+  if (!isHiddenHere && isAssociatedHere && !needsStatusReactivate) {
+    return null;
+  }
+
+  const patch: Record<string, any> = {
+    associatedComplexIds: arrayUnion(targetComplexId),
+    updatedAt: new Date().toISOString()
+  };
+
+  if (hiddenArr.length > 0) {
+    patch.hiddenForComplexIds = arrayRemove(...aliases);
+  }
+  if (legacyDeletedArr.length > 0) {
+    patch.deletedByComplexIds = arrayRemove(...aliases);
+  }
+  if (needsStatusReactivate) {
+    patch.status = 'activo';
+  }
+
+  return patch;
+}
+
 /**
  * Escucha clientes en la colección canónica 'users' filtrando por asociación estricta al complejo activo:
  * originComplejoId, originComplexId, complejoId, complexId y associatedComplexIds.
  * Fusiona los resultados en un mapa deduplicado por ID y garantiza el aislamiento multi-tenant.
  */
-export function subscribeToClients(
-  complexId: string, 
-  onUpdate: (users: User[]) => void
-): () => void {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+const sharedSubscribeClients = createSharedSubscription<User[]>((targetId, emit) => {
   try {
     const colRef = collection(db, USERS_COLLECTION);
-    
-    // Consultas acotadas exclusivamente al complejo objetivo
     const qOrigin = query(colRef, where('originComplejoId', '==', targetId));
     const qAltOrigin = query(colRef, where('originComplexId', '==', targetId));
     const qComplejo = query(colRef, where('complejoId', '==', targetId));
@@ -1919,34 +2653,40 @@ export function subscribeToClients(
     const mapAssociated = new Map<string, User>();
 
     const emitMerged = () => {
+      const rawAll = new Map<string, User>();
+      const collectRaw = (user: User) => {
+        if (user && user.id) {
+          rawAll.set(String(user.id), user);
+        }
+      };
+      mapOrigin.forEach(collectRaw);
+      mapAltOrigin.forEach(collectRaw);
+      mapComplejo.forEach(collectRaw);
+      mapComplex.forEach(collectRaw);
+      mapAssociated.forEach(collectRaw);
+      rawClientsByComplexMap.set(targetId, rawAll);
+
       const merged = new Map<string, User>();
-      
+      const aliases = getComplexAliasIds(targetId);
+
       const checkAndAdd = (user: User) => {
-        if ((user as any).status === 'inactivo') return;
-        const deletedIn = (user as any).deletedByComplexIds;
-        if (Array.isArray(deletedIn) && (deletedIn.includes(targetId) || (targetId === 'B' && deletedIn.includes('complejo_central')))) {
+        if (isUserHiddenForComplex(user, targetId)) {
           return;
         }
 
         const uOrigin = user.originComplejoId || (user as any).originComplexId || (user as any).complejoId || (user as any).complexId;
-        // Solo incorporar si pertenece legítimamente a la sede objetivo
-        if (uOrigin) {
-          if (isSameComplex(uOrigin, targetId)) {
-            merged.set(String(user.id), user);
-          }
-        } else if (Array.isArray(user.associatedComplexIds) && user.associatedComplexIds.includes(targetId)) {
-          // Documento heredado sin originComplejoId explícito
+        const assocList = Array.isArray(user.associatedComplexIds) ? user.associatedComplexIds.map(String) : [];
+        const isAssociated = aliases.some(a => assocList.includes(a));
+        const isOriginMatch = Boolean(uOrigin && isSameComplex(uOrigin, targetId));
+
+        if (isOriginMatch || isAssociated) {
           merged.set(String(user.id), user);
         }
       };
 
-      mapOrigin.forEach(checkAndAdd);
-      mapAltOrigin.forEach(checkAndAdd);
-      mapComplejo.forEach(checkAndAdd);
-      mapComplex.forEach(checkAndAdd);
-      mapAssociated.forEach(checkAndAdd);
+      rawAll.forEach(checkAndAdd);
 
-      onUpdate(Array.from(merged.values()));
+      emit(Array.from(merged.values()));
     };
 
     const unsubOrigin = onSnapshot(qOrigin, (snap) => {
@@ -1961,33 +2701,25 @@ export function subscribeToClients(
       mapAltOrigin.clear();
       snap.forEach(d => mapAltOrigin.set(d.id, { id: d.id, ...d.data() } as unknown as User));
       emitMerged();
-    }, (err) => {
-      // Ignorar si la regla o índice no aplica
-    });
+    }, () => {});
 
     const unsubComplejo = onSnapshot(qComplejo, (snap) => {
       mapComplejo.clear();
       snap.forEach(d => mapComplejo.set(d.id, { id: d.id, ...d.data() } as unknown as User));
       emitMerged();
-    }, (err) => {
-      // Ignorar
-    });
+    }, () => {});
 
     const unsubComplex = onSnapshot(qComplex, (snap) => {
       mapComplex.clear();
       snap.forEach(d => mapComplex.set(d.id, { id: d.id, ...d.data() } as unknown as User));
       emitMerged();
-    }, (err) => {
-      // Ignorar
-    });
+    }, () => {});
 
     const unsubAssociated = onSnapshot(qAssociated, (snap) => {
       mapAssociated.clear();
       snap.forEach(d => mapAssociated.set(d.id, { id: d.id, ...d.data() } as unknown as User));
       emitMerged();
-    }, (err) => {
-      // Si associatedComplexIds no existe o no tiene permiso, no interrumpe el resto
-    });
+    }, () => {});
 
     return () => {
       unsubOrigin();
@@ -1998,9 +2730,17 @@ export function subscribeToClients(
     };
   } catch (e) {
     console.error('[Firestore] Error subscribing to clients:', e);
-    onUpdate([]);
+    emit([]);
     return () => {};
   }
+});
+
+export function subscribeToClients(
+  complexId: string, 
+  onUpdate: (users: User[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  return sharedSubscribeClients(targetId, onUpdate);
 }
 
 /**
@@ -2011,28 +2751,57 @@ export async function saveClientInFirestore(
   client: Partial<User>
 ): Promise<string> {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const aliases = getComplexAliasIds(targetId);
   const now = new Date();
   const dateStr = now.toISOString().split('T')[0];
   const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
-  // 1. Verificar si client.id apunta a un documento existente de ESTE complejo
+  // 1. Verificar si client.id apunta a un documento existente accesible por ESTE complejo (sin lecturas extra si está en caché)
   let existingData: any = null;
   let isOwnDocument = false;
+  let isForeignSharedDoc = false;
   let resolvedDocId: string | null = null;
 
-  if (client.id && !String(client.id).startsWith('derived_')) {
+  const cachedByCriteria = findHiddenOrExistingClientInCache(targetId, {
+    id: client.id,
+    phone: client.phone,
+    canonicalId: client.canonicalId || (client as any).canonicalUserId
+  });
+
+  if (cachedByCriteria && cachedByCriteria.id && !String(cachedByCriteria.id).startsWith('derived_')) {
+    const docOrigin = cachedByCriteria.originComplejoId || (cachedByCriteria as any).originComplexId || (cachedByCriteria as any).complejoId || (cachedByCriteria as any).complexId;
+    const assocArr = Array.isArray(cachedByCriteria.associatedComplexIds) ? cachedByCriteria.associatedComplexIds.map(String) : [];
+    const hiddenArr = Array.isArray((cachedByCriteria as any).hiddenForComplexIds) ? (cachedByCriteria as any).hiddenForComplexIds.map(String) : [];
+    const isOriginHere = !docOrigin || isSameComplex(docOrigin, targetId);
+    const isLinkedHere = aliases.some(a => assocArr.includes(a) || hiddenArr.includes(a));
+
+    if (isOriginHere || isLinkedHere) {
+      isOwnDocument = true;
+      isForeignSharedDoc = !isOriginHere;
+      resolvedDocId = String(cachedByCriteria.id);
+      existingData = cachedByCriteria;
+    } else {
+      existingData = cachedByCriteria;
+    }
+  } else if (client.id && !String(client.id).startsWith('derived_')) {
     try {
       const candidateDocRef = doc(db, USERS_COLLECTION, String(client.id));
       const existingDoc = await getDoc(candidateDocRef);
       if (existingDoc.exists()) {
         const docData = existingDoc.data();
         const docOrigin = docData.originComplejoId || docData.originComplexId || docData.complejoId || docData.complexId;
-        if (docOrigin ? isSameComplex(docOrigin, targetId) : (Array.isArray(docData.associatedComplexIds) && docData.associatedComplexIds.includes(targetId))) {
+        const assocArr = Array.isArray(docData.associatedComplexIds) ? docData.associatedComplexIds.map(String) : [];
+        const hiddenArr = Array.isArray(docData.hiddenForComplexIds) ? docData.hiddenForComplexIds.map(String) : [];
+        const isOriginHere = !docOrigin || isSameComplex(docOrigin, targetId);
+        const isLinkedHere = aliases.some(a => assocArr.includes(a) || hiddenArr.includes(a));
+
+        if (isOriginHere || isLinkedHere) {
           isOwnDocument = true;
+          isForeignSharedDoc = !isOriginHere;
           resolvedDocId = String(client.id);
           existingData = docData;
         } else {
-          // El documento pertenece a OTRO complejo. Conservamos datos de persona para heredar si aplica, pero NUNCA lo sobrescribimos.
+          // El documento pertenece a OTRO complejo. Conservamos datos de persona para heredar si aplica, pero NUNCA sobrescribimos su origen.
           existingData = docData;
         }
       }
@@ -2041,9 +2810,8 @@ export async function saveClientInFirestore(
     }
   }
 
-  // 2. Si no es un documento propio (es de otro complejo o es derivado o nuevo):
-  // Comprobar si ya existe un documento local para este complejo que coincida con canonicalId o teléfono
-  if (!isOwnDocument) {
+  // 2. Fallback si caché frío: comprobar si ya existe un documento local en originComplejoId que coincida con canonicalId o teléfono
+  if (!isOwnDocument && !rawClientsByComplexMap.has(targetId)) {
     const normPhone = normalizePhoneNumber(client.phone || existingData?.phone);
     const canonId = client.canonicalId || (client as any).canonicalUserId || existingData?.canonicalId || existingData?.canonicalUserId;
 
@@ -2052,7 +2820,7 @@ export async function saveClientInFirestore(
         const usersCol = collection(db, USERS_COLLECTION);
         const qOrigin = query(usersCol, where('originComplejoId', '==', targetId));
         const snapOrigin = await getDocs(qOrigin);
-        
+
         const localMatchDoc = snapOrigin.docs.find(d => {
           const dData = d.data();
           if (canonId && (dData.canonicalId === canonId || dData.canonicalUserId === canonId)) return true;
@@ -2072,16 +2840,25 @@ export async function saveClientInFirestore(
   }
 
   // 3. Si aún no hay ID propio, generar un ID nuevo para la ficha local de este complejo
-  const finalClientId = (isOwnDocument && resolvedDocId) 
-    ? resolvedDocId 
+  const finalClientId = (isOwnDocument && resolvedDocId)
+    ? resolvedDocId
     : doc(collection(db, USERS_COLLECTION)).id;
+
+  // Si es una ficha compartida cuyo complejo de origen es OTRO complejo, solo reactivamos/asociamos sin alterar campos de origen ni deuda ajena
+  if (isForeignSharedDoc && resolvedDocId) {
+    const reactivatePatch = buildUserReactivationPatch(existingData, targetId) || {
+      associatedComplexIds: arrayUnion(targetId),
+      updatedAt: new Date().toISOString()
+    };
+    await updateDoc(doc(db, USERS_COLLECTION, resolvedDocId), reactivatePatch);
+    return resolvedDocId;
+  }
 
   // 4. Preservar metadatos canónicos e históricos
   const resolvedCanonId = client.canonicalId || (client as any).canonicalUserId || existingData?.canonicalId || existingData?.canonicalUserId;
   const resolvedCanonUserId = (client as any).canonicalUserId || client.canonicalId || existingData?.canonicalUserId || existingData?.canonicalId;
   const resolvedCanonName = (client as any).canonicalName || existingData?.canonicalName;
 
-  // Historial de IDs para mantener intacta la trazabilidad de reservas pasadas
   const histSet = new Set<string>();
   if (Array.isArray(existingData?.historicalIds)) existingData.historicalIds.forEach((h: any) => histSet.add(String(h)));
   if (Array.isArray(client.historicalIds)) client.historicalIds.forEach((h: any) => histSet.add(String(h)));
@@ -2104,6 +2881,19 @@ export async function saveClientInFirestore(
     assignedDebt = 0;
   }
 
+  const preservedOriginComplejoId = (isOwnDocument && existingData?.originComplejoId) ? existingData.originComplejoId : targetId;
+  const preservedComplejoId = (isOwnDocument && existingData?.complejoId) ? existingData.complejoId : targetId;
+  const preservedComplexId = (isOwnDocument && existingData?.complexId) ? existingData.complexId : targetId;
+
+  const mergedAssociatedIds = Array.from(new Set([
+    ...(isOwnDocument && Array.isArray(existingData?.associatedComplexIds) ? existingData.associatedComplexIds.map(String) : []),
+    targetId
+  ]));
+
+  const resolvedStatus = client.status !== undefined
+    ? client.status
+    : ((isOwnDocument && existingData?.status && existingData.status !== 'inactivo') ? existingData.status : 'activo');
+
   const payload: any = {
     id: finalClientId,
     name: (client.name !== undefined ? client.name : (isOwnDocument ? existingData?.name : 'Cliente') || 'Cliente').trim(),
@@ -2115,18 +2905,24 @@ export async function saveClientInFirestore(
     birthDate: client.birthDate !== undefined ? client.birthDate : (existingData?.birthDate || ''),
     gender: client.gender !== undefined ? client.gender : (existingData?.gender || ''),
     category: client.category !== undefined ? client.category : (isOwnDocument ? existingData?.category : 'jugador') || 'jugador',
-    status: client.status !== undefined ? client.status : (isOwnDocument ? existingData?.status : 'activo') || 'activo',
+    status: resolvedStatus,
     isActivated: client.isActivated !== undefined ? client.isActivated : (isOwnDocument ? (existingData?.isActivated ?? false) : false),
     acquisitionChannel: client.acquisitionChannel !== undefined ? client.acquisitionChannel : (isOwnDocument ? existingData?.acquisitionChannel : 'WhatsApp') || 'WhatsApp',
     acquisitionDate: (isOwnDocument && existingData?.acquisitionDate) || client.acquisitionDate || client.created_at || dateStr,
     acquisitionTime: (isOwnDocument && existingData?.acquisitionTime) || client.acquisitionTime || timeStr,
     activationDate: client.activationDate !== undefined ? client.activationDate : (isOwnDocument ? (existingData?.activationDate || null) : null),
     activationTime: client.activationTime !== undefined ? client.activationTime : (isOwnDocument ? (existingData?.activationTime || null) : null),
-    originComplejoId: targetId,
-    originComplejoName: client.originComplejoName || (targetId === 'B' ? 'Colo loco' : targetId),
-    complejoId: targetId,
-    complexId: targetId,
-    associatedComplexIds: [targetId],
+    originComplejoId: preservedOriginComplejoId,
+    originComplejoName: (isOwnDocument && existingData?.originComplejoName) || client.originComplejoName || (targetId === 'B' ? 'Colo loco' : targetId),
+    complejoId: preservedComplejoId,
+    complexId: preservedComplexId,
+    associatedComplexIds: mergedAssociatedIds,
+    ...(isOwnDocument && Array.isArray(existingData?.hiddenForComplexIds)
+      ? { hiddenForComplexIds: existingData.hiddenForComplexIds.map(String).filter((id: string) => !aliases.includes(id)) }
+      : {}),
+    ...(isOwnDocument && Array.isArray(existingData?.deletedByComplexIds)
+      ? { deletedByComplexIds: existingData.deletedByComplexIds.map(String).filter((id: string) => !aliases.includes(id)) }
+      : {}),
     totalBookings: isOwnDocument ? (client.totalBookings !== undefined ? Number(client.totalBookings) : Number(existingData?.totalBookings ?? 0)) : (client.totalBookings !== undefined ? Number(client.totalBookings) : 0),
     totalMatchesPlayed: isOwnDocument ? (client.totalMatchesPlayed !== undefined ? Number(client.totalMatchesPlayed) : Number(existingData?.totalMatchesPlayed ?? existingData?.matches_played ?? 0)) : 0,
     participatedMatches: isOwnDocument ? (client.participatedMatches !== undefined ? Number(client.participatedMatches) : Number(existingData?.participatedMatches ?? 0)) : 0,
@@ -2303,32 +3099,25 @@ export function formatPhoneForWhatsApp(rawPhone?: string | null): string {
  * y fichas de clientes en otros complejos o ERP central.
  */
 export async function deleteClientInFirestore(clientId: string | number, complexId?: string): Promise<void> {
-  const strId = String(clientId);
+  const strId = String(clientId || '').trim();
+  if (!strId || strId === '0' || strId.startsWith('derived_')) return;
+
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const aliases = getComplexAliasIds(targetId);
+
   try {
     const uRef = doc(db, USERS_COLLECTION, strId);
-    const uSnap = await getDoc(uRef);
-    if (!uSnap.exists()) return;
-
-    const uData = uSnap.data();
-    const uOrigin = uData.originComplejoId || uData.originComplexId || uData.complejoId || uData.complexId;
-    const isOriginComplex = !uOrigin || isSameComplex(uOrigin, targetId);
-
-    const updatePayload: any = {
-      updatedAt: new Date().toISOString(),
-      deletedByComplexIds: arrayUnion(targetId, targetId === 'B' ? 'complejo_central' : targetId)
-    };
-
-    if (isOriginComplex) {
-      updatePayload.status = 'inactivo';
-    } else {
-      updatePayload.associatedComplexIds = arrayRemove(targetId, targetId === 'B' ? 'complejo_central' : targetId);
+    await updateDoc(uRef, {
+      hiddenForComplexIds: arrayUnion(...aliases),
+      associatedComplexIds: arrayRemove(...aliases),
+      updatedAt: new Date().toISOString()
+    });
+    console.log(`[Firestore] Cliente ${strId} ocultado para sede ${targetId} de forma no destructiva`);
+  } catch (e: any) {
+    if (e?.code === 'not-found') {
+      return;
     }
-
-    await updateDoc(uRef, updatePayload);
-    console.log(`[Firestore] Cliente ${strId} desvinculado de sede ${targetId} de forma no destructiva`);
-  } catch (e) {
-    console.error('[Firestore] Error desvinculando cliente de sede:', e);
+    console.error('[Firestore] Error ocultando cliente de sede:', e);
     throw e;
   }
 }
@@ -2360,8 +3149,8 @@ export const syncUsuarioToFirestore = (user: Partial<User>, complexId?: string) 
   return saveClientInFirestore(complexId || getActiveComplexId(), user);
 };
 
-export const deleteUsuarioFromFirestore = (userId: string | number) => {
-  return deleteClientInFirestore(userId);
+export const deleteUsuarioFromFirestore = (userId: string | number, complexId?: string) => {
+  return deleteClientInFirestore(userId, complexId || getActiveComplexId());
 };
 
 export const syncComplejoToFirestore = (profile: any, complexId?: string) => {
@@ -2391,19 +3180,11 @@ export function subscribeToInventoryCategories(
   cb: (categories: string[]) => void
 ): () => void {
   const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
-  const compRef = doc(db, COMPLEJOS_COLLECTION, targetId);
-  return onSnapshot(compRef, (snap) => {
-    if (snap.exists()) {
-      const data = snap.data();
-      if (Array.isArray(data.inventoryCategories)) {
-        cb(data.inventoryCategories);
-        return;
-      }
+  return subscribeToComplejoDoc(targetId, ({ exists, data }) => {
+    if (exists && data && Array.isArray(data.inventoryCategories)) {
+      cb(data.inventoryCategories);
+      return;
     }
-    // Cero categorías preconfiguradas
-    cb([]);
-  }, (err) => {
-    console.warn('[Firestore] Error leyendo inventoryCategories:', err);
     cb([]);
   });
 }
@@ -2493,11 +3274,7 @@ export async function seedDefaultExpenseCategoriesInFirestore(complexId: string)
  * Escucha los rubros de gastos configurados en /categories con catalogType: 'expense'.
  * Si el complejo no tiene rubros creados, los siembra automáticamente en Firestore como documentos reales.
  */
-export function subscribeToExpenseCategories(
-  complexId: string,
-  cb: (categories: ProductCategory[]) => void
-): () => void {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+const sharedSubscribeExpenseCategories = createSharedSubscription<ProductCategory[]>((targetId, emit) => {
   const colRef = collection(db, CATEGORIES_COLLECTION);
   const q = query(
     colRef,
@@ -2527,7 +3304,6 @@ export function subscribeToExpenseCategories(
 
     const isSeededLocally = typeof window !== 'undefined' && localStorage.getItem(`jogo_expense_rubros_seeded_${targetId}`) === 'true';
 
-    // Solo sembrar por primera vez si no existen rubros en Firestore y no se ha inicializado ni borrado previamente
     if (list.length === 0 && !isSeeding && !seededComplexesTracker.has(targetId) && !isSeededLocally) {
       seededComplexesTracker.add(targetId);
       const counterRef = doc(db, COMPLEX_COUNTERS_COLLECTION, targetId);
@@ -2540,7 +3316,7 @@ export function subscribeToExpenseCategories(
           if (typeof window !== 'undefined') {
             localStorage.setItem(`jogo_expense_rubros_seeded_${targetId}`, 'true');
           }
-          cb(defaults);
+          emit(defaults);
           return;
         }
       } catch (seedErr) {
@@ -2552,7 +3328,7 @@ export function subscribeToExpenseCategories(
             if (typeof window !== 'undefined') {
               localStorage.setItem(`jogo_expense_rubros_seeded_${targetId}`, 'true');
             }
-            cb(defaults);
+            emit(defaults);
             return;
           } catch (e) {
             console.warn('[Firestore] Fallo al sembrar rubros directamente:', e);
@@ -2563,11 +3339,19 @@ export function subscribeToExpenseCategories(
       }
     }
 
-    cb(list);
+    emit(list);
   }, (err) => {
     console.warn('[Firestore] Error escuchando rubros de gastos:', err);
-    cb([]);
+    emit([]);
   });
+});
+
+export function subscribeToExpenseCategories(
+  complexId: string,
+  cb: (categories: ProductCategory[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  return sharedSubscribeExpenseCategories(targetId, cb);
 }
 
 /**
@@ -2693,11 +3477,7 @@ export async function toggleExpenseCategoryStatus(
 /**
  * Escucha los ítems o conceptos de gasto configurados en /products con catalogType: 'expense'
  */
-export function subscribeToExpenseItems(
-  complexId: string,
-  cb: (items: Product[]) => void
-): () => void {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+const sharedSubscribeExpenseItems = createSharedSubscription<Product[]>((targetId, emit) => {
   const colRef = collection(db, PRODUCTS_COLLECTION);
   const q = query(
     colRef,
@@ -2724,11 +3504,19 @@ export function subscribeToExpenseItems(
         updatedAt: data.updatedAt
       });
     });
-    cb(list);
+    emit(list);
   }, (err) => {
     console.warn('[Firestore] Error escuchando ítems de gastos:', err);
-    cb([]);
+    emit([]);
   });
+});
+
+export function subscribeToExpenseItems(
+  complexId: string,
+  cb: (items: Product[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  return sharedSubscribeExpenseItems(targetId, cb);
 }
 
 /**
@@ -2819,11 +3607,7 @@ export async function toggleExpenseItemStatus(
 /**
  * Escucha en tiempo real las entidades de gastos del complejo dentro de /categories con catalogType: 'entity'
  */
-export function subscribeToExpenseEntities(
-  complexId: string,
-  cb: (entities: ExpenseEntity[]) => void
-): () => void {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+const sharedSubscribeExpenseEntities = createSharedSubscription<ExpenseEntity[]>((targetId, emit) => {
   const colRef = collection(db, CATEGORIES_COLLECTION);
   const q = query(colRef, where('complejoId', '==', targetId));
 
@@ -2851,11 +3635,19 @@ export function subscribeToExpenseEntities(
     });
 
     list.sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
-    cb(list);
+    emit(list);
   }, (err) => {
     console.warn('[Firestore] Error escuchando expense entities:', err);
-    cb([]);
+    emit([]);
   });
+});
+
+export function subscribeToExpenseEntities(
+  complexId: string,
+  cb: (entities: ExpenseEntity[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  return sharedSubscribeExpenseEntities(targetId, cb);
 }
 
 /**
@@ -3106,11 +3898,15 @@ export async function executeExpenseOperation(params: {
   }
 
   const rawPayments = Array.isArray(params.payments) ? params.payments : [];
-  const validPayments = rawPayments.filter(p => {
-    const m = String(p.paymentMethod || (p as any).method || '').toLowerCase();
-    const amt = Number(p.amount || 0);
-    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado';
-  });
+  const validPayments = rawPayments
+    .map(p => ({
+      amount: Math.max(0, Number(p.amount || 0)),
+      paymentMethod: normalizeMonetaryPaymentMethod(p.paymentMethod || (p as any).method),
+      notes: p.notes
+    }))
+    .filter((p): p is { amount: number; paymentMethod: FinancialPaymentMethod; notes: string | undefined } =>
+      p.amount > 0 && p.paymentMethod !== null
+    );
   const totalPaid = validPayments.reduce((s, p) => s + Number(p.amount), 0);
 
   if (totalPaid > amount + 0.01) {
@@ -3122,34 +3918,36 @@ export async function executeExpenseOperation(params: {
     totalPaid >= amount && amount > 0 ? 'paid' : (totalPaid > 0 ? 'partial' : 'unpaid');
 
   const idemKey = params.idempotencyKey || `exp_op_${Date.now()}_${generateUUID().slice(0, 6)}`;
-
-  // Idempotency check previo
   const idemRef = doc(db, IDEMPOTENCY_COLLECTION, idemKey);
-  const existingIdemSnap = await getDoc(idemRef);
-  if (existingIdemSnap.exists()) {
-    const idemData = existingIdemSnap.data() as IdempotencyRecord;
-    if (idemData.status === 'completed' && idemData.operationId) {
-      const existingOpSnap = await getDoc(doc(db, OPERATIONS_COLLECTION, idemData.operationId));
-      return {
-        success: true,
-        operationId: idemData.operationId,
-        ticketCode: idemData.ticketCode || (existingOpSnap.exists() ? existingOpSnap.data().ticketCode : 'E-0000'),
-        totalExpense: amount,
-        totalPaid,
-        amountPending,
-        paymentStatus
-      };
-    }
-  }
 
   const cleanConcept = (params.concept || '').trim() || params.category.trim();
   const cleanSupplier = (params.entityName || params.supplierName || cleanConcept || 'Proveedor').trim();
   const cleanCategory = (params.category || 'Gastos Generales').trim();
 
   return await runTransaction(db, async (t) => {
-    // 1. Obtener correlativo secuencial con prefijo 'E'
+    // 1. Lecturas previas (idempotencia + correlativo secuencial con prefijo 'E')
+    const existingIdemSnap = await t.get(idemRef);
     const counterRef = doc(db, COMPLEX_COUNTERS_COLLECTION, targetId);
     const counterSnap = await t.get(counterRef);
+
+    if (existingIdemSnap.exists()) {
+      const idemData = existingIdemSnap.data() as IdempotencyRecord;
+      if (idemData.status === 'completed' && idemData.operationId) {
+        return {
+          success: true,
+          operationId: idemData.operationId,
+          ticketCode: idemData.ticketCode || 'E-0000',
+          totalExpense: amount,
+          totalPaid,
+          amountPending,
+          paymentStatus
+        };
+      }
+      if (idemData.status === 'processing') {
+        throw new Error('Gasto en proceso por otra solicitud concurrente.');
+      }
+    }
+
     const counterData = counterSnap.exists() ? counterSnap.data() : {};
     const seqKey = 'expense_sequence';
     const currentSeq = Number(counterData[seqKey] || 0);
@@ -3188,6 +3986,8 @@ export async function executeExpenseOperation(params: {
       paymentStatus,
       currentAccountAssigned: false,
       currentAccountDebtAmount: 0,
+      idempotencyKey: idemKey,
+      idempotencyKeys: [idemKey],
       items: [{
         id: params.conceptId || operationId,
         name: cleanConcept,
@@ -3256,7 +4056,7 @@ export async function executeExpenseOperation(params: {
       operationId,
       ticketCode,
       amount,
-      paymentMethod: builtExpenseMov?.paymentMethod || 'cash',
+      paymentMethod: builtExpenseMov?.paymentMethod || 'other',
       flow: 'expense',
       status: 'completed',
       movementId: builtExpenseMov?.movId || null,
@@ -3281,11 +4081,7 @@ export async function executeExpenseOperation(params: {
  * Escucha los productos de venta del complejo activo.
  * Ignora ítems con catalogType: 'expense'.
  */
-export function subscribeToProducts(
-  complexId: string,
-  cb: (products: Product[]) => void
-): () => void {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+const sharedSubscribeProducts = createSharedSubscription<Product[]>((targetId, emit) => {
   const colRef = collection(db, PRODUCTS_COLLECTION);
   const q = query(colRef, where('complejoId', '==', targetId));
 
@@ -3293,7 +4089,7 @@ export function subscribeToProducts(
     const list: Product[] = [];
     snap.forEach((d) => {
       const data = d.data();
-      if (data.catalogType === 'expense') return; // Excluir conceptos de gasto
+      if (data.catalogType === 'expense') return;
 
       const rawBatches = Array.isArray(data.batches) ? data.batches : [];
       list.push({
@@ -3313,11 +4109,19 @@ export function subscribeToProducts(
       });
     });
 
-    cb(list);
+    emit(list);
   }, (err) => {
     console.warn('[Firestore] Error escuchando productos:', err);
-    cb([]);
+    emit([]);
   });
+});
+
+export function subscribeToProducts(
+  complexId: string,
+  cb: (products: Product[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  return sharedSubscribeProducts(targetId, cb);
 }
 
 /**
@@ -3647,12 +4451,17 @@ export async function registerMerchandisePurchaseInFirestore(params: {
   }
 
   const totalPurchase = qty * cost;
-  const rawPayments = (Array.isArray(params.payments) ? params.payments : []).filter(p => {
-    const m = String(p.paymentMethod || (p as any).method || '').toLowerCase();
-    const amt = Number(p.amount || 0);
-    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado';
-  });
-  const totalPaid = rawPayments.reduce((s, p) => s + Math.max(0, Number(p.amount) || 0), 0);
+  const rawPayments = (Array.isArray(params.payments) ? params.payments : [])
+    .map(p => ({
+      amount: Math.max(0, Number(p.amount) || 0),
+      paymentMethod: normalizeMonetaryPaymentMethod(p.paymentMethod || (p as any).method),
+      idempotencyKey: p.idempotencyKey,
+      notes: p.notes
+    }))
+    .filter((p): p is { amount: number; paymentMethod: FinancialPaymentMethod; idempotencyKey: string | undefined; notes: string | undefined } =>
+      p.amount > 0 && p.paymentMethod !== null
+    );
+  const totalPaid = rawPayments.reduce((s, p) => s + p.amount, 0);
 
   if (totalPaid > totalPurchase + 0.01) {
     throw new Error(`El pago inicial ($${totalPaid.toLocaleString()}) no puede superar el total de la compra ($${totalPurchase.toLocaleString()}).`);
@@ -3663,32 +4472,38 @@ export async function registerMerchandisePurchaseInFirestore(params: {
     totalPaid >= totalPurchase && totalPurchase > 0 ? 'paid' : (totalPaid > 0 ? 'partial' : 'unpaid');
 
   const idemKey = params.idempotencyKey || `purchase_${params.productId}_${Date.now()}_${generateUUID().slice(0, 6)}`;
-
-  // Idempotency check previo
   const idemRef = doc(db, IDEMPOTENCY_COLLECTION, idemKey);
-  const existingIdemSnap = await getDoc(idemRef);
-  if (existingIdemSnap.exists()) {
-    const idemData = existingIdemSnap.data() as IdempotencyRecord;
-    if (idemData.status === 'completed' && idemData.operationId) {
-      const existingOpSnap = await getDoc(doc(db, OPERATIONS_COLLECTION, idemData.operationId));
-      const existingProdSnap = await getDoc(doc(db, PRODUCTS_COLLECTION, params.productId));
-      const prodData = existingProdSnap.exists() ? existingProdSnap.data() : {};
-      return {
-        success: true,
-        operationId: idemData.operationId,
-        ticketCode: idemData.ticketCode || (existingOpSnap.exists() ? existingOpSnap.data().ticketCode : 'E-0000'),
-        totalPurchase,
-        totalPaid,
-        amountPending,
-        newStock: Number(prodData.stock || 0),
-        batches: Array.isArray(prodData.batches) ? prodData.batches : []
-      };
-    }
-  }
 
   return await runTransaction(db, async (t) => {
     const prodRef = doc(db, PRODUCTS_COLLECTION, params.productId);
-    const prodSnap = await t.get(prodRef);
+    const counterRef = doc(db, COMPLEX_COUNTERS_COLLECTION, targetId);
+
+    const [existingIdemSnap, prodSnap, counterSnap] = await Promise.all([
+      t.get(idemRef),
+      t.get(prodRef),
+      t.get(counterRef)
+    ]);
+
+    if (existingIdemSnap.exists()) {
+      const idemData = existingIdemSnap.data() as IdempotencyRecord;
+      if (idemData.status === 'completed' && idemData.operationId) {
+        const prodData = prodSnap.exists() ? prodSnap.data() : {};
+        return {
+          success: true,
+          operationId: idemData.operationId,
+          ticketCode: idemData.ticketCode || 'E-0000',
+          totalPurchase,
+          totalPaid,
+          amountPending,
+          newStock: Number(prodData.stock || 0),
+          batches: Array.isArray(prodData.batches) ? prodData.batches : []
+        };
+      }
+      if (idemData.status === 'processing') {
+        throw new Error('Compra en proceso por otra solicitud concurrente.');
+      }
+    }
+
     if (!prodSnap.exists()) {
       throw new Error('Producto no encontrado para registrar la compra.');
     }
@@ -3709,8 +4524,6 @@ export async function registerMerchandisePurchaseInFirestore(params: {
       });
     }
 
-    const counterRef = doc(db, COMPLEX_COUNTERS_COLLECTION, targetId);
-    const counterSnap = await t.get(counterRef);
     const counterData = counterSnap.exists() ? counterSnap.data() : {};
     const seqKey = 'expense_sequence';
     const currentSeq = Number(counterData[seqKey] || 0);
@@ -3775,6 +4588,8 @@ export async function registerMerchandisePurchaseInFirestore(params: {
       paymentStatus,
       currentAccountAssigned: false,
       currentAccountDebtAmount: 0,
+      idempotencyKey: idemKey,
+      idempotencyKeys: [idemKey],
       items: [{
         id: params.productId,
         name: prodData.name || 'Producto',
@@ -3877,7 +4692,7 @@ export async function registerMerchandisePurchaseInFirestore(params: {
       complejoId: targetId,
       operationId,
       amount: totalPurchase,
-      paymentMethod: builtPurchaseMov?.paymentMethod || 'cash',
+      paymentMethod: builtPurchaseMov?.paymentMethod || 'other',
       flow: 'expense',
       status: 'completed',
       movementId: builtPurchaseMov?.movId || null,
@@ -4081,17 +4896,20 @@ export async function settleFiadoTransaction(params: {
   if (targetUserId && params.fiadoAmount > 0) {
     try {
       const userRef = doc(db, USERS_COLLECTION, String(targetUserId));
-      const userSnap = await getDoc(userRef);
-      if (userSnap.exists()) {
-        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
+      await runTransaction(db, async (t) => {
+        const userSnap = await t.get(userRef);
+        if (!userSnap.exists()) return;
+        const uData = userSnap.data();
+        const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
         const txComplex = txData.complexId || txData.complejoId;
         if (!uOrigin || isSameComplex(uOrigin, txComplex)) {
-          await updateDoc(userRef, {
-            debt: increment(-Number(params.fiadoAmount)),
+          const currentDebt = Math.max(0, Number(uData?.debt || 0));
+          t.update(userRef, {
+            debt: Math.max(0, currentDebt - Number(params.fiadoAmount)),
             updatedAt: serverTimestamp()
           });
         }
-      }
+      });
     } catch (err) {
       console.warn(`[Firestore] Error al restar deuda del usuario ${targetUserId}:`, err);
     }
@@ -4102,11 +4920,7 @@ export async function settleFiadoTransaction(params: {
  * Escucha las transacciones en tiempo real (/transactions),
  * fusionando queries por complexId y complejoId para garantizar cobertura total.
  */
-export function subscribeToTransactions(
-  complexId: string,
-  cb: (transactions: any[]) => void
-): () => void {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+const sharedSubscribeTransactions = createSharedSubscription<any[]>((targetId, emit) => {
   const colRef = collection(db, TRANSACTIONS_COLLECTION);
   const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
 
@@ -4124,7 +4938,7 @@ export function subscribeToTransactions(
       const tB = b.createdAt?.toDate ? b.createdAt.toDate().getTime() : (b.createdAt ? new Date(b.createdAt).getTime() : 0);
       return tB - tA;
     });
-    cb(list);
+    emit(list);
   };
 
   let mapIdx = 0;
@@ -4157,6 +4971,14 @@ export function subscribeToTransactions(
   return () => {
     unsubs.forEach(u => u());
   };
+});
+
+export function subscribeToTransactions(
+  complexId: string,
+  cb: (transactions: any[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  return sharedSubscribeTransactions(targetId, cb);
 }
 
 // =========================================================================
@@ -4208,15 +5030,19 @@ export async function createOperationWithInitialPayment(
   const opRef = doc(db, OPERATIONS_COLLECTION, operationId);
   const counterRef = doc(db, COMPLEX_COUNTERS_COLLECTION, params.complexId);
 
-  // Normalizar pagos iniciales (soporta pago único o split payments)
+  // Normalizar pagos iniciales (soporta pago único o split payments), excluyendo métodos no monetarios
   const rawPayments = (params.initialPayments && params.initialPayments.length > 0
     ? params.initialPayments
     : (params.initialPayment ? [params.initialPayment] : [])
-  ).filter(p => {
-    const m = String((p as any).paymentMethod || (p as any).method || '').toLowerCase();
-    const amt = Number(p.amount || 0);
-    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado';
-  });
+  )
+    .map(p => ({
+      amount: Math.max(0, Number(p.amount || 0)),
+      paymentMethod: normalizeMonetaryPaymentMethod((p as any).paymentMethod || (p as any).method),
+      idempotencyKey: p.idempotencyKey
+    }))
+    .filter((p): p is { amount: number; paymentMethod: FinancialPaymentMethod; idempotencyKey: string } =>
+      p.amount > 0 && p.paymentMethod !== null
+    );
 
   const opIdemRef = params.idempotencyKey
     ? doc(db, IDEMPOTENCY_COLLECTION, params.idempotencyKey)
@@ -4226,8 +5052,21 @@ export async function createOperationWithInitialPayment(
     .filter(p => Boolean(p.idempotencyKey))
     .map(p => ({ p, ref: doc(db, IDEMPOTENCY_COLLECTION, p.idempotencyKey) }));
 
-  const userRef = (params.userId && String(params.userId).trim() !== '' && String(params.userId) !== '0') 
-    ? doc(db, USERS_COLLECTION, String(params.userId)) 
+  let resolvedParamUserId = (params.userId && String(params.userId).trim() !== '' && String(params.userId) !== '0')
+    ? String(params.userId).trim()
+    : '';
+  if (!resolvedParamUserId || resolvedParamUserId.startsWith('derived_')) {
+    const cachedMatch = findHiddenOrExistingClientInCache(params.complexId, {
+      id: resolvedParamUserId,
+      phone: params.userPhone,
+      canonicalId: (params as any).canonicalId
+    });
+    if (cachedMatch?.id && !String(cachedMatch.id).startsWith('derived_')) {
+      resolvedParamUserId = String(cachedMatch.id);
+    }
+  }
+  const userRef = (resolvedParamUserId && !resolvedParamUserId.startsWith('derived_'))
+    ? doc(db, USERS_COLLECTION, resolvedParamUserId)
     : null;
   const bookingRef = params.bookingId ? doc(db, BOOKINGS_COLLECTION, params.bookingId) : null;
 
@@ -4293,7 +5132,7 @@ export async function createOperationWithInitialPayment(
         const existingPIdem = pSnap.data() as IdempotencyRecord;
         if (existingPIdem.status === 'completed') {
           const expectedAmt = existingPIdem.paymentMethod === 'mixed'
-            ? rawPayments.reduce((s, p) => s + Math.max(0, Number(p.amount) || 0), 0)
+            ? rawPayments.reduce((s, p) => s + p.amount, 0)
             : Number(pItem.amount);
           const expectedMethod = existingPIdem.paymentMethod === 'mixed' ? 'mixed' : pItem.paymentMethod;
           if (
@@ -4340,7 +5179,7 @@ export async function createOperationWithInitialPayment(
 
     // 2.4 Cálculos de saldos financieros
     const contractualAmount = Math.max(0, Number(params.contractualAmount) || 0);
-    const totalInitialPayAmount = rawPayments.reduce((sum, p) => sum + Math.max(0, Number(p.amount) || 0), 0);
+    const totalInitialPayAmount = rawPayments.reduce((sum, p) => sum + p.amount, 0);
     
     if (totalInitialPayAmount > contractualAmount) {
       throw new Error(`El cobro inicial ($${totalInitialPayAmount}) no puede superar el monto contractual ($${contractualAmount}).`);
@@ -4403,9 +5242,13 @@ export async function createOperationWithInitialPayment(
       }
     }
 
-    const effectiveUserId = (params.userId && String(params.userId).trim() !== '' && String(params.userId) !== '0')
-      ? String(params.userId).trim()
+    const effectiveUserId = (resolvedParamUserId && !resolvedParamUserId.startsWith('derived_'))
+      ? resolvedParamUserId
       : (params.clientId && String(params.clientId).trim() !== '' && String(params.clientId) !== '0' ? String(params.clientId).trim() : null);
+
+    const trackedIdempotencyKeys = Array.from(new Set(
+      [params.idempotencyKey, ...rawPayments.map(p => p.idempotencyKey)].filter((k): k is string => Boolean(k))
+    ));
 
     // 3.2 Crear documento de operación
     const opDocData: OperationDocument = {
@@ -4432,6 +5275,10 @@ export async function createOperationWithInitialPayment(
       paymentStatus: balances.paymentStatus,
       currentAccountAssigned: ccResult.assignedToCurrentAccount,
       currentAccountDebtAmount,
+      ...(trackedIdempotencyKeys.length > 0 ? {
+        idempotencyKey: trackedIdempotencyKeys[0],
+        idempotencyKeys: trackedIdempotencyKeys
+      } : {}),
       items: (params.items || []).map(it => {
         const itemQty = Number(it.quantity || 1);
         const itemSubtotal = Number(it.subtotal || (itemQty * Number(it.unitPrice || 0)));
@@ -4503,7 +5350,7 @@ export async function createOperationWithInitialPayment(
         complejoId: params.complexId,
         operationId,
         amount: balances.contractualAmount,
-        paymentMethod: builtOpMov?.paymentMethod || 'efectivo',
+        paymentMethod: builtOpMov?.paymentMethod || 'other',
         flow: 'income',
         status: 'completed',
         movementId: builtOpMov?.movId || null,
@@ -4563,17 +5410,23 @@ export async function createOperationWithInitialPayment(
       });
     }
 
-    // 3.5 Asignación de deuda en users/{userId}.debt
-    if (currentAccountDebtAmount > 0 && userRef) {
+    // 3.5 Asignación de deuda en users/{userId}.debt y reactivación automática en el complejo activo si estaba oculto
+    if (userRef) {
       if (userSnap && userSnap.exists()) {
-        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
-        if (!uOrigin || isSameComplex(uOrigin, params.complexId)) {
-          t.set(userRef, {
-            debt: increment(currentAccountDebtAmount),
-            updatedAt: serverTimestamp()
-          }, { merge: true });
+        const uData = userSnap.data();
+        const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
+        const isOwnOrigin = !uOrigin || isSameComplex(uOrigin, params.complexId);
+        const userPatch: Record<string, any> = buildUserReactivationPatch(uData, params.complexId) || {};
+
+        if (currentAccountDebtAmount > 0 && isOwnOrigin) {
+          userPatch.debt = increment(currentAccountDebtAmount);
+          userPatch.updatedAt = serverTimestamp();
         }
-      } else if (!userSnap) {
+
+        if (Object.keys(userPatch).length > 0) {
+          t.update(userRef, userPatch);
+        }
+      } else if (!userSnap && currentAccountDebtAmount > 0) {
         t.set(userRef, {
           debt: increment(currentAccountDebtAmount),
           updatedAt: serverTimestamp()
@@ -4605,6 +5458,76 @@ export async function createOperationWithInitialPayment(
   });
 }
 
+function isPermissionDeniedError(err: unknown): boolean {
+  const code = String((err as any)?.code || '').toLowerCase();
+  const msg = String((err as any)?.message || err || '').toLowerCase();
+  return (
+    code === 'permission-denied' ||
+    code.endsWith('/permission-denied') ||
+    msg.includes('missing or insufficient permissions') ||
+    msg.includes('permission-denied')
+  );
+}
+
+function isSyntheticUserId(uid?: string | null): boolean {
+  if (!uid) return true;
+  const s = String(uid).trim();
+  return (
+    !s ||
+    s === '0' ||
+    s.startsWith('derived_') ||
+    s.startsWith('phone_') ||
+    s.startsWith('player_') ||
+    s.startsWith('host_')
+  );
+}
+
+async function precheckOperationExists(
+  opRef: ReturnType<typeof doc>,
+  targetComplexId: string,
+  operationId: string
+): Promise<{ exists: boolean; opData: OperationDocument | null }> {
+  const cachedOps = sharedSubscribeOperations.getCached(targetComplexId);
+  if (Array.isArray(cachedOps)) {
+    const found = cachedOps.find(o => String(o.id) === String(operationId)) || null;
+    return { exists: Boolean(found), opData: found };
+  }
+  try {
+    const snap = await getDoc(opRef);
+    return {
+      exists: snap.exists(),
+      opData: snap.exists() ? ({ id: snap.id, ...snap.data() } as OperationDocument) : null
+    };
+  } catch (err) {
+    if (isPermissionDeniedError(err)) {
+      // Under security rules without `resource == null` on get, reading a missing doc yields permission-denied
+      return { exists: false, opData: null };
+    }
+    throw err;
+  }
+}
+
+async function precheckUserDocAccessible(
+  userId: string | null | undefined,
+  targetComplexId: string
+): Promise<boolean> {
+  if (isSyntheticUserId(userId)) return false;
+  const strUid = String(userId).trim();
+  const cachedRaw = rawClientsByComplexMap.get(targetComplexId);
+  if (cachedRaw && cachedRaw.has(strUid)) {
+    return true;
+  }
+  try {
+    const snap = await getDoc(doc(db, USERS_COLLECTION, strUid));
+    return snap.exists();
+  } catch (err) {
+    if (isPermissionDeniedError(err)) {
+      return false;
+    }
+    throw err;
+  }
+}
+
 /**
  * Registra un cobro posterior sobre una operación existente.
  * Garantiza consistencia estricta: descuenta exactamente el importe correspondiente
@@ -4617,190 +5540,220 @@ export async function registerOperationPayment(
     throw new Error('complexId, operationId e idempotencyKey son obligatorios.');
   }
 
+  const targetComplexId = (!params.complexId || params.complexId === 'complejo_central') ? 'B' : params.complexId;
+
+  const normalizedMethod = normalizeMonetaryPaymentMethod(params.paymentMethod);
+  if (!normalizedMethod || normalizedMethod === 'mixed') {
+    throw new Error('Debe seleccionar un medio de pago monetario válido (Efectivo, Transferencia, Tarjeta o Mercado Pago).');
+  }
+
   const idemRef = doc(db, IDEMPOTENCY_COLLECTION, params.idempotencyKey);
   const opRef = doc(db, OPERATIONS_COLLECTION, params.operationId);
 
-  return await runTransaction(db, async (t) => {
-    // --- FASE 1: LECTURAS (TODAS ANTES DE CUALQUIER ESCRITURA) ---
-    const idemSnap = await t.get(idemRef);
-    const opSnap = await t.get(opRef);
+  const preOp = await precheckOperationExists(opRef, targetComplexId, params.operationId);
+  if (!preOp.exists) {
+    throw new Error(`Operación '${params.operationId}' no encontrada.`);
+  }
 
-    if (!opSnap.exists()) {
-      throw new Error(`Operación '${params.operationId}' no encontrada.`);
-    }
+  const shouldCheckUserDebt = Boolean(
+    preOp.opData &&
+    Number(preOp.opData.currentAccountDebtAmount || 0) > 0 &&
+    !isSyntheticUserId(preOp.opData.userId)
+  );
+  const canAccessUserDebt = shouldCheckUserDebt
+    ? await precheckUserDocAccessible(preOp.opData?.userId, targetComplexId)
+    : false;
 
-    const opData = opSnap.data() as OperationDocument;
-    const userRef = opData.userId ? doc(db, USERS_COLLECTION, opData.userId) : null;
-    const bookingRef = opData.bookingId ? doc(db, BOOKINGS_COLLECTION, opData.bookingId) : null;
+  try {
+    return await runTransaction(db, async (t) => {
+      // --- FASE 1: LECTURAS (TODAS ANTES DE CUALQUIER ESCRITURA) ---
+      const idemSnap = await t.get(idemRef);
+      const opSnap = await t.get(opRef);
 
-    const userSnap = userRef ? await t.get(userRef) : null;
-    const bookingSnap = bookingRef ? await t.get(bookingRef) : null;
+      if (!opSnap.exists()) {
+        throw new Error(`Operación '${params.operationId}' no encontrada.`);
+      }
 
-    // --- FASE 2: VALIDACIONES Y CÁLCULOS DETERMINISTAS ---
-    // 2.1 Validación de idempotencia
-    const idemRecord = idemSnap.exists() ? (idemSnap.data() as IdempotencyRecord) : null;
-    const idemVal = validateIdempotencyRequest(idemRecord, {
-      complexId: params.complexId,
-      operationId: params.operationId,
-      amount: params.amount,
-      paymentMethod: params.paymentMethod,
-      flow: 'income'
-    });
+      const opData = opSnap.data() as OperationDocument;
+      const userRef = (opData.userId && Number(opData.currentAccountDebtAmount || 0) > 0 && canAccessUserDebt)
+        ? doc(db, USERS_COLLECTION, String(opData.userId))
+        : null;
+      const bookingRef = opData.bookingId ? doc(db, BOOKINGS_COLLECTION, String(opData.bookingId)) : null;
 
-    if (idemVal.type === 'MATCH_COMPLETED') {
+      const userSnap = userRef ? await t.get(userRef) : null;
+      const bookingSnap = bookingRef ? await t.get(bookingRef) : null;
+
+      const isExpense = opData.operationType === 'expense' || opData.operationType === 'purchase';
+      const movementFlow: 'income' | 'expense' = isExpense ? 'expense' : 'income';
+
+      // --- FASE 2: VALIDACIONES Y CÁLCULOS DETERMINISTAS ---
+      // 2.1 Validación de idempotencia
+      const idemRecord = idemSnap.exists() ? (idemSnap.data() as IdempotencyRecord) : null;
+      const idemVal = validateIdempotencyRequest(idemRecord, {
+        complexId: targetComplexId,
+        operationId: params.operationId,
+        amount: params.amount,
+        paymentMethod: normalizedMethod,
+        flow: movementFlow
+      });
+
+      if (idemVal.type === 'MATCH_COMPLETED') {
+        return {
+          success: true,
+          operationId: params.operationId,
+          movementId: idemVal.movementId,
+          ticketCode: opData.ticketCode,
+          paymentStatus: opData.paymentStatus,
+          amountPending: opData.amountPending,
+          currentAccountDebtAmount: opData.currentAccountDebtAmount,
+          clearedCurrentAccountDebt: 0,
+          alreadyProcessed: true
+        };
+      }
+      if (idemVal.type === 'MISMATCH_ERROR') {
+        throw new Error(idemVal.reason);
+      }
+      if (idemVal.type === 'IN_PROGRESS') {
+        throw new Error('Cobro en proceso por otra solicitud concurrente.');
+      }
+
+      // 2.2 Validaciones de negocio sobre la operación
+      const opComplex = opData.complexId || (opData as any).complejoId;
+      if (opComplex && !isSameComplex(opComplex, targetComplexId)) {
+        throw new Error('La operación no pertenece al complejo activo.');
+      }
+      if (isJogoBillingOperation(opData)) {
+        throw new Error('Los cobros de Jogo solo pueden ser registrados por la administración de Jogo.');
+      }
+      if (['cancelled_unpaid', 'cancelled_retained', 'fully_refunded'].includes(opData.paymentStatus)) {
+        throw new Error(`No se pueden registrar cobros sobre una operación cancelada (${opData.paymentStatus}).`);
+      }
+      if (params.amount <= 0) {
+        throw new Error('El importe a cobrar debe ser mayor a 0.');
+      }
+      if (opData.amountPending <= 0) {
+        throw new Error('La operación ya se encuentra totalmente saldada.');
+      }
+
+      // 2.3 Cálculo de saldos y transición de estado
+      const newTotalCollected = opData.totalCollected + params.amount;
+      const balances = calculateFinancialBalances({
+        contractualAmount: opData.contractualAmount,
+        totalCollected: newTotalCollected,
+        totalRefunded: opData.totalRefunded
+      });
+
+      const trans = validateStateTransition(opData.paymentStatus, balances.paymentStatus);
+      if (!trans.valid) {
+        throw new Error(trans.reason);
+      }
+
+      // 2.4 Consistencia estricta de cuenta corriente y deuda personal:
+      // Si la operación tiene deuda asignada a CC, se reduce primero esa deuda
+      let clearedDebt = 0;
+      let remainingOpDebt = 0;
+      if (opData.currentAccountDebtAmount > 0) {
+        const clearing = calculateCurrentAccountClearing(opData.currentAccountDebtAmount, params.amount);
+        clearedDebt = clearing.clearedDebtAmount;
+        remainingOpDebt = clearing.remainingOperationDebt;
+      }
+
+      const category: FinancialMovementCategory = params.category || 
+        (isExpense ? 'expense_payment' : (opData.operationType === 'court_booking' ? 'booking_settlement' : 'sale_collection'));
+
+      // --- FASE 3: ESCRITURAS ATÓMICAS (DESPUÉS DE TODAS LAS LECTURAS) ---
+      // 3.1 Registrar movimiento financiero único
+      const builtPayMov = buildSingleMovementPayload({
+        payments: [{ amount: params.amount, paymentMethod: normalizedMethod }],
+        complexId: targetComplexId,
+        operationId: params.operationId,
+        bookingId: opData.bookingId || null,
+        ticketCode: opData.ticketCode,
+        flow: movementFlow,
+        category,
+        responsibleName: opData.userName || opData.clientName || 'NN',
+        userId: opData.userId || opData.clientId || null,
+        userPhone: opData.userPhone || opData.clientPhone || '',
+        clearedCurrentAccountDebt: clearedDebt,
+        notes: params.notes || '',
+        operatorId: params.operatorId,
+        idempotencyKey: params.idempotencyKey
+      });
+      if (!builtPayMov) {
+        throw new Error('El importe a cobrar debe ser mayor a 0.');
+      }
+      const movementId = builtPayMov.movId;
+      const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movementId);
+      t.set(movRef, builtPayMov.movDocData);
+
+      // 3.2 Registrar clave de idempotencia completada
+      t.set(idemRef, {
+        idempotencyKey: params.idempotencyKey,
+        complexId: targetComplexId,
+        complejoId: targetComplexId,
+        operationId: params.operationId,
+        amount: params.amount,
+        paymentMethod: builtPayMov.paymentMethod,
+        flow: movementFlow,
+        status: 'completed',
+        movementId,
+        createdAt: serverTimestamp(),
+        completedAt: serverTimestamp()
+      });
+
+      // 3.3 Actualizar documento de operación
+      t.update(opRef, {
+        totalCollected: balances.totalCollected,
+        netCollected: balances.netCollected,
+        amountPending: balances.amountPending,
+        paymentStatus: balances.paymentStatus,
+        currentAccountDebtAmount: remainingOpDebt,
+        idempotencyKeys: arrayUnion(params.idempotencyKey),
+        updatedAt: serverTimestamp()
+      });
+
+      // 3.4 Reducir users/{userId}.debt exactamente por clearedDebt si aplica (con clamp >= 0)
+      if (clearedDebt > 0 && userRef && userSnap && userSnap.exists()) {
+        const uData = userSnap.data();
+        const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
+        if (!uOrigin || isSameComplex(uOrigin, targetComplexId)) {
+          const currentUserDebt = Math.max(0, Number(uData?.debt || 0));
+          t.update(userRef, {
+            debt: Math.max(0, currentUserDebt - clearedDebt),
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
+
+      // 3.5 Actualizar reserva asociada si existe
+      if (bookingRef && bookingSnap && bookingSnap.exists()) {
+        t.update(bookingRef, {
+          paymentStatus: balances.paymentStatus,
+          payment_status: balances.paymentStatus,
+          deposit: balances.totalCollected,
+          amount_paid: balances.totalCollected,
+          idempotencyKeys: arrayUnion(params.idempotencyKey),
+          updatedAt: serverTimestamp()
+        });
+      }
+
       return {
         success: true,
         operationId: params.operationId,
-        movementId: idemVal.movementId,
+        movementId,
         ticketCode: opData.ticketCode,
-        paymentStatus: opData.paymentStatus,
-        amountPending: opData.amountPending,
-        currentAccountDebtAmount: opData.currentAccountDebtAmount,
-        clearedCurrentAccountDebt: 0,
-        alreadyProcessed: true
-      };
-    }
-    if (idemVal.type === 'MISMATCH_ERROR') {
-      throw new Error(idemVal.reason);
-    }
-    if (idemVal.type === 'IN_PROGRESS') {
-      throw new Error('Cobro en proceso por otra solicitud concurrente.');
-    }
-
-    // 2.2 Validaciones de negocio sobre la operación
-    if (opData.complexId !== params.complexId) {
-      throw new Error('La operación no pertenece al complejo activo.');
-    }
-    if (isJogoBillingOperation(opData)) {
-      throw new Error('Los cobros de Jogo solo pueden ser registrados por la administración de Jogo.');
-    }
-    if (['cancelled_unpaid', 'cancelled_retained', 'fully_refunded'].includes(opData.paymentStatus)) {
-      throw new Error(`No se pueden registrar cobros sobre una operación cancelada (${opData.paymentStatus}).`);
-    }
-    if (params.amount <= 0) {
-      throw new Error('El importe a cobrar debe ser mayor a 0.');
-    }
-    if (opData.amountPending <= 0) {
-      throw new Error('La operación ya se encuentra totalmente saldada.');
-    }
-
-    // 2.3 Cálculo de saldos y transición de estado
-    const newTotalCollected = opData.totalCollected + params.amount;
-    const balances = calculateFinancialBalances({
-      contractualAmount: opData.contractualAmount,
-      totalCollected: newTotalCollected,
-      totalRefunded: opData.totalRefunded
-    });
-
-    const trans = validateStateTransition(opData.paymentStatus, balances.paymentStatus);
-    if (!trans.valid) {
-      throw new Error(trans.reason);
-    }
-
-    // 2.4 Consistencia estricta de cuenta corriente y deuda personal:
-    // Si la operación tiene deuda asignada a CC, se reduce primero esa deuda
-    let clearedDebt = 0;
-    let remainingOpDebt = 0;
-    if (opData.currentAccountDebtAmount > 0) {
-      const clearing = calculateCurrentAccountClearing(opData.currentAccountDebtAmount, params.amount);
-      clearedDebt = clearing.clearedDebtAmount;
-      remainingOpDebt = clearing.remainingOperationDebt;
-    }
-
-    const isExpense = opData.operationType === 'expense' || opData.operationType === 'purchase';
-    const movementFlow: 'income' | 'expense' = isExpense ? 'expense' : 'income';
-    const category: FinancialMovementCategory = params.category || 
-      (isExpense ? 'expense_payment' : (opData.operationType === 'court_booking' ? 'booking_settlement' : 'sale_collection'));
-
-    // --- FASE 3: ESCRITURAS ATÓMICAS (DESPUÉS DE TODAS LAS LECTURAS) ---
-    // 3.1 Registrar movimiento financiero único
-    const builtPayMov = buildSingleMovementPayload({
-      payments: [{ amount: params.amount, paymentMethod: params.paymentMethod }],
-      complexId: params.complexId,
-      operationId: params.operationId,
-      bookingId: opData.bookingId || null,
-      ticketCode: opData.ticketCode,
-      flow: movementFlow,
-      category,
-      responsibleName: opData.userName || opData.clientName || 'NN',
-      userId: opData.userId || opData.clientId || null,
-      userPhone: opData.userPhone || opData.clientPhone || '',
-      clearedCurrentAccountDebt: clearedDebt,
-      notes: params.notes || '',
-      operatorId: params.operatorId,
-      idempotencyKey: params.idempotencyKey
-    });
-    if (!builtPayMov) {
-      throw new Error('El importe a cobrar debe ser mayor a 0.');
-    }
-    const movementId = builtPayMov.movId;
-    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movementId);
-    t.set(movRef, builtPayMov.movDocData);
-
-    // 3.2 Registrar clave de idempotencia completada
-    t.set(idemRef, {
-      idempotencyKey: params.idempotencyKey,
-      complexId: params.complexId,
-      operationId: params.operationId,
-      amount: params.amount,
-      paymentMethod: builtPayMov.paymentMethod,
-      flow: movementFlow,
-      status: 'completed',
-      movementId,
-      createdAt: serverTimestamp(),
-      completedAt: serverTimestamp()
-    });
-
-    // 3.3 Actualizar documento de operación
-    t.update(opRef, {
-      totalCollected: balances.totalCollected,
-      netCollected: balances.netCollected,
-      amountPending: balances.amountPending,
-      paymentStatus: balances.paymentStatus,
-      currentAccountDebtAmount: remainingOpDebt,
-      updatedAt: serverTimestamp()
-    });
-
-    // 3.4 Reducir users/{userId}.debt exactamente por clearedDebt si aplica
-    if (clearedDebt > 0 && userRef) {
-      if (userSnap && userSnap.exists()) {
-        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
-        if (!uOrigin || isSameComplex(uOrigin, params.complexId)) {
-          t.set(userRef, {
-            debt: increment(-clearedDebt),
-            updatedAt: serverTimestamp()
-          }, { merge: true });
-        }
-      } else if (!userSnap) {
-        t.set(userRef, {
-          debt: increment(-clearedDebt),
-          updatedAt: serverTimestamp()
-        }, { merge: true });
-      }
-    }
-
-    // 3.5 Actualizar reserva asociada si existe
-    if (bookingRef && bookingSnap && bookingSnap.exists()) {
-      t.update(bookingRef, {
         paymentStatus: balances.paymentStatus,
-        payment_status: balances.paymentStatus,
-        deposit: balances.totalCollected,
-        amount_paid: balances.totalCollected,
-        updatedAt: serverTimestamp()
-      });
+        amountPending: balances.amountPending,
+        currentAccountDebtAmount: remainingOpDebt,
+        clearedCurrentAccountDebt: clearedDebt
+      };
+    });
+  } catch (err) {
+    if (isPermissionDeniedError(err)) {
+      handleFirestoreError(err, FirestoreOpType.WRITE, `${OPERATIONS_COLLECTION}/${params.operationId}`);
     }
-
-    return {
-      success: true,
-      operationId: params.operationId,
-      movementId,
-      ticketCode: opData.ticketCode,
-      paymentStatus: balances.paymentStatus,
-      amountPending: balances.amountPending,
-      currentAccountDebtAmount: remainingOpDebt,
-      clearedCurrentAccountDebt: clearedDebt
-    };
-  });
+    throw err;
+  }
 }
 
 /**
@@ -4815,6 +5768,11 @@ export async function registerHistoricalDebtPayment(
 ): Promise<HistoricalDebtPaymentResult> {
   if (!params.complexId || !params.userId || !params.idempotencyKey) {
     throw new Error('complexId, userId e idempotencyKey son obligatorios.');
+  }
+
+  const normalizedMethod = normalizeMonetaryPaymentMethod(params.paymentMethod);
+  if (!normalizedMethod || normalizedMethod === 'mixed') {
+    throw new Error('Debe seleccionar un medio de pago monetario válido (Efectivo, Transferencia, Tarjeta o Mercado Pago).');
   }
 
   const idemRef = doc(db, IDEMPOTENCY_COLLECTION, params.idempotencyKey);
@@ -4834,7 +5792,7 @@ export async function registerHistoricalDebtPayment(
       complexId: params.complexId,
       operationId: null,
       amount: params.amount,
-      paymentMethod: params.paymentMethod,
+      paymentMethod: normalizedMethod,
       flow: 'income'
     });
 
@@ -4887,12 +5845,13 @@ export async function registerHistoricalDebtPayment(
     t.set(counterRef, {
       historical_debt_sequence: nextSeq,
       complexId: params.complexId,
+      complejoId: params.complexId,
       updatedAt: serverTimestamp()
     }, { merge: true });
 
     // 3.2 Crear movimiento financiero con categoría canónica 'historical_debt_payment' y operationId = null
     const builtHistMov = buildSingleMovementPayload({
-      payments: [{ amount: settle.clearedAmount, paymentMethod: params.paymentMethod }],
+      payments: [{ amount: settle.clearedAmount, paymentMethod: normalizedMethod }],
       complexId: params.complexId,
       operationId: null,
       ticketCode,
@@ -4917,6 +5876,7 @@ export async function registerHistoricalDebtPayment(
     t.set(idemRef, {
       idempotencyKey: params.idempotencyKey,
       complexId: params.complexId,
+      complejoId: params.complexId,
       operationId: null,
       amount: settle.clearedAmount,
       paymentMethod: builtHistMov.paymentMethod,
@@ -4928,11 +5888,11 @@ export async function registerHistoricalDebtPayment(
       completedAt: serverTimestamp()
     });
 
-    // 3.4 Descontar deuda atómicamente de users/{userId}.debt
-    t.set(userRef, {
-      debt: increment(-settle.clearedAmount),
+    // 3.4 Descontar deuda atómicamente de users/{userId}.debt con clamp >= 0
+    t.update(userRef, {
+      debt: Math.max(0, currentDebt - settle.clearedAmount),
       updatedAt: serverTimestamp()
-    }, { merge: true });
+    });
 
     return {
       success: true,
@@ -4941,6 +5901,180 @@ export async function registerHistoricalDebtPayment(
       userId: params.userId,
       clearedDebt: settle.clearedAmount,
       remainingDebt: settle.remainingDebt
+    };
+  });
+}
+
+/**
+ * Registra un ingreso o egreso manual desde Finanzas de manera 100% transaccional,
+ * utilizando complex_counters, idempotency_keys e IDs deterministas sin addDoc sueltos.
+ */
+export async function executeManualFinanceTransaction(params: {
+  complexId: string;
+  type: 'income' | 'expense';
+  amount: number;
+  category: string;
+  concept: string;
+  description?: string;
+  paymentMethod: string;
+  operatorId?: string;
+  idempotencyKey?: string;
+}): Promise<{
+  success: boolean;
+  operationId: string;
+  movementId: string;
+  ticketCode: string;
+}> {
+  const targetId = (!params.complexId || params.complexId === 'complejo_central') ? 'B' : params.complexId;
+  const amount = Number(params.amount);
+  if (isNaN(amount) || amount <= 0) {
+    throw new Error('El importe del movimiento debe ser mayor a 0.');
+  }
+
+  const normalizedMethod = normalizeMonetaryPaymentMethod(params.paymentMethod);
+  if (!normalizedMethod || normalizedMethod === 'mixed') {
+    throw new Error('Debe seleccionar un medio de pago monetario válido (Efectivo, Transferencia, Tarjeta o Mercado Pago).');
+  }
+
+  const cleanConcept = (params.concept || '').trim() || (params.type === 'income' ? 'Ingreso manual' : 'Egreso manual');
+  const cleanCategory = (params.category || '').trim() || (params.type === 'income' ? 'Otros Ingresos' : 'Gastos Generales');
+  const cleanDescription = (params.description || '').trim();
+  const idemKey = params.idempotencyKey || `manual_tx_${params.type}_${Date.now()}_${generateUUID().slice(0, 6)}`;
+  const idemRef = doc(db, IDEMPOTENCY_COLLECTION, idemKey);
+
+  return await runTransaction(db, async (t) => {
+    const counterRef = doc(db, COMPLEX_COUNTERS_COLLECTION, targetId);
+    const [existingIdemSnap, counterSnap] = await Promise.all([
+      t.get(idemRef),
+      t.get(counterRef)
+    ]);
+
+    if (existingIdemSnap.exists()) {
+      const idemData = existingIdemSnap.data() as IdempotencyRecord;
+      if (idemData.status === 'completed' && idemData.operationId) {
+        return {
+          success: true,
+          operationId: idemData.operationId,
+          movementId: idemData.movementId || '',
+          ticketCode: idemData.ticketCode || ''
+        };
+      }
+      if (idemData.status === 'processing') {
+        throw new Error('Movimiento en proceso por otra solicitud concurrente.');
+      }
+    }
+
+    const isIncome = params.type === 'income';
+    const seqKey = isIncome ? 'pos_sale_sequence' : 'expense_sequence';
+    const prefix = isIncome ? 'T' : 'E';
+    const counterData = counterSnap.exists() ? counterSnap.data() : {};
+    const nextSeq = Number(counterData[seqKey] || 0) + 1;
+    const currentYear = new Date().getFullYear().toString().slice(-2);
+    const ticketCode = formatTicketCode(prefix, currentYear, nextSeq);
+
+    const operationId = generateUUID();
+    const opRef = doc(db, OPERATIONS_COLLECTION, operationId);
+    const opDocData: OperationDocument = {
+      id: operationId,
+      complexId: targetId,
+      complejoId: targetId,
+      ticketCode,
+      operationType: isIncome ? 'sale' : 'expense',
+      responsibleType: isIncome ? 'anonymous' : 'supplier',
+      userName: cleanConcept,
+      clientName: cleanConcept,
+      supplierName: !isIncome ? cleanConcept : undefined,
+      expenseCategoryName: !isIncome ? cleanCategory : undefined,
+      expenseConceptName: !isIncome ? cleanConcept : undefined,
+      contractualAmount: amount,
+      totalCollected: amount,
+      totalRefunded: 0,
+      netCollected: amount,
+      retainedAmount: 0,
+      amountPending: 0,
+      paymentStatus: 'paid',
+      currentAccountAssigned: false,
+      currentAccountDebtAmount: 0,
+      idempotencyKey: idemKey,
+      idempotencyKeys: [idemKey],
+      items: [{
+        id: operationId,
+        name: cleanConcept,
+        quantity: 1,
+        unitPrice: amount,
+        subtotal: amount
+      }],
+      notes: cleanDescription || `${cleanCategory}: ${cleanConcept}`,
+      metadata: {
+        isManual: true,
+        category: cleanCategory,
+        concept: cleanConcept,
+        description: cleanDescription,
+        isExpense: !isIncome
+      },
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+      createdBy: params.operatorId || 'administrador'
+    };
+    t.set(opRef, cleanFirestoreDocument(opDocData));
+
+    t.set(counterRef, {
+      [seqKey]: nextSeq,
+      complexId: targetId,
+      complejoId: targetId,
+      updatedAt: serverTimestamp()
+    }, { merge: true });
+
+    const builtMov = buildSingleMovementPayload({
+      payments: [{ amount, paymentMethod: normalizedMethod }],
+      complexId: targetId,
+      operationId,
+      ticketCode,
+      flow: params.type,
+      category: isIncome ? 'sale_collection' : 'expense_payment',
+      responsibleName: cleanConcept,
+      operatorId: params.operatorId || 'administrador',
+      notes: cleanDescription || `${cleanCategory}: ${cleanConcept}`,
+      idempotencyKey: idemKey,
+      expenseCategoryName: !isIncome ? cleanCategory : undefined,
+      expenseConceptName: !isIncome ? cleanConcept : undefined
+    });
+
+    if (!builtMov) {
+      throw new Error('No se pudo construir el movimiento financiero.');
+    }
+
+    const movDocWithMeta = {
+      ...builtMov.movDocData,
+      metadata: {
+        isManual: true,
+        category: cleanCategory,
+        concept: cleanConcept,
+        description: cleanDescription
+      }
+    };
+    t.set(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtMov.movId), cleanFirestoreDocument(movDocWithMeta));
+
+    t.set(idemRef, {
+      idempotencyKey: idemKey,
+      complexId: targetId,
+      complejoId: targetId,
+      operationId,
+      ticketCode,
+      amount,
+      paymentMethod: builtMov.paymentMethod,
+      flow: params.type,
+      status: 'completed',
+      movementId: builtMov.movId,
+      createdAt: serverTimestamp(),
+      completedAt: serverTimestamp()
+    });
+
+    return {
+      success: true,
+      operationId,
+      movementId: builtMov.movId,
+      ticketCode
     };
   });
 }
@@ -4958,18 +6092,77 @@ export async function cancelOperationWithSettlement(
 
   return await runTransaction(db, async (t) => {
     // --- FASE 1: LECTURAS ---
-    const opSnap = await t.get(opRef);
+    const [opSnap, idemSnap] = await Promise.all([
+      t.get(opRef),
+      idemRef ? t.get(idemRef) : Promise.resolve(null)
+    ]);
+
     if (!opSnap.exists()) {
       throw new Error(`Operación '${params.operationId}' no encontrada.`);
     }
 
     const opData = opSnap.data() as OperationDocument;
+    if (idemSnap && idemSnap.exists() && idemSnap.data()?.status === 'completed') {
+      return {
+        success: true,
+        paymentStatus: opData.paymentStatus,
+        refundMovementId: idemSnap.data()?.movementId
+      };
+    }
+
     const userRef = opData.userId ? doc(db, USERS_COLLECTION, opData.userId) : null;
     const bookingRef = opData.bookingId ? doc(db, BOOKINGS_COLLECTION, opData.bookingId) : null;
 
-    const userSnap = userRef ? await t.get(userRef) : null;
-    const bookingSnap = bookingRef ? await t.get(bookingRef) : null;
-    const idemSnap = idemRef ? await t.get(idemRef) : null;
+    const [userSnap, bookingSnap] = await Promise.all([
+      userRef ? t.get(userRef) : Promise.resolve(null),
+      bookingRef ? t.get(bookingRef) : Promise.resolve(null)
+    ]);
+
+    // Lectura de complejo y locks si corresponde a una reserva
+    let lockEntries: Array<{ ref: ReturnType<typeof doc>; snap: any }> = [];
+    if (opData.bookingId && bookingSnap && bookingSnap.exists()) {
+      const bData = bookingSnap.data();
+      const targetComplexId = String(bData.complejoId || bData.complexId || params.complexId || 'B');
+      const normalizedComplexId = targetComplexId === 'complejo_central' ? 'B' : targetComplexId;
+      const courtId = String(bData.courtId || bData.court_id || 'c_1');
+      const date = bData.date;
+      if (normalizedComplexId && courtId && date) {
+        const compSnap = await t.get(doc(db, COMPLEJOS_COLLECTION, normalizedComplexId));
+        const affectedCourts = getOverlappingCourtIdsFromList(compSnap.exists() ? compSnap.data() : null, courtId);
+        const lockRefs = affectedCourts.map(cid =>
+          doc(db, BOOKING_LOCKS_COLLECTION, `${normalizedComplexId}__${cid}__${date}`)
+        );
+        const lockSnaps = await Promise.all(lockRefs.map(ref => t.get(ref)));
+        lockEntries = lockRefs.map((ref, idx) => ({ ref, snap: lockSnaps[idx] }));
+      }
+    }
+
+    // Lectura de productos si corresponde a una venta POS o compra para revertir stock atómicamente
+    const isPosSale = opData.operationType === 'pos_sale' || (opData.operationType as string) === 'sale';
+    const isPurchase = opData.operationType === 'purchase';
+    const productQtyMap = new Map<string, number>();
+    if ((isPosSale || isPurchase) && Array.isArray(opData.items)) {
+      for (const it of opData.items) {
+        const pId = String((it as any).productId || (it as any).id || '').trim();
+        const qty = Math.max(0, Number((it as any).quantity || 0));
+        if (pId && qty > 0) {
+          productQtyMap.set(pId, (productQtyMap.get(pId) || 0) + qty);
+        }
+      }
+    }
+    if (isPurchase && productQtyMap.size === 0 && (opData as any).metadata?.productId) {
+      const pId = String((opData as any).metadata.productId).trim();
+      const qty = Math.max(0, Number((opData as any).metadata.quantity || 0));
+      if (pId && qty > 0) productQtyMap.set(pId, qty);
+    }
+
+    const productEntries = await Promise.all(
+      Array.from(productQtyMap.entries()).map(async ([pId, qty]) => {
+        const pRef = doc(db, PRODUCTS_COLLECTION, pId);
+        const pSnap = await t.get(pRef);
+        return { pId, qty, ref: pRef, snap: pSnap };
+      })
+    );
 
     // --- FASE 2: VALIDACIONES Y CÁLCULOS DETERMINISTAS ---
     if ((opData as any)?.createdSource === 'jogo' || (bookingSnap && bookingSnap.exists() && bookingSnap.data()?.createdSource === 'jogo')) {
@@ -4999,6 +6192,10 @@ export async function cancelOperationWithSettlement(
       retainDepositOnCancel = opData.totalCollected > refundAmount;
     }
 
+    const refundMethod = refundAmount > 0
+      ? (normalizeMonetaryPaymentMethod(params.refundPaymentMethod || 'cash') || 'cash')
+      : 'cash';
+
     const balances = calculateFinancialBalances({
       contractualAmount: opData.contractualAmount,
       totalCollected: opData.totalCollected,
@@ -5024,6 +6221,7 @@ export async function cancelOperationWithSettlement(
       amountPending: 0,
       paymentStatus: balances.paymentStatus,
       currentAccountDebtAmount: 0,
+      ...(params.idempotencyKey ? { idempotencyKeys: arrayUnion(params.idempotencyKey) } : {}),
       notes: params.notes ? `${opData.notes ? opData.notes + ' | ' : ''}Cancelación: ${params.notes}` : opData.notes,
       updatedAt: serverTimestamp()
     });
@@ -5036,13 +6234,15 @@ export async function cancelOperationWithSettlement(
       const refundMovData: FinancialMovementDocument = {
         id: refundMovementId,
         complexId: params.complexId,
+        complejoId: params.complexId,
         operationId: params.operationId,
+        ...(opData.bookingId ? { bookingId: opData.bookingId } : {}),
         ticketCode: opData.ticketCode,
         idempotencyKey: params.idempotencyKey || generateUUID(),
         flow: 'expense',
         category: 'refund',
         amount: refundAmount,
-        paymentMethod: params.refundPaymentMethod || 'cash',
+        paymentMethod: refundMethod,
         effectiveDate: serverTimestamp(),
         userId: opData.userId || null,
         responsibleName: opData.userName,
@@ -5057,9 +6257,10 @@ export async function cancelOperationWithSettlement(
         t.set(idemRef, {
           idempotencyKey: params.idempotencyKey,
           complexId: params.complexId,
+          complejoId: params.complexId,
           operationId: params.operationId,
           amount: refundAmount,
-          paymentMethod: params.refundPaymentMethod || 'cash',
+          paymentMethod: refundMethod,
           flow: 'expense',
           status: 'completed',
           movementId: refundMovementId,
@@ -5067,27 +6268,35 @@ export async function cancelOperationWithSettlement(
           completedAt: serverTimestamp()
         });
       }
+    } else if (idemRef) {
+      t.set(idemRef, {
+        idempotencyKey: params.idempotencyKey,
+        complexId: params.complexId,
+        complejoId: params.complexId,
+        operationId: params.operationId,
+        amount: 0,
+        paymentMethod: 'other',
+        flow: 'expense',
+        status: 'completed',
+        createdAt: serverTimestamp(),
+        completedAt: serverTimestamp()
+      });
     }
 
-    // 3.3 Si había deuda fiada sin cobrar, descontarla de users/{userId}.debt
-    if (debtToExtinguish > 0 && userRef) {
-      if (userSnap && userSnap.exists()) {
-        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
-        if (!uOrigin || isSameComplex(uOrigin, params.complexId)) {
-          t.set(userRef, {
-            debt: increment(-debtToExtinguish),
-            updatedAt: serverTimestamp()
-          }, { merge: true });
-        }
-      } else if (!userSnap) {
-        t.set(userRef, {
-          debt: increment(-debtToExtinguish),
+    // 3.3 Si había deuda fiada sin cobrar, descontarla de users/{userId}.debt con clamp >= 0
+    if (debtToExtinguish > 0 && userRef && userSnap && userSnap.exists()) {
+      const uData = userSnap.data();
+      const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
+      if (!uOrigin || isSameComplex(uOrigin, params.complexId)) {
+        const currentUserDebt = Math.max(0, Number(uData?.debt || 0));
+        t.update(userRef, {
+          debt: Math.max(0, currentUserDebt - debtToExtinguish),
           updatedAt: serverTimestamp()
-        }, { merge: true });
+        });
       }
     }
 
-    // 3.4 Sincronizar estado de reserva
+    // 3.4 Sincronizar estado de reserva y liberar locks atómicamente dentro de la transacción
     if (bookingRef && bookingSnap && bookingSnap.exists()) {
       t.update(bookingRef, {
         status: 'cancelado',
@@ -5096,9 +6305,83 @@ export async function cancelOperationWithSettlement(
         payment_status: balances.paymentStatus,
         retainedAmount: balances.retainedAmount,
         totalRefunded: balances.totalRefunded,
+        ...(params.idempotencyKey ? { idempotencyKeys: arrayUnion(params.idempotencyKey) } : {}),
         cancelledAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       });
+
+      for (const entry of lockEntries) {
+        if (entry.snap.exists()) {
+          const bMap = { ...(entry.snap.data().bookings || {}) };
+          if (bMap[opData.bookingId!]) {
+            delete bMap[opData.bookingId!];
+            t.update(entry.ref, {
+              bookings: bMap,
+              updatedAt: serverTimestamp()
+            });
+          }
+        }
+      }
+    }
+
+    // 3.5 Restaurar/revertir inventario PEPS si se cancela una venta POS o una compra
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const hoursStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
+    for (const pEntry of productEntries) {
+      if (!pEntry.snap.exists()) continue;
+      const pData = pEntry.snap.data();
+      if (isPosSale) {
+        const restored = restoreProductBatches(pData, pEntry.pId, pEntry.qty, () => generateUUID());
+        t.update(pEntry.ref, {
+          stock: restored.newStock,
+          batches: restored.updatedBatches,
+          updatedAt: serverTimestamp()
+        });
+        const invMovRef = doc(collection(db, INVENTORY_MOVEMENTS_COLLECTION));
+        t.set(invMovRef, {
+          productId: pEntry.pId,
+          complejoId: params.complexId,
+          complexId: params.complexId,
+          type: 'restock',
+          typeLabel: 'Ajuste por cancelación',
+          quantity: pEntry.qty,
+          resultingStock: restored.newStock,
+          date: dateStr,
+          time: hoursStr,
+          actorName: params.operatorId || 'Administrador',
+          notes: `Cancelación venta · Ticket ${opData.ticketCode}`,
+          operationId: params.operationId,
+          createdAt: serverTimestamp()
+        });
+      } else if (isPurchase) {
+        const currentStock = Math.max(0, Number(pData.stock || 0));
+        const newStock = Math.max(0, currentStock - pEntry.qty);
+        const existingBatches: ProductBatch[] = Array.isArray(pData.batches) ? pData.batches : [];
+        const filteredBatches = existingBatches.filter(b => b.operationId !== params.operationId);
+        t.update(pEntry.ref, {
+          stock: newStock,
+          batches: filteredBatches,
+          updatedAt: serverTimestamp()
+        });
+        const invMovRef = doc(collection(db, INVENTORY_MOVEMENTS_COLLECTION));
+        t.set(invMovRef, {
+          productId: pEntry.pId,
+          complejoId: params.complexId,
+          complexId: params.complexId,
+          type: 'adjustment',
+          typeLabel: 'Anulación compra',
+          quantity: -pEntry.qty,
+          resultingStock: newStock,
+          date: dateStr,
+          time: hoursStr,
+          actorName: params.operatorId || 'Administrador',
+          notes: `Cancelación compra · Ticket ${opData.ticketCode}`,
+          operationId: params.operationId,
+          createdAt: serverTimestamp()
+        });
+      }
     }
 
     return {
@@ -5113,11 +6396,7 @@ export async function cancelOperationWithSettlement(
  * Escucha en tiempo real las operaciones de un complejo ordenadas cronológicamente,
  * fusionando queries por complexId y complejoId para garantizar cobertura total en Vercel.
  */
-export function subscribeToOperations(
-  complexId: string,
-  cb: (operations: OperationDocument[]) => void
-): () => void {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+const sharedSubscribeOperations = createSharedSubscription<OperationDocument[]>((targetId, emit) => {
   const colRef = collection(db, OPERATIONS_COLLECTION);
   const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
 
@@ -5140,7 +6419,7 @@ export function subscribeToOperations(
       return isNaN(t) ? 0 : t;
     };
     list.sort((a, b) => parseTime(b) - parseTime(a));
-    cb(list);
+    emit(list);
   };
 
   let mapIdx = 0;
@@ -5173,17 +6452,21 @@ export function subscribeToOperations(
   return () => {
     unsubs.forEach(u => u());
   };
+});
+
+export function subscribeToOperations(
+  complexId: string,
+  cb: (operations: OperationDocument[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  return sharedSubscribeOperations(targetId, cb);
 }
 
 /**
  * Escucha en tiempo real los movimientos de caja (/financial_movements) de un complejo,
  * fusionando queries por complexId y complejoId para garantizar cobertura total en Vercel.
  */
-export function subscribeToFinancialMovements(
-  complexId: string,
-  cb: (movements: FinancialMovementDocument[]) => void
-): () => void {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+const sharedSubscribeFinancialMovements = createSharedSubscription<FinancialMovementDocument[]>((targetId, emit) => {
   const colRef = collection(db, FINANCIAL_MOVEMENTS_COLLECTION);
   const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
 
@@ -5206,7 +6489,7 @@ export function subscribeToFinancialMovements(
       return isNaN(t) ? 0 : t;
     };
     list.sort((a, b) => parseTime(b) - parseTime(a));
-    cb(list);
+    emit(list);
   };
 
   let mapIdx = 0;
@@ -5239,6 +6522,14 @@ export function subscribeToFinancialMovements(
   return () => {
     unsubs.forEach(u => u());
   };
+});
+
+export function subscribeToFinancialMovements(
+  complexId: string,
+  cb: (movements: FinancialMovementDocument[]) => void
+): () => void {
+  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  return sharedSubscribeFinancialMovements(targetId, cb);
 }
 
 /**
@@ -5255,14 +6546,18 @@ export async function permanentlyDeleteFinancialRecordInFirestore(params: {
   let opId = params.operationId ? String(params.operationId).trim() : null;
   const movId = params.movementId ? String(params.movementId).trim() : null;
   let bId = params.bookingId ? String(params.bookingId).trim() : null;
+  const trackedIdemKeys = new Set<string>();
 
   // 1. Si se invocó desde un movimiento, leer primero el documento para extraer operationId y bookingId
   let movDocData: any = null;
+  let movExists = false;
   if (movId) {
     try {
       const mSnap = await getDoc(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId));
       if (mSnap.exists()) {
+        movExists = true;
         movDocData = mSnap.data();
+        if (movDocData.idempotencyKey) trackedIdemKeys.add(String(movDocData.idempotencyKey));
         if (!opId && movDocData.operationId) {
           opId = String(movDocData.operationId).trim();
         }
@@ -5277,21 +6572,28 @@ export async function permanentlyDeleteFinancialRecordInFirestore(params: {
 
   // 2. Si se tiene operationId, leer los datos del documento de operación o transacción
   let opDocData: any = null;
+  let opDocExists = false;
+  let txDocExists = false;
   if (opId) {
     try {
-      const opSnap = await getDoc(doc(db, OPERATIONS_COLLECTION, opId));
+      const [opSnap, txSnap] = await Promise.all([
+        getDoc(doc(db, OPERATIONS_COLLECTION, opId)),
+        getDoc(doc(db, TRANSACTIONS_COLLECTION, opId))
+      ]);
+      opDocExists = opSnap.exists();
+      txDocExists = txSnap.exists();
       if (opSnap.exists()) {
         opDocData = opSnap.data();
+      } else if (txSnap.exists()) {
+        opDocData = txSnap.data();
+      }
+      if (opDocData) {
+        if (opDocData.idempotencyKey) trackedIdemKeys.add(String(opDocData.idempotencyKey));
+        if (Array.isArray(opDocData.idempotencyKeys)) {
+          opDocData.idempotencyKeys.forEach((k: any) => k && trackedIdemKeys.add(String(k)));
+        }
         if (!bId && opDocData.bookingId) {
           bId = String(opDocData.bookingId).trim();
-        }
-      } else {
-        const txSnap = await getDoc(doc(db, TRANSACTIONS_COLLECTION, opId));
-        if (txSnap.exists()) {
-          opDocData = txSnap.data();
-          if (!bId && opDocData.bookingId) {
-            bId = String(opDocData.bookingId).trim();
-          }
         }
       }
     } catch (e) {
@@ -5330,8 +6632,7 @@ export async function permanentlyDeleteFinancialRecordInFirestore(params: {
     const finalBookingId = resolvedBookingId || opDocData?.bookingId || movDocData?.bookingId || opId?.replace('-booking', '');
     if (finalBookingId) {
       await permanentlyDeleteBookingInFirestore(finalBookingId);
-      // Limpieza adicional garantizada del movimiento individual si existiese
-      if (movId) {
+      if (movId && movExists) {
         try {
           await deleteDoc(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId));
         } catch {}
@@ -5342,121 +6643,261 @@ export async function permanentlyDeleteFinancialRecordInFirestore(params: {
 
   // CASO B — Operación de Mostrador (pos_sale), Compra (purchase) o Gasto (expense)
   const effectiveOpId = opId || movDocData?.operationId || null;
+  const rawComplex = opDocData?.complexId || opDocData?.complejoId || movDocData?.complexId || movDocData?.complejoId || params.complexId || 'B';
+  const targetComplexId = rawComplex === 'complejo_central' ? 'B' : String(rawComplex);
+  const complexCandidates = (targetComplexId === 'B' || rawComplex === 'complejo_central')
+    ? ['B', 'complejo_central']
+    : [targetComplexId];
 
   if (opDocData) {
     const isSale = opDocData.operationType === 'pos_sale' || opDocData.type === 'pos' || opDocData.type === 'sale';
     const isPurchase = opDocData.operationType === 'purchase' || opDocData.type === 'purchase' || opDocData.type === 'compra';
 
-    // B.1. Restauración de Stock
+    // B.1. Restauración atómica de Stock y tandas PEPS
     if (isSale && Array.isArray(opDocData.items)) {
+      const qtyByProduct = new Map<string, number>();
       for (const it of opDocData.items) {
-        const pId = it.productId || it.id;
+        const pId = String(it.productId || it.id || '').trim();
         const qty = Number(it.quantity) || 0;
         if (pId && qty > 0) {
-          try {
-            await updateDoc(doc(db, PRODUCTS_COLLECTION, String(pId)), {
-              stock: increment(qty),
+          qtyByProduct.set(pId, (qtyByProduct.get(pId) || 0) + qty);
+        }
+      }
+      for (const [pId, qty] of qtyByProduct.entries()) {
+        try {
+          const pRef = doc(db, PRODUCTS_COLLECTION, pId);
+          await runTransaction(db, async (t) => {
+            const pSnap = await t.get(pRef);
+            if (!pSnap.exists()) return;
+            const restored = restoreProductBatches(pSnap.data(), pId, qty, () => generateUUID());
+            t.update(pRef, {
+              stock: restored.newStock,
+              batches: restored.updatedBatches,
               updatedAt: serverTimestamp()
             });
-          } catch (err) {
-            console.warn('[Firestore] Error restaurando stock tras eliminar venta:', err);
-          }
+          });
+        } catch (err) {
+          console.warn('[Firestore] Error restaurando stock tras eliminar venta:', err);
         }
       }
     } else if (isPurchase) {
-      // Restar la cantidad comprada del stock
-      const pId = opDocData.productId || (Array.isArray(opDocData.items) && opDocData.items[0]?.productId) || (Array.isArray(opDocData.items) && opDocData.items[0]?.id);
-      const qty = Number(opDocData.quantity ?? (Array.isArray(opDocData.items) && opDocData.items[0]?.quantity) ?? 0);
+      const pId = opDocData.productId || opDocData.metadata?.productId || (Array.isArray(opDocData.items) && opDocData.items[0]?.productId) || (Array.isArray(opDocData.items) && opDocData.items[0]?.id);
+      const qty = Number(opDocData.quantity ?? opDocData.metadata?.quantity ?? (Array.isArray(opDocData.items) && opDocData.items[0]?.quantity) ?? 0);
       if (pId && qty > 0) {
         try {
           const pRef = doc(db, PRODUCTS_COLLECTION, String(pId));
-          const pSnap = await getDoc(pRef);
-          if (pSnap.exists()) {
-            const currentStock = Number(pSnap.data().stock || 0);
-            await updateDoc(pRef, {
+          await runTransaction(db, async (t) => {
+            const pSnap = await t.get(pRef);
+            if (!pSnap.exists()) return;
+            const pData = pSnap.data();
+            const currentStock = Number(pData.stock || 0);
+            const existingBatches: ProductBatch[] = Array.isArray(pData.batches) ? pData.batches : [];
+            const filteredBatches = effectiveOpId
+              ? existingBatches.filter(b => b.operationId !== String(effectiveOpId))
+              : existingBatches;
+            t.update(pRef, {
               stock: Math.max(0, currentStock - qty),
+              batches: filteredBatches,
               updatedAt: serverTimestamp()
             });
-          }
+          });
         } catch (err) {
           console.warn('[Firestore] Error descontando stock tras eliminar compra:', err);
         }
       }
-
-      // Remover lote asociado en batches si existe
-      if (effectiveOpId) {
-        try {
-          const batchQ = query(collection(db, 'batches'), where('operationId', '==', String(effectiveOpId)));
-          const bSnap = await getDocs(batchQ);
-          const bBatch = writeBatch(db);
-          bSnap.forEach(d => bBatch.delete(d.ref));
-          await bBatch.commit();
-        } catch {}
-      }
     }
 
-    // B.2. Revertir saldo de deuda en cuenta corriente si aplica
+    // B.2. Revertir saldo de deuda en cuenta corriente si aplica (con clamp >= 0)
     const debtAmt = Number(opDocData.currentAccountDebtAmount || 0);
     const userId = opDocData.userId || opDocData.clientId;
     if (debtAmt > 0 && userId) {
       try {
         const userDocRef = doc(db, USERS_COLLECTION, String(userId));
-        const userDocSnap = await getDoc(userDocRef);
-        if (userDocSnap.exists()) {
-          const uOrigin = userDocSnap.data()?.originComplejoId || userDocSnap.data()?.originComplexId || userDocSnap.data()?.complejoId || userDocSnap.data()?.complexId;
+        await runTransaction(db, async (t) => {
+          const userDocSnap = await t.get(userDocRef);
+          if (!userDocSnap.exists()) return;
+          const uData = userDocSnap.data();
+          const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
           const opComplex = opDocData.complexId || opDocData.complejoId;
           if (!uOrigin || isSameComplex(uOrigin, opComplex)) {
-            await updateDoc(userDocRef, {
-              debt: increment(-debtAmt),
+            const currentDebt = Math.max(0, Number(uData?.debt || 0));
+            t.update(userDocRef, {
+              debt: Math.max(0, currentDebt - debtAmt),
               updatedAt: serverTimestamp()
             });
           }
-        }
+        });
       } catch (err) {
         console.warn('[Firestore] Error revirtiendo saldo deudor del cliente:', err);
       }
     }
   }
 
-  // B.3. Eliminación de documentos en Firestore
+  // B.3. Eliminación de documentos en Firestore respetando firestore.rules (verificar existencia previa y queries acotadas al complejo)
   const deleteBatch = writeBatch(db);
 
   if (effectiveOpId) {
-    // Documento en operations
-    deleteBatch.delete(doc(db, OPERATIONS_COLLECTION, String(effectiveOpId)));
+    if (opDocExists) {
+      deleteBatch.delete(doc(db, OPERATIONS_COLLECTION, String(effectiveOpId)));
+    }
+    if (txDocExists) {
+      deleteBatch.delete(doc(db, TRANSACTIONS_COLLECTION, String(effectiveOpId)));
+    }
 
-    // Documentos en financial_movements con operationId == effectiveOpId
+    // Documentos en financial_movements: caché en memoria primero (0 lecturas), luego query acotada
+    const cachedFm = sharedSubscribeFinancialMovements.getCached(targetComplexId);
+    if (cachedFm) {
+      cachedFm.forEach(mData => {
+        if (String(mData.operationId || '') === String(effectiveOpId)) {
+          if (mData.idempotencyKey) trackedIdemKeys.add(String(mData.idempotencyKey));
+          deleteBatch.delete(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, mData.id));
+        }
+      });
+    } else {
+      try {
+        const runFmQuery = async (field: 'complexId' | 'complejoId', cid: string) => {
+          try {
+            return await getDocs(
+              query(
+                collection(db, FINANCIAL_MOVEMENTS_COLLECTION),
+                where(field, '==', cid),
+                where('operationId', '==', String(effectiveOpId))
+              )
+            );
+          } catch (qErr: any) {
+            if (qErr?.code === 'failed-precondition') {
+              return await getDocs(query(collection(db, FINANCIAL_MOVEMENTS_COLLECTION), where(field, '==', cid)));
+            }
+            throw qErr;
+          }
+        };
+        const fmSnaps = await Promise.all(
+          complexCandidates.flatMap(cid => [
+            runFmQuery('complexId', cid),
+            runFmQuery('complejoId', cid)
+          ])
+        );
+        const seenFmIds = new Set<string>();
+        fmSnaps.forEach(snap => {
+          snap.forEach(d => {
+            const mData = d.data();
+            if (!seenFmIds.has(d.id) && String(mData.operationId || '') === String(effectiveOpId)) {
+              seenFmIds.add(d.id);
+              if (mData.idempotencyKey) trackedIdemKeys.add(String(mData.idempotencyKey));
+              deleteBatch.delete(d.ref);
+            }
+          });
+        });
+      } catch {}
+    }
+
+    // Documentos en inventory_movements acotados por operationId cuando aplica
     try {
-      const fmQ = query(collection(db, FINANCIAL_MOVEMENTS_COLLECTION), where('operationId', '==', String(effectiveOpId)));
-      const fmSnap = await getDocs(fmQ);
-      fmSnap.forEach(d => deleteBatch.delete(d.ref));
+      const runImQuery = async (field: 'complexId' | 'complejoId', cid: string) => {
+        try {
+          return await getDocs(
+            query(
+              collection(db, INVENTORY_MOVEMENTS_COLLECTION),
+              where(field, '==', cid),
+              where('operationId', '==', String(effectiveOpId))
+            )
+          );
+        } catch (qErr: any) {
+          if (qErr?.code === 'failed-precondition') {
+            return await getDocs(query(collection(db, INVENTORY_MOVEMENTS_COLLECTION), where(field, '==', cid)));
+          }
+          throw qErr;
+        }
+      };
+      const imSnaps = await Promise.all(
+        complexCandidates.flatMap(cid => [
+          runImQuery('complexId', cid),
+          runImQuery('complejoId', cid)
+        ])
+      );
+      const seenImIds = new Set<string>();
+      imSnaps.forEach(snap => {
+        snap.forEach(d => {
+          if (!seenImIds.has(d.id) && String(d.data().operationId || '') === String(effectiveOpId)) {
+            seenImIds.add(d.id);
+            deleteBatch.delete(d.ref);
+          }
+        });
+      });
     } catch {}
 
-    // Documentos en inventory_movements con operationId == effectiveOpId
-    try {
-      const imQ = query(collection(db, INVENTORY_MOVEMENTS_COLLECTION), where('operationId', '==', String(effectiveOpId)));
-      const imSnap = await getDocs(imQ);
-      imSnap.forEach(d => deleteBatch.delete(d.ref));
-    } catch {}
+    // Documentos en transactions: caché en memoria primero (0 lecturas), luego query acotada
+    const cachedTxList = sharedSubscribeTransactions.getCached(targetComplexId);
+    if (cachedTxList) {
+      cachedTxList.forEach(tData => {
+        if (String(tData.id) !== String(effectiveOpId) && String(tData.operationId || '') === String(effectiveOpId)) {
+          deleteBatch.delete(doc(db, TRANSACTIONS_COLLECTION, tData.id));
+        }
+      });
+    } else {
+      try {
+        const runTxOpQuery = async (field: 'complexId' | 'complejoId', cid: string) => {
+          try {
+            return await getDocs(
+              query(
+                collection(db, TRANSACTIONS_COLLECTION),
+                where(field, '==', cid),
+                where('operationId', '==', String(effectiveOpId))
+              )
+            );
+          } catch (qErr: any) {
+            if (qErr?.code === 'failed-precondition') {
+              return await getDocs(query(collection(db, TRANSACTIONS_COLLECTION), where(field, '==', cid)));
+            }
+            throw qErr;
+          }
+        };
+        const txSnaps = await Promise.all(
+          complexCandidates.flatMap(cid => [
+            runTxOpQuery('complexId', cid),
+            runTxOpQuery('complejoId', cid)
+          ])
+        );
+        const seenTxIds = new Set<string>([String(effectiveOpId)]);
+        txSnaps.forEach(snap => {
+          snap.forEach(d => {
+            if (!seenTxIds.has(d.id) && String(d.data().operationId || '') === String(effectiveOpId)) {
+              seenTxIds.add(d.id);
+              deleteBatch.delete(d.ref);
+            }
+          });
+        });
+      } catch {}
+    }
+  }
 
-    // Documentos en transactions (por ID o operationId)
-    deleteBatch.delete(doc(db, TRANSACTIONS_COLLECTION, String(effectiveOpId)));
+  // Eliminar claves de idempotencia rastreadas por get() directo (compatible con rules)
+  if (trackedIdemKeys.size > 0) {
     try {
-      const txQ = query(collection(db, TRANSACTIONS_COLLECTION), where('operationId', '==', String(effectiveOpId)));
-      const txSnap = await getDocs(txQ);
-      txSnap.forEach(d => deleteBatch.delete(d.ref));
-    } catch {}
-
-    // Eliminar claves de idempotencia vinculadas si existen
-    try {
-      const idempQ = query(collection(db, 'idempotency_keys'), where('operationId', '==', String(effectiveOpId)));
-      const idempSnap = await getDocs(idempQ);
-      idempSnap.forEach(d => deleteBatch.delete(d.ref));
+      const idemSnaps = await Promise.all(
+        Array.from(trackedIdemKeys).map(k => getDoc(doc(db, IDEMPOTENCY_COLLECTION, k)))
+      );
+      idemSnaps.forEach(s => {
+        if (s.exists()) deleteBatch.delete(s.ref);
+      });
     } catch {}
   }
 
-  // Si se pasó un movimiento individual puntual, asegurar su eliminación
-  if (movId) {
+  // Fallback opcional solo si no se rastreó ninguna clave y el usuario posee permisos list
+  if (effectiveOpId && trackedIdemKeys.size === 0) {
+    try {
+      const idempSnap = await getDocs(
+        query(collection(db, IDEMPOTENCY_COLLECTION), where('operationId', '==', String(effectiveOpId)))
+      );
+      idempSnap.forEach(d => {
+        if (!trackedIdemKeys.has(d.id)) {
+          deleteBatch.delete(d.ref);
+        }
+      });
+    } catch {}
+  }
+
+  if (movId && movExists) {
     deleteBatch.delete(doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId));
   }
 
@@ -5518,22 +6959,29 @@ export async function registerOperationPaymentsBatch(params: {
   notes?: string;
   idempotencyKey?: string;
 }): Promise<PaymentRegistrationResult> {
-  const realPayments = (Array.isArray(params.payments) ? params.payments : []).filter(p => {
-    const m = String(p?.paymentMethod || (p as any)?.method || '').toLowerCase().trim();
-    const amt = Math.max(0, Number(p?.amount) || 0);
-    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado' && m !== 'cuenta corriente';
-  });
+  const targetComplexId = (!params.complexId || params.complexId === 'complejo_central') ? 'B' : params.complexId;
 
-  const totalAmount = realPayments.reduce((s, p) => s + (Math.max(0, Number(p.amount) || 0)), 0);
+  const realPayments = (Array.isArray(params.payments) ? params.payments : [])
+    .map(p => ({
+      amount: Math.max(0, Number(p?.amount) || 0),
+      paymentMethod: normalizeMonetaryPaymentMethod(p?.paymentMethod || (p as any)?.method),
+      idempotencyKey: p?.idempotencyKey,
+      notes: p?.notes
+    }))
+    .filter((p): p is { amount: number; paymentMethod: FinancialPaymentMethod; idempotencyKey: string; notes: string | undefined } =>
+      p.amount > 0 && p.paymentMethod !== null
+    );
+
+  const totalAmount = realPayments.reduce((s, p) => s + p.amount, 0);
   if (totalAmount <= 0 || realPayments.length === 0) {
-    throw new Error('El importe total a cobrar debe ser mayor a 0.');
+    throw new Error('El importe total a cobrar debe ser mayor a 0 con un método monetario válido.');
   }
 
   // Si es un solo método real, ejecutar registerOperationPayment estándar
   if (realPayments.length === 1) {
     const single = realPayments[0];
     return await registerOperationPayment({
-      complexId: params.complexId,
+      complexId: targetComplexId,
       operationId: params.operationId,
       amount: single.amount,
       paymentMethod: single.paymentMethod,
@@ -5547,161 +6995,194 @@ export async function registerOperationPaymentsBatch(params: {
   const opRef = doc(db, OPERATIONS_COLLECTION, params.operationId);
   const batchIdemKey = params.idempotencyKey || realPayments[0].idempotencyKey;
 
-  return await runTransaction(db, async (t) => {
-    // 1. Lecturas
-    const opSnap = await t.get(opRef);
-    if (!opSnap.exists()) {
-      throw new Error(`Operación '${params.operationId}' no encontrada.`);
-    }
+  const preOp = await precheckOperationExists(opRef, targetComplexId, params.operationId);
+  if (!preOp.exists) {
+    throw new Error(`Operación '${params.operationId}' no encontrada.`);
+  }
 
-    const opData = opSnap.data() as OperationDocument;
-    const userRef = opData.userId ? doc(db, USERS_COLLECTION, opData.userId) : null;
-    const bookingRef = opData.bookingId ? doc(db, BOOKINGS_COLLECTION, opData.bookingId) : null;
+  const shouldCheckUserDebt = Boolean(
+    preOp.opData &&
+    Number(preOp.opData.currentAccountDebtAmount || 0) > 0 &&
+    !isSyntheticUserId(preOp.opData.userId)
+  );
+  const canAccessUserDebt = shouldCheckUserDebt
+    ? await precheckUserDocAccessible(preOp.opData?.userId, targetComplexId)
+    : false;
 
-    if (userRef) await t.get(userRef);
-    if (bookingRef) await t.get(bookingRef);
+  try {
+    return await runTransaction(db, async (t) => {
+      // 1. Lecturas
+      const opSnap = await t.get(opRef);
+      if (!opSnap.exists()) {
+        throw new Error(`Operación '${params.operationId}' no encontrada.`);
+      }
 
-    // Lectura de idempotencia del acto de cobro
-    const idemSnaps = await Promise.all(
-      [batchIdemKey, ...realPayments.map(p => p.idempotencyKey)]
-        .filter((k, idx, arr) => Boolean(k) && arr.indexOf(k) === idx)
-        .map(k => t.get(doc(db, IDEMPOTENCY_COLLECTION, k)))
-    );
+      const opData = opSnap.data() as OperationDocument;
+      const userRef = (opData.userId && Number(opData.currentAccountDebtAmount || 0) > 0 && canAccessUserDebt)
+        ? doc(db, USERS_COLLECTION, String(opData.userId))
+        : null;
+      const bookingRef = opData.bookingId ? doc(db, BOOKINGS_COLLECTION, String(opData.bookingId)) : null;
 
-    // 2. Validaciones
-    if (opData.complexId !== params.complexId) {
-      throw new Error('La operación no pertenece al complejo activo.');
-    }
-    if (isJogoBillingOperation(opData)) {
-      throw new Error('Los cobros de Jogo solo pueden ser registrados por la administración de Jogo.');
-    }
-    if (['cancelled_unpaid', 'cancelled_retained', 'fully_refunded'].includes(opData.paymentStatus)) {
-      throw new Error(`No se pueden registrar cobros sobre una operación cancelada (${opData.paymentStatus}).`);
-    }
-    if (opData.amountPending <= 0) {
-      throw new Error('La operación ya se encuentra totalmente saldada.');
-    }
+      const [userSnap, bookingSnap] = await Promise.all([
+        userRef ? t.get(userRef) : Promise.resolve(null),
+        bookingRef ? t.get(bookingRef) : Promise.resolve(null)
+      ]);
 
-    // Si el acto de cobro ya fue completado, detectar idempotencia
-    const completedSnap = idemSnaps.find(s => s.exists() && (s.data() as IdempotencyRecord).status === 'completed');
-    if (completedSnap) {
+      // Lectura de idempotencia del acto de cobro
+      const idemSnaps = await Promise.all(
+        [batchIdemKey, ...realPayments.map(p => p.idempotencyKey)]
+          .filter((k, idx, arr) => Boolean(k) && arr.indexOf(k) === idx)
+          .map(k => t.get(doc(db, IDEMPOTENCY_COLLECTION, k)))
+      );
+
+      // 2. Validaciones
+      const opComplex = opData.complexId || (opData as any).complejoId;
+      if (opComplex && !isSameComplex(opComplex, targetComplexId)) {
+        throw new Error('La operación no pertenece al complejo activo.');
+      }
+      if (isJogoBillingOperation(opData)) {
+        throw new Error('Los cobros de Jogo solo pueden ser registrados por la administración de Jogo.');
+      }
+      if (['cancelled_unpaid', 'cancelled_retained', 'fully_refunded'].includes(opData.paymentStatus)) {
+        throw new Error(`No se pueden registrar cobros sobre una operación cancelada (${opData.paymentStatus}).`);
+      }
+      if (opData.amountPending <= 0) {
+        throw new Error('La operación ya se encuentra totalmente saldada.');
+      }
+
+      // Si el acto de cobro ya fue completado, detectar idempotencia
+      const completedSnap = idemSnaps.find(s => s.exists() && (s.data() as IdempotencyRecord).status === 'completed');
+      if (completedSnap) {
+        return {
+          success: true,
+          operationId: params.operationId,
+          movementId: (completedSnap.data() as IdempotencyRecord)?.movementId || null,
+          ticketCode: opData.ticketCode,
+          paymentStatus: opData.paymentStatus,
+          amountPending: opData.amountPending,
+          currentAccountDebtAmount: opData.currentAccountDebtAmount,
+          clearedCurrentAccountDebt: 0,
+          alreadyProcessed: true
+        };
+      }
+
+      const newTotalCollected = opData.totalCollected + totalAmount;
+      const balances = calculateFinancialBalances({
+        contractualAmount: opData.contractualAmount,
+        totalCollected: newTotalCollected,
+        totalRefunded: opData.totalRefunded
+      });
+
+      const trans = validateStateTransition(opData.paymentStatus, balances.paymentStatus);
+      if (!trans.valid) {
+        throw new Error(trans.reason);
+      }
+
+      let clearedDebt = 0;
+      let remainingOpDebt = 0;
+      if (opData.currentAccountDebtAmount > 0) {
+        const clearing = calculateCurrentAccountClearing(opData.currentAccountDebtAmount, totalAmount);
+        clearedDebt = clearing.clearedDebtAmount;
+        remainingOpDebt = clearing.remainingOperationDebt;
+      }
+
+      const isExpense = opData.operationType === 'expense' || opData.operationType === 'purchase';
+      const movementFlow: 'income' | 'expense' = isExpense ? 'expense' : 'income';
+      const category: FinancialMovementCategory = isExpense ? 'expense_payment' : (opData.operationType === 'court_booking' ? 'booking_settlement' : 'sale_collection');
+
+      // 3. Escrituras: 1 ÚNICO documento en /financial_movements y 1 registro de idempotencia
+      const builtBatchMov = buildSingleMovementPayload({
+        payments: realPayments,
+        complexId: targetComplexId,
+        operationId: params.operationId,
+        bookingId: opData.bookingId || null,
+        ticketCode: opData.ticketCode,
+        flow: movementFlow,
+        category,
+        responsibleName: opData.userName || opData.clientName || 'NN',
+        userId: opData.userId || opData.clientId || null,
+        userPhone: opData.userPhone || opData.clientPhone || '',
+        clearedCurrentAccountDebt: clearedDebt,
+        notes: params.notes || '',
+        operatorId: params.operatorId,
+        idempotencyKey: batchIdemKey
+      });
+
+      if (!builtBatchMov) {
+        throw new Error('El importe total a cobrar debe ser mayor a 0.');
+      }
+
+      const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtBatchMov.movId);
+      t.set(movRef, builtBatchMov.movDocData);
+
+      const pIdemRef = doc(db, IDEMPOTENCY_COLLECTION, batchIdemKey);
+      t.set(pIdemRef, {
+        idempotencyKey: batchIdemKey,
+        complexId: targetComplexId,
+        complejoId: targetComplexId,
+        operationId: params.operationId,
+        amount: builtBatchMov.totalAmount,
+        paymentMethod: builtBatchMov.paymentMethod,
+        flow: movementFlow,
+        status: 'completed',
+        movementId: builtBatchMov.movId,
+        createdAt: serverTimestamp(),
+        completedAt: serverTimestamp()
+      });
+
+      // Actualizar operación
+      t.update(opRef, {
+        totalCollected: balances.totalCollected,
+        netCollected: balances.netCollected,
+        amountPending: balances.amountPending,
+        paymentStatus: balances.paymentStatus,
+        currentAccountDebtAmount: remainingOpDebt,
+        idempotencyKeys: arrayUnion(batchIdemKey),
+        updatedAt: serverTimestamp()
+      });
+
+      // Descontar users/{userId}.debt con clamp >= 0
+      if (clearedDebt > 0 && userRef && userSnap && userSnap.exists()) {
+        const uData = userSnap.data();
+        const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
+        if (!uOrigin || isSameComplex(uOrigin, targetComplexId)) {
+          const currentUserDebt = Math.max(0, Number(uData?.debt || 0));
+          t.update(userRef, {
+            debt: Math.max(0, currentUserDebt - clearedDebt),
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
+
+      // Sincronizar reserva si aplica
+      if (bookingRef && bookingSnap && bookingSnap.exists()) {
+        t.update(bookingRef, {
+          paymentStatus: balances.paymentStatus,
+          payment_status: balances.paymentStatus,
+          deposit: balances.totalCollected,
+          amount_paid: balances.totalCollected,
+          idempotencyKeys: arrayUnion(batchIdemKey),
+          updatedAt: serverTimestamp()
+        });
+      }
+
       return {
         success: true,
         operationId: params.operationId,
-        movementId: (completedSnap.data() as IdempotencyRecord)?.movementId || null,
+        movementId: builtBatchMov.movId,
         ticketCode: opData.ticketCode,
-        paymentStatus: opData.paymentStatus,
-        amountPending: opData.amountPending,
-        currentAccountDebtAmount: opData.currentAccountDebtAmount,
-        clearedCurrentAccountDebt: 0,
-        alreadyProcessed: true
-      };
-    }
-
-    const newTotalCollected = opData.totalCollected + totalAmount;
-    const balances = calculateFinancialBalances({
-      contractualAmount: opData.contractualAmount,
-      totalCollected: newTotalCollected,
-      totalRefunded: opData.totalRefunded
-    });
-
-    const trans = validateStateTransition(opData.paymentStatus, balances.paymentStatus);
-    if (!trans.valid) {
-      throw new Error(trans.reason);
-    }
-
-    let clearedDebt = 0;
-    let remainingOpDebt = 0;
-    if (opData.currentAccountDebtAmount > 0) {
-      const clearing = calculateCurrentAccountClearing(opData.currentAccountDebtAmount, totalAmount);
-      clearedDebt = clearing.clearedDebtAmount;
-      remainingOpDebt = clearing.remainingOperationDebt;
-    }
-
-    const isExpense = opData.operationType === 'expense' || opData.operationType === 'purchase';
-    const movementFlow: 'income' | 'expense' = isExpense ? 'expense' : 'income';
-    const category: FinancialMovementCategory = isExpense ? 'expense_payment' : (opData.operationType === 'court_booking' ? 'booking_settlement' : 'sale_collection');
-
-    // 3. Escrituras: 1 ÚNICO documento en /financial_movements y 1 registro de idempotencia
-    const builtBatchMov = buildSingleMovementPayload({
-      payments: realPayments,
-      complexId: params.complexId,
-      operationId: params.operationId,
-      bookingId: opData.bookingId || null,
-      ticketCode: opData.ticketCode,
-      flow: movementFlow,
-      category,
-      responsibleName: opData.userName || opData.clientName || 'NN',
-      userId: opData.userId || opData.clientId || null,
-      userPhone: opData.userPhone || opData.clientPhone || '',
-      clearedCurrentAccountDebt: clearedDebt,
-      notes: params.notes || '',
-      operatorId: params.operatorId,
-      idempotencyKey: batchIdemKey
-    });
-
-    if (!builtBatchMov) {
-      throw new Error('El importe total a cobrar debe ser mayor a 0.');
-    }
-
-    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtBatchMov.movId);
-    t.set(movRef, builtBatchMov.movDocData);
-
-    const pIdemRef = doc(db, IDEMPOTENCY_COLLECTION, batchIdemKey);
-    t.set(pIdemRef, {
-      idempotencyKey: batchIdemKey,
-      complexId: params.complexId,
-      complejoId: params.complexId,
-      operationId: params.operationId,
-      amount: builtBatchMov.totalAmount,
-      paymentMethod: builtBatchMov.paymentMethod,
-      flow: movementFlow,
-      status: 'completed',
-      movementId: builtBatchMov.movId,
-      createdAt: serverTimestamp(),
-      completedAt: serverTimestamp()
-    });
-
-    // Actualizar operación
-    t.update(opRef, {
-      totalCollected: balances.totalCollected,
-      netCollected: balances.netCollected,
-      amountPending: balances.amountPending,
-      paymentStatus: balances.paymentStatus,
-      currentAccountDebtAmount: remainingOpDebt,
-      updatedAt: serverTimestamp()
-    });
-
-    // Descontar users/{userId}.debt
-    if (clearedDebt > 0 && userRef) {
-      t.set(userRef, {
-        debt: increment(-clearedDebt),
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-    }
-
-    // Sincronizar reserva si aplica
-    if (bookingRef) {
-      t.update(bookingRef, {
         paymentStatus: balances.paymentStatus,
-        payment_status: balances.paymentStatus,
-        deposit: balances.totalCollected,
-        amount_paid: balances.totalCollected,
-        updatedAt: serverTimestamp()
-      });
+        amountPending: balances.amountPending,
+        currentAccountDebtAmount: remainingOpDebt,
+        clearedCurrentAccountDebt: clearedDebt
+      };
+    });
+  } catch (err) {
+    if (isPermissionDeniedError(err)) {
+      handleFirestoreError(err, FirestoreOpType.WRITE, `${OPERATIONS_COLLECTION}/${params.operationId}`);
     }
-
-    return {
-      success: true,
-      operationId: params.operationId,
-      movementId: builtBatchMov.movId,
-      ticketCode: opData.ticketCode,
-      paymentStatus: balances.paymentStatus,
-      amountPending: balances.amountPending,
-      currentAccountDebtAmount: remainingOpDebt,
-      clearedCurrentAccountDebt: clearedDebt
-    };
-  });
+    throw err;
+  }
 }
 
 /**
@@ -5727,20 +7208,27 @@ export async function settleLegacyOrVirtualDebt(params: {
   notes?: string;
   isExpense?: boolean;
 }): Promise<void> {
-  const realPayments = (Array.isArray(params.payments) ? params.payments : []).filter(p => {
-    const m = String(p?.paymentMethod || (p as any)?.method || '').toLowerCase().trim();
-    const amt = Math.max(0, Number(p?.amount) || 0);
-    return amt > 0 && m !== 'pendiente' && m !== 'pending' && m !== 'fiado' && m !== 'cuenta corriente';
-  });
+  const targetComplexId = (!params.complexId || params.complexId === 'complejo_central') ? 'B' : params.complexId;
 
-  const totalAmount = realPayments.reduce((s, p) => s + (Math.max(0, Number(p.amount) || 0)), 0);
+  const realPayments = (Array.isArray(params.payments) ? params.payments : [])
+    .map(p => ({
+      amount: Math.max(0, Number(p?.amount) || 0),
+      paymentMethod: normalizeMonetaryPaymentMethod(p?.paymentMethod || (p as any)?.method),
+      idempotencyKey: p?.idempotencyKey,
+      notes: p?.notes
+    }))
+    .filter((p): p is { amount: number; paymentMethod: FinancialPaymentMethod; idempotencyKey: string; notes: string | undefined } =>
+      p.amount > 0 && p.paymentMethod !== null
+    );
+
+  const totalAmount = realPayments.reduce((s, p) => s + p.amount, 0);
   if (totalAmount <= 0 || realPayments.length === 0) {
-    throw new Error(params.isExpense ? 'El importe a pagar debe ser mayor a 0.' : 'El importe a cobrar debe ser mayor a 0.');
+    throw new Error(params.isExpense ? 'El importe a pagar debe ser mayor a 0 con un método monetario válido.' : 'El importe a cobrar debe ser mayor a 0 con un método monetario válido.');
   }
 
   const resolvedSettleName = resolveClientName(params);
   const resolvedSettlePhone = resolveClientPhone(params);
-  const settleClientId = (params.userId && String(params.userId) !== '0') ? String(params.userId) : null;
+  const settleClientId = !isSyntheticUserId(params.userId) ? String(params.userId) : null;
   const isExp = Boolean(params.isExpense);
   const movFlow: 'income' | 'expense' = isExp ? 'expense' : 'income';
   const category: FinancialMovementCategory = isExp
@@ -5748,41 +7236,48 @@ export async function settleLegacyOrVirtualDebt(params: {
     : (params.bookingId ? 'booking_settlement' : 'historical_debt_payment');
   const settleIdemKey = realPayments[0].idempotencyKey;
 
-  // 1. Registrar 1 único movimiento financiero y 1 registro de idempotencia
-  const builtSettleMov = buildSingleMovementPayload({
-    payments: realPayments,
-    complexId: params.complexId,
-    operationId: params.operationId,
-    bookingId: params.bookingId || null,
-    ticketCode: params.ticketCode || params.operationId.slice(0, 8),
-    flow: movFlow,
-    category,
-    responsibleName: resolvedSettleName,
-    userId: settleClientId,
-    userPhone: resolvedSettlePhone,
-    notes: params.notes || (isExp ? 'Pago saldo pendiente proveedor' : 'Cobro saldo pendiente'),
-    operatorId: params.operatorId,
-    idempotencyKey: settleIdemKey
-  });
-
-  if (builtSettleMov) {
-    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtSettleMov.movId);
-    await setDoc(movRef, builtSettleMov.movDocData);
-
-    const idemRef = doc(db, IDEMPOTENCY_COLLECTION, settleIdemKey);
-    await setDoc(idemRef, {
-      idempotencyKey: settleIdemKey,
-      complexId: params.complexId,
-      complejoId: params.complexId,
+  try {
+    // 1. Registrar 1 único movimiento financiero y 1 registro de idempotencia
+    const builtSettleMov = buildSingleMovementPayload({
+      payments: realPayments,
+      complexId: targetComplexId,
       operationId: params.operationId,
-      amount: builtSettleMov.totalAmount,
-      paymentMethod: builtSettleMov.paymentMethod,
+      bookingId: params.bookingId || null,
+      ticketCode: params.ticketCode || params.operationId.slice(0, 8),
       flow: movFlow,
-      status: 'completed',
-      movementId: builtSettleMov.movId,
-      createdAt: serverTimestamp(),
-      completedAt: serverTimestamp()
+      category,
+      responsibleName: resolvedSettleName,
+      userId: settleClientId,
+      userPhone: resolvedSettlePhone,
+      notes: params.notes || (isExp ? 'Pago saldo pendiente proveedor' : 'Cobro saldo pendiente'),
+      operatorId: params.operatorId,
+      idempotencyKey: settleIdemKey
     });
+
+    if (builtSettleMov) {
+      const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, builtSettleMov.movId);
+      await setDoc(movRef, builtSettleMov.movDocData);
+
+      const idemRef = doc(db, IDEMPOTENCY_COLLECTION, settleIdemKey);
+      await setDoc(idemRef, {
+        idempotencyKey: settleIdemKey,
+        complexId: targetComplexId,
+        complejoId: targetComplexId,
+        operationId: params.operationId,
+        amount: builtSettleMov.totalAmount,
+        paymentMethod: builtSettleMov.paymentMethod,
+        flow: movFlow,
+        status: 'completed',
+        movementId: builtSettleMov.movId,
+        createdAt: serverTimestamp(),
+        completedAt: serverTimestamp()
+      });
+    }
+  } catch (err) {
+    if (isPermissionDeniedError(err)) {
+      handleFirestoreError(err, FirestoreOpType.WRITE, `${FINANCIAL_MOVEMENTS_COLLECTION}/${params.operationId}`);
+    }
+    throw err;
   }
 
   // 2. Si es una reserva, actualizar documento en bookings
@@ -5802,21 +7297,29 @@ export async function settleLegacyOrVirtualDebt(params: {
           deposit: newPaid,
           paymentStatus: isPaid ? 'paid' : 'partial',
           payment_status: isPaid ? 'paid' : 'partial',
+          idempotencyKeys: arrayUnion(settleIdemKey),
           updatedAt: serverTimestamp()
         });
 
         // Sincronizar también la operación comercial única de la reserva si existe
-        const opRef = doc(db, OPERATIONS_COLLECTION, `${params.bookingId}-booking`);
-        const opSnap = await getDoc(opRef);
-        if (opSnap.exists()) {
-          const opData = opSnap.data();
-          await updateDoc(opRef, {
-            totalCollected: newPaid,
-            netCollected: newPaid - (opData.totalRefunded || 0),
-            amountPending: Math.max(0, totalPrice - newPaid),
-            paymentStatus: isPaid ? 'paid' : 'partial',
-            updatedAt: serverTimestamp()
-          });
+        const opDocId = `${params.bookingId}-booking`;
+        const opRef = doc(db, OPERATIONS_COLLECTION, opDocId);
+        const opCheck = await precheckOperationExists(opRef, targetComplexId, opDocId);
+        if (opCheck.exists) {
+          const opSnap = await getDoc(opRef);
+          if (opSnap.exists()) {
+            const opData = opSnap.data();
+            const currentOpDebt = Math.max(0, Number(opData.currentAccountDebtAmount || 0));
+            await updateDoc(opRef, {
+              totalCollected: newPaid,
+              netCollected: newPaid - (opData.totalRefunded || 0),
+              amountPending: Math.max(0, totalPrice - newPaid),
+              currentAccountDebtAmount: Math.max(0, currentOpDebt - totalAmount),
+              paymentStatus: isPaid ? 'paid' : 'partial',
+              idempotencyKeys: arrayUnion(settleIdemKey),
+              updatedAt: serverTimestamp()
+            });
+          }
         }
       }
     } catch (bErr) {
@@ -5825,48 +7328,57 @@ export async function settleLegacyOrVirtualDebt(params: {
   } else {
     // 3. Si es una transacción en /transactions, actualizar su desglose
     try {
-      const txRef = doc(db, TRANSACTIONS_COLLECTION, params.operationId);
-      const txSnap = await getDoc(txRef);
-      if (txSnap.exists()) {
-        const txData = txSnap.data();
-        const currentPayments = Array.isArray(txData.payments) ? [...txData.payments] : [];
-        for (const p of params.payments) {
-          currentPayments.push({
-            method: p.paymentMethod,
-            amount: p.amount
+      const cachedTxs = sharedSubscribeTransactions.getCached(targetComplexId);
+      const txKnownPresent = !Array.isArray(cachedTxs) || cachedTxs.some(t => String(t.id) === String(params.operationId));
+      if (txKnownPresent) {
+        const txRef = doc(db, TRANSACTIONS_COLLECTION, params.operationId);
+        const txSnap = await getDoc(txRef);
+        if (txSnap.exists()) {
+          const txData = txSnap.data();
+          const currentPayments = Array.isArray(txData.payments) ? [...txData.payments] : [];
+          for (const p of realPayments) {
+            currentPayments.push({
+              method: p.paymentMethod,
+              amount: p.amount
+            });
+          }
+          const totalPaidAll = currentPayments
+            .filter(p => normalizeMonetaryPaymentMethod(p.method) !== null)
+            .reduce((s, p) => s + Number(p.amount || 0), 0);
+          const txTotal = Number(txData.total || txData.amount || 0);
+          const isFullyPaid = totalPaidAll >= txTotal - 0.01;
+
+          await updateDoc(txRef, {
+            payments: currentPayments,
+            paymentStatus: isFullyPaid ? 'paid' : 'partial',
+            settledAt: serverTimestamp()
           });
         }
-        const totalPaidAll = currentPayments
-          .filter(p => p.method !== 'fiado')
-          .reduce((s, p) => s + Number(p.amount || 0), 0);
-        const txTotal = Number(txData.total || txData.amount || 0);
-        const isFullyPaid = totalPaidAll >= txTotal - 0.01;
-
-        await updateDoc(txRef, {
-          payments: currentPayments,
-          paymentStatus: isFullyPaid ? 'paid' : 'partial',
-          settledAt: serverTimestamp()
-        });
       }
     } catch (txErr) {
       console.warn('[Firestore] Error actualizando transacción histórica:', txErr);
     }
   }
 
-  // 4. Si el cliente tiene cuenta con deuda, reducir users/{userId}.debt si pertenece a la sede
-  if (params.userId) {
+  // 4. Si el cliente tiene cuenta con deuda, reducir users/{userId}.debt con clamp >= 0
+  if (settleClientId) {
     try {
-      const userRef = doc(db, USERS_COLLECTION, params.userId);
-      const userSnap = await getDoc(userRef);
-      if (userSnap.exists()) {
-        const uOrigin = userSnap.data()?.originComplejoId || userSnap.data()?.originComplexId || userSnap.data()?.complejoId || userSnap.data()?.complexId;
-        const effComplex = params.complexId;
-        if (!uOrigin || isSameComplex(uOrigin, effComplex)) {
-          await updateDoc(userRef, {
-            debt: increment(-totalAmount),
-            updatedAt: serverTimestamp()
-          });
-        }
+      const canTouchUser = await precheckUserDocAccessible(settleClientId, targetComplexId);
+      if (canTouchUser) {
+        const userRef = doc(db, USERS_COLLECTION, settleClientId);
+        await runTransaction(db, async (t) => {
+          const userSnap = await t.get(userRef);
+          if (!userSnap.exists()) return;
+          const uData = userSnap.data();
+          const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
+          if (!uOrigin || isSameComplex(uOrigin, targetComplexId)) {
+            const currentDebt = Math.max(0, Number(uData?.debt || 0));
+            t.update(userRef, {
+              debt: Math.max(0, currentDebt - totalAmount),
+              updatedAt: serverTimestamp()
+            });
+          }
+        });
       }
     } catch (uErr) {
       console.warn('[Firestore] Error actualizando deuda de usuario:', uErr);
@@ -5884,156 +7396,290 @@ export async function registerBookingPaymentInFirestore(params: {
   complexId: string;
   amount: number;
   paymentMethod?: FinancialPaymentMethod;
+  payments?: Array<{
+    amount: number;
+    paymentMethod: FinancialPaymentMethod | string;
+    notes?: string;
+  }>;
+  playerUpdate?: {
+    id?: string;
+    userId?: string;
+    name: string;
+    phone?: string;
+    isHost?: boolean;
+    amount: number;
+  } | null;
   operatorId?: string;
   idempotencyKey?: string;
   notes?: string;
 }): Promise<{ success: boolean; movementId: string }> {
   const strBookingId = String(params.bookingId);
   const targetComplexId = (!params.complexId || params.complexId === 'complejo_central') ? 'B' : params.complexId;
-  const payAmt = Math.max(0, Number(params.amount) || 0);
-  if (payAmt <= 0) {
-    throw new Error('El importe a cobrar debe ser mayor a $0.');
+
+  const rawPaymentsList = (Array.isArray(params.payments) && params.payments.length > 0
+    ? params.payments
+    : [{ amount: params.amount, paymentMethod: params.paymentMethod || 'cash', notes: params.notes }]
+  )
+    .map(p => ({
+      amount: Math.max(0, Number(p?.amount) || 0),
+      paymentMethod: normalizeMonetaryPaymentMethod(p?.paymentMethod),
+      notes: p?.notes
+    }))
+    .filter((p): p is { amount: number; paymentMethod: FinancialPaymentMethod; notes: string | undefined } =>
+      p.amount > 0 && p.paymentMethod !== null && p.paymentMethod !== 'mixed'
+    );
+
+  const payAmt = rawPaymentsList.reduce((sum, p) => sum + p.amount, 0);
+  if (payAmt <= 0 || rawPaymentsList.length === 0) {
+    throw new Error('Debe seleccionar un medio de pago monetario válido (Efectivo, Transferencia, Tarjeta o Mercado Pago) con importe mayor a $0.');
   }
 
   const bRef = doc(db, BOOKINGS_COLLECTION, strBookingId);
-  const opRef = doc(db, OPERATIONS_COLLECTION, `${strBookingId}-booking`);
+  const opDocId = `${strBookingId}-booking`;
+  const opRef = doc(db, OPERATIONS_COLLECTION, opDocId);
   const idemKey = params.idempotencyKey || `pay_booking_${strBookingId}_${Date.now()}`;
   const idemRef = doc(db, IDEMPOTENCY_COLLECTION, idemKey);
 
-  return await runTransaction(db, async (t) => {
-    // 1. Lecturas
-    const bSnap = await t.get(bRef);
-    if (!bSnap.exists()) {
-      throw new Error(`Reserva '${strBookingId}' no encontrada.`);
-    }
+  // Precheck before transaction so we never trigger `resource == null` permission-denied on missing op/user docs
+  const preOp = await precheckOperationExists(opRef, targetComplexId, opDocId);
+  const opDebtHint = Number(preOp.opData?.currentAccountDebtAmount || 0);
+  const opUserHint = preOp.opData?.userId || preOp.opData?.clientId || null;
+  const canReadOpUserDebt = (preOp.exists && opDebtHint > 0 && !isSyntheticUserId(opUserHint))
+    ? await precheckUserDocAccessible(opUserHint, targetComplexId)
+    : false;
 
-    const opSnap = await t.get(opRef);
-    const idemSnap = await t.get(idemRef);
+  try {
+    return await runTransaction(db, async (t) => {
+      // 1. Lecturas
+      const [bSnap, opSnap, idemSnap] = await Promise.all([
+        t.get(bRef),
+        preOp.exists ? t.get(opRef) : Promise.resolve(null),
+        t.get(idemRef)
+      ]);
 
-    // Idempotencia
-    if (idemSnap.exists() && idemSnap.data()?.status === 'completed') {
-      return {
-        success: true,
-        movementId: idemSnap.data()?.movementId || ''
-      };
-    }
+      if (!bSnap.exists()) {
+        throw new Error(`Reserva '${strBookingId}' no encontrada.`);
+      }
 
-    const bData = bSnap.data();
-    const totalPrice = Number(bData.price ?? bData.price_total ?? 0);
-    const previousPaid = Number(bData.amount_paid ?? bData.deposit ?? 0);
-    const newPaid = previousPaid + payAmt;
-    const newPending = Math.max(0, totalPrice - newPaid);
-    const isFullyPaid = newPaid >= totalPrice - 0.01 && totalPrice > 0;
-    const paymentStatusEs = isFullyPaid ? 'pagado' : 'seña';
-    const paymentStatusEn = isFullyPaid ? 'paid' : 'partial';
+      // Idempotencia
+      if (idemSnap.exists() && idemSnap.data()?.status === 'completed') {
+        return {
+          success: true,
+          movementId: idemSnap.data()?.movementId || ''
+        };
+      }
 
-    // Generar movimiento financiero único mediante helper unificado
-    const ticketCode = (opSnap.exists() && opSnap.data()?.ticketCode)
-      ? opSnap.data().ticketCode
-      : `B-${strBookingId.slice(0, 6).toUpperCase()}`;
+      const bData = bSnap.data();
+      const opExists = Boolean(opSnap && opSnap.exists());
+      const opDataExisting = opExists ? opSnap!.data() : null;
+      const bookingClientId = bData.userId || bData.host_id || opDataExisting?.userId || null;
 
-    const movCategory: FinancialMovementCategory = isFullyPaid ? 'booking_settlement' : 'booking_deposit';
+      let canReadUserNow = canReadOpUserDebt;
+      const hasOpDebt = opExists && Number(opDataExisting?.currentAccountDebtAmount || 0) > 0;
+      const resolvedDebtUserId = opDataExisting?.userId || bookingClientId;
+      if (!canReadUserNow && hasOpDebt && !isSyntheticUserId(resolvedDebtUserId)) {
+        const cachedRaw = rawClientsByComplexMap.get(targetComplexId);
+        canReadUserNow = Boolean(cachedRaw && cachedRaw.has(String(resolvedDebtUserId)));
+      }
 
-    const resolvedBookingClient = resolveClientName(bData, null, opSnap.exists() ? opSnap.data() : null);
-    const resolvedBookingPhone = resolveClientPhone(bData, null, opSnap.exists() ? opSnap.data() : null);
-    const bookingClientId = bData.userId || bData.host_id || (opSnap.exists() ? opSnap.data().userId : null) || null;
+      const userRef = (hasOpDebt && canReadUserNow && !isSyntheticUserId(resolvedDebtUserId))
+        ? doc(db, USERS_COLLECTION, String(resolvedDebtUserId))
+        : null;
+      const userSnap = userRef ? await t.get(userRef) : null;
 
-    const builtBookingPayMov = buildSingleMovementPayload({
-      payments: [{ amount: payAmt, paymentMethod: params.paymentMethod || 'cash' }],
-      complexId: targetComplexId,
-      operationId: `${strBookingId}-booking`,
-      bookingId: strBookingId,
-      ticketCode,
-      flow: 'income',
-      category: movCategory,
-      responsibleName: resolvedBookingClient,
-      userId: bookingClientId,
-      userPhone: resolvedBookingPhone,
-      notes: params.notes || `Cobro seña/saldo reserva ${bData.courtName || bData.court_name || 'Cancha'}`,
-      operatorId: params.operatorId || 'pos_operator',
-      idempotencyKey: idemKey
-    });
+      const totalPrice = Number(bData.price ?? bData.price_total ?? 0);
+      const previousPaid = Number(bData.amount_paid ?? bData.deposit ?? 0);
+      const newPaid = previousPaid + payAmt;
+      const newPending = Math.max(0, totalPrice - newPaid);
+      const isFullyPaid = newPaid >= totalPrice - 0.01 && totalPrice > 0;
+      const paymentStatusEs = isFullyPaid ? 'pagado' : 'seña';
+      const paymentStatusEn = isFullyPaid ? 'paid' : 'partial';
 
-    if (!builtBookingPayMov) {
-      throw new Error('El importe a cobrar debe ser mayor a $0.');
-    }
+      const ticketCode = (opExists && opDataExisting?.ticketCode)
+        ? opDataExisting.ticketCode
+        : `B-${strBookingId.slice(0, 6).toUpperCase()}`;
 
-    const movId = builtBookingPayMov.movId;
-    const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
+      const movCategory: FinancialMovementCategory = isFullyPaid ? 'booking_settlement' : 'booking_deposit';
 
-    // 2. Escrituras atómicas
-    // 2.1 Movimiento financiero en /financial_movements
-    t.set(movRef, builtBookingPayMov.movDocData);
+      const resolvedBookingClient = resolveClientName(bData, null, opDataExisting);
+      const resolvedBookingPhone = resolveClientPhone(bData, null, opDataExisting);
 
-    // 2.2 Registro de idempotencia
-    t.set(idemRef, {
-      idempotencyKey: idemKey,
-      complexId: targetComplexId,
-      complejoId: targetComplexId,
-      operationId: `${strBookingId}-booking`,
-      bookingId: strBookingId,
-      amount: payAmt,
-      paymentMethod: builtBookingPayMov.paymentMethod,
-      flow: 'income',
-      status: 'completed',
-      movementId: movId,
-      createdAt: serverTimestamp(),
-      completedAt: serverTimestamp()
-    });
+      let clearedDebt = 0;
+      let remainingOpDebt = 0;
+      if (hasOpDebt) {
+        const clearing = calculateCurrentAccountClearing(Number(opDataExisting?.currentAccountDebtAmount || 0), payAmt);
+        clearedDebt = clearing.clearedDebtAmount;
+        remainingOpDebt = clearing.remainingOperationDebt;
+      }
 
-    // 2.3 Operación comercial única (conserva una sola fila para la reserva)
-    if (opSnap.exists()) {
-      const opData = opSnap.data();
-      t.update(opRef, {
-        totalCollected: newPaid,
-        netCollected: newPaid - (opData.totalRefunded || 0),
-        amountPending: newPending,
-        paymentStatus: paymentStatusEn,
-        updatedAt: serverTimestamp()
+      const builtBookingPayMov = buildSingleMovementPayload({
+        payments: rawPaymentsList,
+        complexId: targetComplexId,
+        operationId: opDocId,
+        bookingId: strBookingId,
+        ticketCode,
+        flow: 'income',
+        category: movCategory,
+        responsibleName: resolvedBookingClient,
+        userId: !isSyntheticUserId(bookingClientId) ? String(bookingClientId) : null,
+        userPhone: resolvedBookingPhone,
+        clearedCurrentAccountDebt: clearedDebt,
+        notes: params.notes || `Cobro seña/saldo reserva ${bData.courtName || bData.court_name || 'Cancha'}`,
+        operatorId: params.operatorId || 'pos_operator',
+        idempotencyKey: idemKey
       });
-    } else {
-      // Crear operación comercial si no existía (ej. reserva creada previamente)
-      t.set(opRef, {
-        id: `${strBookingId}-booking`,
+
+      if (!builtBookingPayMov) {
+        throw new Error('El importe a cobrar debe ser mayor a $0.');
+      }
+
+      const movId = builtBookingPayMov.movId;
+      const movRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, movId);
+
+      // 2. Escrituras atómicas
+      // 2.1 Movimiento financiero en /financial_movements
+      t.set(movRef, builtBookingPayMov.movDocData);
+
+      // 2.2 Registro de idempotencia
+      t.set(idemRef, {
+        idempotencyKey: idemKey,
         complexId: targetComplexId,
         complejoId: targetComplexId,
-        ticketCode,
-        operationType: 'court_booking',
+        operationId: opDocId,
         bookingId: strBookingId,
-        responsibleType: bData.userId && bData.userId !== '0' ? 'user' : 'anonymous',
-        userId: bData.userId && bData.userId !== '0' ? bData.userId : null,
-        userName: resolvedBookingClient,
-        userPhone: bData.userPhone || bData.clientPhone || '',
-        contractualAmount: totalPrice,
-        totalCollected: newPaid,
-        totalRefunded: 0,
-        netCollected: newPaid,
-        retainedAmount: 0,
-        amountPending: newPending,
-        paymentStatus: paymentStatusEn,
-        currentAccountAssigned: false,
-        currentAccountDebtAmount: 0,
-        notes: bData.notes || `Reserva ${bData.courtName || 'Cancha'} ${bData.date || ''}`,
+        amount: payAmt,
+        paymentMethod: builtBookingPayMov.paymentMethod,
+        flow: 'income',
+        status: 'completed',
+        movementId: movId,
         createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        createdBy: params.operatorId || 'pos_operator'
+        completedAt: serverTimestamp()
       });
-    }
 
-    // 2.4 Actualizar documento de la reserva
-    t.update(bRef, {
-      deposit: newPaid,
-      amount_paid: newPaid,
-      paymentStatus: paymentStatusEs,
-      payment_status: paymentStatusEn,
-      updatedAt: serverTimestamp()
+      // 2.3 Operación comercial única (conserva una sola fila para la reserva)
+      if (opExists && opDataExisting) {
+        t.update(opRef, {
+          totalCollected: newPaid,
+          netCollected: newPaid - (opDataExisting.totalRefunded || 0),
+          amountPending: newPending,
+          paymentStatus: paymentStatusEn,
+          currentAccountDebtAmount: remainingOpDebt,
+          idempotencyKeys: arrayUnion(idemKey),
+          updatedAt: serverTimestamp()
+        });
+      } else {
+        t.set(opRef, {
+          id: opDocId,
+          complexId: targetComplexId,
+          complejoId: targetComplexId,
+          ticketCode,
+          operationType: 'court_booking',
+          bookingId: strBookingId,
+          responsibleType: bData.userId && bData.userId !== '0' ? 'user' : 'anonymous',
+          userId: bData.userId && bData.userId !== '0' ? bData.userId : null,
+          userName: resolvedBookingClient,
+          userPhone: bData.userPhone || bData.clientPhone || '',
+          contractualAmount: totalPrice,
+          totalCollected: newPaid,
+          totalRefunded: 0,
+          netCollected: newPaid,
+          retainedAmount: 0,
+          amountPending: newPending,
+          paymentStatus: paymentStatusEn,
+          currentAccountAssigned: false,
+          currentAccountDebtAmount: 0,
+          idempotencyKey: idemKey,
+          idempotencyKeys: [idemKey],
+          notes: bData.notes || `Reserva ${bData.courtName || 'Cancha'} ${bData.date || ''}`,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          createdBy: params.operatorId || 'pos_operator'
+        });
+      }
+
+      // 2.4 Descontar deuda de usuario si correspondía
+      if (clearedDebt > 0 && userRef && userSnap && userSnap.exists()) {
+        const uData = userSnap.data();
+        const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
+        if (!uOrigin || isSameComplex(uOrigin, targetComplexId)) {
+          const currentUserDebt = Math.max(0, Number(uData?.debt || 0));
+          t.update(userRef, {
+            debt: Math.max(0, currentUserDebt - clearedDebt),
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
+
+      // 2.5 Actualizar documento de la reserva (incluyendo imputación de jugador si aplica)
+      const bookingUpdatePayload: Record<string, any> = {
+        deposit: newPaid,
+        amount_paid: newPaid,
+        paymentStatus: paymentStatusEs,
+        payment_status: paymentStatusEn,
+        idempotencyKeys: arrayUnion(idemKey),
+        updatedAt: serverTimestamp()
+      };
+
+      if (params.playerUpdate) {
+        const pUpd = params.playerUpdate;
+        const pAmt = Math.max(0, Number(pUpd.amount || payAmt));
+        const playersList = Array.isArray(bData.players) ? [...bData.players] : [];
+
+        const isTargetHost = Boolean(
+          pUpd.isHost ||
+          (pUpd.id && (pUpd.id === bData.userId || pUpd.id === bData.host_id)) ||
+          (bData.host_name && pUpd.name && String(bData.host_name).trim().toLowerCase() === String(pUpd.name).trim().toLowerCase()) ||
+          (bData.userName && pUpd.name && String(bData.userName).trim().toLowerCase() === String(pUpd.name).trim().toLowerCase())
+        );
+
+        const pIdx = playersList.findIndex((p: any) =>
+          (pUpd.id && (String(p.id) === String(pUpd.id) || String(p.userId) === String(pUpd.id))) ||
+          (p.name && pUpd.name && String(p.name).trim().toLowerCase() === String(pUpd.name).trim().toLowerCase())
+        );
+
+        if (pIdx >= 0) {
+          const prevAmt = Number(playersList[pIdx].amountPaid || playersList[pIdx].amount_paid || 0);
+          playersList[pIdx] = {
+            ...playersList[pIdx],
+            amountPaid: prevAmt + pAmt,
+            amount_paid: prevAmt + pAmt,
+            has_paid: true,
+            ...(isTargetHost ? { isHost: true } : {})
+          };
+        } else if (!isTargetHost && pUpd.name && pUpd.name !== 'NN') {
+          playersList.push({
+            id: pUpd.id || `player_${Date.now()}`,
+            ...(pUpd.userId ? { userId: pUpd.userId } : {}),
+            name: pUpd.name,
+            phone: pUpd.phone || '',
+            amountPaid: pAmt,
+            amount_paid: pAmt,
+            has_paid: true,
+            isHost: false
+          });
+        }
+
+        bookingUpdatePayload.players = playersList;
+        if (isTargetHost) {
+          const prevHostAmt = Number(bData.hostAmountPaid ?? bData.host_amount_paid ?? 0);
+          bookingUpdatePayload.hostAmountPaid = prevHostAmt + pAmt;
+          bookingUpdatePayload.host_amount_paid = prevHostAmt + pAmt;
+        }
+      }
+
+      t.update(bRef, bookingUpdatePayload);
+
+      return {
+        success: true,
+        movementId: movId
+      };
     });
-
-    return {
-      success: true,
-      movementId: movId
-    };
-  });
+  } catch (err) {
+    if (isPermissionDeniedError(err)) {
+      handleFirestoreError(err, FirestoreOpType.WRITE, `${BOOKINGS_COLLECTION}/${strBookingId}`);
+    }
+    throw err;
+  }
 }
 
 export interface CancelBookingWithPolicyParams {
@@ -6063,10 +7709,15 @@ export async function cancelBookingWithPolicy(
 }> {
   const bRef = doc(db, BOOKINGS_COLLECTION, params.bookingId);
   const idemRef = params.idempotencyKey ? doc(db, IDEMPOTENCY_COLLECTION, params.idempotencyKey) : null;
+  let userIdToSync: string | null = null;
 
   const result = await runTransaction(db, async (t) => {
-    // 1. Lecturas
-    const bSnap = await t.get(bRef);
+    // 1. Lecturas (todas antes de cualquier escritura)
+    const [bSnap, idemSnap] = await Promise.all([
+      t.get(bRef),
+      idemRef ? t.get(idemRef) : Promise.resolve(null)
+    ]);
+
     if (!bSnap.exists()) {
       throw new Error(`Reserva '${params.bookingId}' no encontrada.`);
     }
@@ -6077,19 +7728,15 @@ export async function cancelBookingWithPolicy(
     }
     const isAlreadyCancelled = bData.status === 'cancelado' || bData.status === 'cancelled';
 
-    // Idempotencia
-    if (idemRef) {
-      const idemSnap = await t.get(idemRef);
-      if (idemSnap.exists() && idemSnap.data()?.status === 'completed') {
-        return {
-          success: true,
-          refundAmount: Number(idemSnap.data()?.amount || 0),
-          retainedAmount: Number(bData.retainedAmount || 0),
-          finalPaymentStatus: bData.paymentStatus || bData.payment_status || 'cancelled_unpaid',
-          refundMovementId: idemSnap.data()?.movementId,
-          alreadyProcessed: true
-        };
-      }
+    if (idemSnap && idemSnap.exists() && idemSnap.data()?.status === 'completed') {
+      return {
+        success: true,
+        refundAmount: Number(idemSnap.data()?.amount || 0),
+        retainedAmount: Number(bData.retainedAmount || 0),
+        finalPaymentStatus: bData.paymentStatus || bData.payment_status || 'cancelled_unpaid',
+        refundMovementId: idemSnap.data()?.movementId,
+        alreadyProcessed: true
+      };
     }
 
     if (isAlreadyCancelled) {
@@ -6102,21 +7749,33 @@ export async function cancelBookingWithPolicy(
       };
     }
 
-    // Buscar si existe operación asociada
-    let opRef = null;
-    let opSnap = null;
     const directOpRef = doc(db, OPERATIONS_COLLECTION, `${params.bookingId}-booking`);
     const directOpSnap = await t.get(directOpRef);
-    if (directOpSnap.exists()) {
-      opRef = directOpRef;
-      opSnap = directOpSnap;
-    }
+    const opRef = directOpSnap.exists() ? directOpRef : null;
+    const opSnap = directOpSnap.exists() ? directOpSnap : null;
 
     const rawUserId = bData.userId || bData.host_id || (opSnap?.exists() ? opSnap.data().userId : null);
-    let userRef = null;
-    if (rawUserId && rawUserId !== '0') {
-      userRef = doc(db, USERS_COLLECTION, String(rawUserId));
-      await t.get(userRef);
+    if (rawUserId && String(rawUserId) !== '0') {
+      userIdToSync = String(rawUserId);
+    }
+    const userRef = userIdToSync ? doc(db, USERS_COLLECTION, userIdToSync) : null;
+    const userSnap = userRef ? await t.get(userRef) : null;
+
+    // Leer complejo y booking_locks en Fase 1 para liberarlos dentro de la transacción
+    const rawComplex = bData.complejoId || bData.complexId || params.complexId || 'B';
+    const targetComplexId = rawComplex === 'complejo_central' ? 'B' : String(rawComplex);
+    const courtId = String(bData.courtId || bData.court_id || 'c_1');
+    const date = bData.date;
+
+    let lockEntries: Array<{ ref: ReturnType<typeof doc>; snap: any }> = [];
+    if (targetComplexId && courtId && date) {
+      const compSnap = await t.get(doc(db, COMPLEJOS_COLLECTION, targetComplexId));
+      const affectedCourts = getOverlappingCourtIdsFromList(compSnap.exists() ? compSnap.data() : null, courtId);
+      const lockRefs = affectedCourts.map(cid =>
+        doc(db, BOOKING_LOCKS_COLLECTION, `${targetComplexId}__${cid}__${date}`)
+      );
+      const lockSnaps = await Promise.all(lockRefs.map(ref => t.get(ref)));
+      lockEntries = lockRefs.map((ref, idx) => ({ ref, snap: lockSnaps[idx] }));
     }
 
     const contractualAmount = Number(bData.price ?? bData.price_total ?? 0);
@@ -6131,6 +7790,10 @@ export async function cancelBookingWithPolicy(
       partialAmount: params.partialRefundAmount
     });
 
+    const refundMethod = (plan.refundAmount > 0 && totalCollected > 0)
+      ? (normalizeMonetaryPaymentMethod(params.refundPaymentMethod || 'cash') || 'cash')
+      : 'other';
+
     // 2. Escrituras atómicas
     // 2.1 Actualizar documento en bookings
     t.update(bRef, {
@@ -6142,16 +7805,33 @@ export async function cancelBookingWithPolicy(
       totalRefunded: previousRefunds + plan.refundAmount,
       retainedAmount: plan.retainedAmount,
       cancellationReason: params.reason || '',
+      ...(params.idempotencyKey ? { idempotencyKeys: arrayUnion(params.idempotencyKey) } : {}),
       cancelledAt: serverTimestamp(),
       updatedAt: serverTimestamp()
     });
 
-    // 2.2 Registrar movimiento de egreso si hay devolución
+    // 2.2 Liberar booking_locks atómicamente
+    for (const entry of lockEntries) {
+      if (entry.snap.exists()) {
+        const bMap = { ...(entry.snap.data().bookings || {}) };
+        if (bMap[params.bookingId]) {
+          delete bMap[params.bookingId];
+          t.update(entry.ref, {
+            bookings: bMap,
+            updatedAt: serverTimestamp()
+          });
+        }
+      }
+    }
+
+    // 2.3 Registrar movimiento de egreso si hay devolución
     let refundMovementId: string | undefined = undefined;
     if (plan.refundAmount > 0 && totalCollected > 0) {
       refundMovementId = generateUUID();
       const refundMovRef = doc(db, FINANCIAL_MOVEMENTS_COLLECTION, refundMovementId);
-      const ticketCode = `B-${params.bookingId.slice(0, 6).toUpperCase()}`;
+      const ticketCode = (opSnap?.exists() && opSnap.data()?.ticketCode)
+        ? opSnap.data().ticketCode
+        : `B-${params.bookingId.slice(0, 6).toUpperCase()}`;
 
       t.set(refundMovRef, {
         id: refundMovementId,
@@ -6164,7 +7844,7 @@ export async function cancelBookingWithPolicy(
         flow: 'expense',
         category: 'refund',
         amount: plan.refundAmount,
-        paymentMethod: params.refundPaymentMethod || 'cash',
+        paymentMethod: refundMethod,
         effectiveDate: serverTimestamp(),
         userId: bData.userId || null,
         responsibleName: resolveClientName(bData),
@@ -6178,10 +7858,11 @@ export async function cancelBookingWithPolicy(
         t.set(idemRef, {
           idempotencyKey: params.idempotencyKey,
           complexId: params.complexId,
+          complejoId: params.complexId,
           operationId: `${params.bookingId}-booking`,
           bookingId: params.bookingId,
           amount: plan.refundAmount,
-          paymentMethod: params.refundPaymentMethod || 'cash',
+          paymentMethod: refundMethod,
           flow: 'expense',
           status: 'completed',
           movementId: refundMovementId,
@@ -6193,8 +7874,10 @@ export async function cancelBookingWithPolicy(
       t.set(idemRef, {
         idempotencyKey: params.idempotencyKey,
         complexId: params.complexId,
+        complejoId: params.complexId,
         bookingId: params.bookingId,
         amount: 0,
+        paymentMethod: 'other',
         flow: 'expense',
         status: 'completed',
         createdAt: serverTimestamp(),
@@ -6202,14 +7885,14 @@ export async function cancelBookingWithPolicy(
       });
     }
 
-    // 2.3 Actualizar operación si existía
+    // 2.4 Actualizar operación si existía y extinguir deuda fiada con clamp >= 0
     if (opRef && opSnap) {
       const opData = opSnap.data();
       const debtToExtinguish = Number(opData.currentAccountDebtAmount || 0);
 
       t.update(opRef, {
         originalContractualAmount: opData.contractualAmount ?? contractualAmount,
-        contractualAmount: totalCollected, // El ingreso de la operación cancelada se reduce a lo efectivamente cobrado
+        contractualAmount: totalCollected,
         totalRefunded: (opData.totalRefunded || 0) + plan.refundAmount,
         netCollected: totalCollected - (opData.totalRefunded || 0) - plan.refundAmount,
         retainedAmount: plan.retainedAmount,
@@ -6217,16 +7900,21 @@ export async function cancelBookingWithPolicy(
         paymentStatus: plan.finalPaymentStatus,
         status: 'cancelado',
         currentAccountDebtAmount: 0,
+        ...(params.idempotencyKey ? { idempotencyKeys: arrayUnion(params.idempotencyKey) } : {}),
         notes: `${opData.notes ? opData.notes + ' | ' : ''}Cancelado: ${params.reason || ''}`,
         updatedAt: serverTimestamp()
       });
 
-      // Extinguir deuda en /users si correspondía
-      if (debtToExtinguish > 0 && userRef) {
-        t.set(userRef, {
-          debt: increment(-debtToExtinguish),
-          updatedAt: serverTimestamp()
-        }, { merge: true });
+      if (debtToExtinguish > 0 && userRef && userSnap && userSnap.exists()) {
+        const uData = userSnap.data();
+        const uOrigin = uData?.originComplejoId || uData?.originComplexId || uData?.complejoId || uData?.complexId;
+        if (!uOrigin || isSameComplex(uOrigin, params.complexId)) {
+          const currentUserDebt = Math.max(0, Number(uData?.debt || 0));
+          t.update(userRef, {
+            debt: Math.max(0, currentUserDebt - debtToExtinguish),
+            updatedAt: serverTimestamp()
+          });
+        }
       }
     }
 
@@ -6239,43 +7927,10 @@ export async function cancelBookingWithPolicy(
     };
   });
 
-  // Liberar el bloqueo en booking_locks y sincronizar métricas
-  try {
-    const bSnap = await getDoc(bRef);
-    if (bSnap.exists()) {
-      const bData = bSnap.data();
-      const courtId = String(bData.courtId || bData.court_id || 'c_1');
-      const targetComplexId = bData.complejoId || bData.complexId || params.complexId;
-      const date = bData.date;
-      const userId = bData.userId || bData.host_id;
-
-      if (targetComplexId && courtId && date) {
-        const affectedCourts = await getOverlappingCourtIds(targetComplexId, courtId);
-        const lockRefs = affectedCourts.map(cid => 
-          doc(db, BOOKING_LOCKS_COLLECTION, `${targetComplexId}__${cid}__${date}`)
-        );
-        const lockSnaps = await Promise.all(lockRefs.map(ref => getDoc(ref)));
-        for (let i = 0; i < affectedCourts.length; i++) {
-          const lSnap = lockSnaps[i];
-          if (lSnap.exists()) {
-            const bMap = { ...(lSnap.data().bookings || {}) };
-            if (bMap[params.bookingId]) {
-              delete bMap[params.bookingId];
-              await setDoc(lockRefs[i], {
-                bookings: bMap,
-                updatedAt: serverTimestamp()
-              }, { merge: true });
-            }
-          }
-        }
-      }
-
-      if (userId) {
-        syncUserMetricsWithBookings(String(userId));
-      }
-    }
-  } catch (err) {
-    console.warn('[Firestore] Error releasing lock or updating metrics after cancel:', err);
+  if (userIdToSync) {
+    try {
+      syncUserMetricsWithBookings(userIdToSync);
+    } catch {}
   }
 
   return result;

@@ -76,6 +76,13 @@
             "required": ["id", "name", "sport", "surface", "price", "status"]
           }
         },
+        "deletedPlayerKeys": {
+          "type": "array",
+          "description": "Identificadores de jugadores dados de baja en la sede para suprimir reaparición derivada",
+          "items": {
+            "type": "string"
+          }
+        },
         "updatedAt": {
           "type": "string",
           "description": "Marca de tiempo de última actualización"
@@ -245,6 +252,16 @@
         "originComplejoName": {
           "type": "string",
           "description": "Nombre del complejo de origen"
+        },
+        "associatedComplexIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "IDs de complejos donde el jugador tiene relación activa"
+        },
+        "hiddenForComplexIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "IDs de complejos donde el jugador fue ocultado mediante soft-delete"
         },
         "totalBookings": {
           "type": "number",

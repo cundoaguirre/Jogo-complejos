@@ -109,6 +109,8 @@ export interface Match {
   historicalIds?: string[];
   player_count: number;
   players: any[];
+  idempotencyKey?: string;
+  idempotencyKeys?: string[];
 }
 
 export type Booking = Match;
@@ -189,6 +191,8 @@ export interface User {
   updatedAt?: string;
   isDerived?: boolean;
   associatedComplexIds?: string[];
+  hiddenForComplexIds?: string[];
+  deletedByComplexIds?: string[];
   canonicalId?: string;
   canonicalUserId?: string;
   canonicalName?: string;
@@ -500,6 +504,8 @@ export interface OperationDocument {
 
   notes?: string;
   metadata?: Record<string, any>;
+  idempotencyKey?: string;
+  idempotencyKeys?: string[];
 
   createdAt: any;
   updatedAt: any;

@@ -29,6 +29,7 @@ import {
   createOperationWithInitialPayment,
   isGenericClientPlaceholder
 } from '../lib/firestoreSync';
+import { isUserHiddenForComplex } from '../lib/crmActivityIndex';
 import { usePOSCart } from './POSCartContext';
 import { auth } from '../lib/firebase';
 
@@ -39,11 +40,11 @@ interface POSViewProps {
 }
 
 export const POSView: React.FC<POSViewProps> = ({ 
-  complexId = 'B',
+  complexId = '',
   onNavigateToCatalog,
   onNavigateToDebts
 }) => {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const targetId = complexId;
 
   const { 
     items: cartItems, 
@@ -134,13 +135,14 @@ export const POSView: React.FC<POSViewProps> = ({
 
   // Filtered clients for quick search
   const filteredClients = useMemo(() => {
-    if (!clientSearch.trim()) return clients.slice(0, 10);
+    const visibleClients = clients.filter(c => c && !isUserHiddenForComplex(c, targetId));
+    if (!clientSearch.trim()) return visibleClients.slice(0, 10);
     const q = clientSearch.toLowerCase();
-    return clients.filter(c => 
+    return visibleClients.filter(c => 
       (c.name && c.name.toLowerCase().includes(q)) ||
       (c.phone && c.phone.includes(q))
     ).slice(0, 10);
-  }, [clients, clientSearch]);
+  }, [clients, clientSearch, targetId]);
 
   // Calculate split payment sum and remaining
   const splitTotalAssigned = useMemo(() => {

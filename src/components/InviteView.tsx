@@ -6,7 +6,7 @@ import {
   AlertCircle,
   CheckCircle2
 } from 'lucide-react';
-import { signInWithPopup } from 'firebase/auth';
+import { signInWithPopup, signInWithRedirect, getRedirectResult } from 'firebase/auth';
 import { auth, googleProvider } from '../lib/firebase';
 import { useFirebase } from './FirebaseContext';
 import { validateSaasInvitation, claimSaasInvitation, InvitationValidationResult } from '../lib/invitations';
@@ -84,6 +84,36 @@ export const InviteView: React.FC<InviteViewProps> = ({
     };
   }, [token]);
 
+  // Handle return from signInWithRedirect (mobile/PWA browsers where popups are blocked)
+  useEffect(() => {
+    let active = true;
+    const handleRedirectReturn = async () => {
+      try {
+        const res = await getRedirectResult(auth);
+        if (!active || !res?.user) return;
+        setIsClaiming(true);
+        const claimResult = await claimSaasInvitation(token, res.user, validation?.documentId);
+        if (!active) return;
+        setClaimSuccess(true);
+        await reloadCollaboratorData();
+        setTimeout(() => {
+          onSuccess(claimResult.complexId, claimResult.complexName);
+        }, 900);
+      } catch (err: any) {
+        if (!active) return;
+        if (err?.code && err.code !== 'auth/no-auth-event') {
+          console.warn('[InviteView] Redirect sign-in error:', err);
+          setClaimError(err.message || 'No se pudo completar el acceso con Google.');
+        }
+        setIsClaiming(false);
+      }
+    };
+    handleRedirectReturn();
+    return () => {
+      active = false;
+    };
+  }, [token]);
+
   // Handle Google Login & Claim flow
   const handleAction = async () => {
     setClaimError(null);
@@ -95,7 +125,7 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
     let targetUser = auth.currentUser || user;
 
-    // 1. If not authenticated, initiate Google popup sign-in
+    // 1. If not authenticated, initiate Google popup sign-in (with redirect fallback on standalone/mobile)
     if (!targetUser) {
       setIsSigningIn(true);
       try {
@@ -105,11 +135,31 @@ export const InviteView: React.FC<InviteViewProps> = ({
         const cred = await signInWithPopup(auth, googleProvider);
         targetUser = cred.user;
       } catch (err: any) {
+        const code = err?.code || '';
+        const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+        if (
+          !isInIframe &&
+          (code === 'auth/popup-blocked' || code === 'auth/operation-not-supported-in-this-environment')
+        ) {
+          try {
+            await signInWithRedirect(auth, googleProvider);
+            return;
+          } catch (redirectErr: any) {
+            setIsSigningIn(false);
+            setClaimError(redirectErr?.message || 'Abrí este enlace en Chrome o Safari para iniciar sesión con Google.');
+            return;
+          }
+        }
         setIsSigningIn(false);
-        if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+        if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
           setClaimError('El inicio de sesión con Google fue cancelado.');
+        } else if (code === 'auth/unauthorized-domain') {
+          const host = typeof window !== 'undefined' ? window.location.hostname : '';
+          setClaimError(`El dominio "${host}" no está autorizado en Firebase Authentication.`);
+        } else if (code === 'auth/popup-blocked') {
+          setClaimError('El navegador bloqueó la ventana de Google. Probá abrir el enlace en Chrome o Safari.');
         } else {
-          setClaimError('No se pudo completar el inicio de sesión con Google.');
+          setClaimError(err?.message || 'No se pudo completar el inicio de sesión con Google.');
         }
         return;
       } finally {
@@ -128,10 +178,15 @@ export const InviteView: React.FC<InviteViewProps> = ({
 
       setTimeout(() => {
         onSuccess(claimResult.complexId, claimResult.complexName);
-      }, 1300);
+      }, 900);
     } catch (err: any) {
       console.warn('[InviteView] Error claiming invitation:', err);
-      setClaimError(err.message || 'Error al vincular el complejo. Intentá nuevamente.');
+      const errMsg = String(err?.message || '');
+      if (errMsg.toLowerCase().includes('permission')) {
+        setClaimError('No se pudo vincular tu cuenta por permisos de Firebase. Verificá que el enlace siga activo o pedí uno nuevo al propietario.');
+      } else {
+        setClaimError(errMsg || 'Error al vincular el complejo. Intentá nuevamente.');
+      }
       setIsClaiming(false);
     }
   };

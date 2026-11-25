@@ -540,3 +540,237 @@ export function computeComplexFinancialSummary(params: {
   };
 }
 
+export type CajaBreakdownBucketKey = 'cash' | 'transfer' | 'card' | 'mercado_pago';
+
+export interface CajaBreakdownItem {
+  key: CajaBreakdownBucketKey;
+  label: string;
+  amount: number;
+}
+
+export interface CajaBreakdownResult {
+  incomes: CajaBreakdownItem[];
+  expenses: CajaBreakdownItem[];
+  expensesTotal: number;
+  hasMovements: boolean;
+}
+
+const CANONICAL_CAJA_BUCKETS: Array<{ key: CajaBreakdownBucketKey; label: string }> = [
+  { key: 'cash', label: 'Efectivo' },
+  { key: 'transfer', label: 'Transferencia' },
+  { key: 'card', label: 'Tarjeta' },
+  { key: 'mercado_pago', label: 'Mercado Pago' }
+];
+
+export function normalizePaymentMethodBucket(rawMethod?: string | null): CajaBreakdownBucketKey | null {
+  if (!rawMethod) return null;
+  const m = String(rawMethod).toLowerCase().trim();
+  if (
+    !m ||
+    m === 'other' ||
+    m === 'otro' ||
+    m === 'pendiente' ||
+    m === 'pending' ||
+    m === 'fiado' ||
+    m === 'unpaid' ||
+    m === 'mixed' ||
+    m === 'mixto' ||
+    m === 'cuenta_corriente' ||
+    m.includes('cta') ||
+    m.includes('corriente')
+  ) {
+    return null;
+  }
+  if (m === 'cash' || m.includes('efectivo')) return 'cash';
+  if (m === 'transfer' || m.includes('transferencia') || m.includes('transf')) return 'transfer';
+  if (m === 'mercado_pago' || m === 'mercadopago' || m === 'mp' || m.includes('mercado pago')) return 'mercado_pago';
+  if (
+    m === 'debit' ||
+    m === 'credit' ||
+    m === 'card' ||
+    m.includes('tarjeta') ||
+    m.includes('crédit') ||
+    m.includes('credit') ||
+    m.includes('débit') ||
+    m.includes('debit')
+  ) {
+    return 'card';
+  }
+  return null;
+}
+
+/**
+ * Calcula en memoria el desglose puro de Caja a partir de periodMovements:
+ * - incomes: entradas reales (flow === 'income') agrupadas en cash, transfer, card, mercado_pago con monto > 0
+ * - expensesTotal: suma total de salidas reales (flow === 'expense')
+ * - expenses: salidas reales (flow === 'expense') agrupadas por los mismos 4 métodos con monto > 0
+ * - hasMovements: indica si existe al menos un movimiento real válido en el período
+ */
+export function computeCajaPaymentBreakdown(params: {
+  targetComplexIds: string[];
+  periodMovements: Array<{
+    id: string;
+    flow: 'income' | 'expense';
+    amount: number;
+    paymentMethod?: string;
+    originalDoc?: any;
+  }>;
+  rawFinancialMovements: Array<{
+    id: string;
+    complexId?: string | null;
+    complejoId?: string | null;
+    flow: 'income' | 'expense';
+    amount: number;
+    paymentMethod?: string;
+    paymentLines?: Array<{ method?: string; paymentMethod?: string; amount: number }>;
+    idempotencyKey?: string;
+  }>;
+}): CajaBreakdownResult {
+  const allowedIds = new Set(params.targetComplexIds.map(id => String(id).trim().toLowerCase()));
+  const scopedRawMovs = params.rawFinancialMovements.filter(m => {
+    const c1 = m.complexId ? String(m.complexId).trim().toLowerCase() : null;
+    const c2 = m.complejoId ? String(m.complejoId).trim().toLowerCase() : null;
+    if (allowedIds.size === 0) return true;
+    if (!c1 && !c2) return true;
+    return (c1 && allowedIds.has(c1)) || (c2 && allowedIds.has(c2));
+  });
+
+  const incomeTotals: Record<CajaBreakdownBucketKey, number> = {
+    cash: 0,
+    transfer: 0,
+    card: 0,
+    mercado_pago: 0
+  };
+
+  const expenseTotals: Record<CajaBreakdownBucketKey, number> = {
+    cash: 0,
+    transfer: 0,
+    card: 0,
+    mercado_pago: 0
+  };
+
+  let expensesTotal = 0;
+
+  const addDocToTotals = (
+    targetTotals: Record<CajaBreakdownBucketKey, number>,
+    docItem: {
+      amount?: number;
+      paymentMethod?: string;
+      paymentLines?: Array<{ method?: string; paymentMethod?: string; amount: number }>;
+    }
+  ): number => {
+    const amt = Number(docItem.amount) || 0;
+    if (docItem.paymentMethod === 'mixed' && Array.isArray(docItem.paymentLines) && docItem.paymentLines.length > 0) {
+      let added = 0;
+      for (const line of docItem.paymentLines) {
+        const lineAmt = Number(line?.amount) || 0;
+        if (lineAmt <= 0) continue;
+        const bucket = normalizePaymentMethodBucket(line?.method || line?.paymentMethod);
+        if (bucket) {
+          targetTotals[bucket] += lineAmt;
+          added += lineAmt;
+        }
+      }
+      return added;
+    }
+    if (amt <= 0) return 0;
+    const bucket = normalizePaymentMethodBucket(docItem.paymentMethod);
+    if (bucket) {
+      targetTotals[bucket] += amt;
+      return amt;
+    }
+    return 0;
+  };
+
+  const resolveCombinedMovementDocs = (mov: {
+    flow: 'income' | 'expense';
+    amount: number;
+    paymentMethod?: string;
+    originalDoc?: any;
+  }) => {
+    const orig = mov.originalDoc;
+    if (orig && typeof orig === 'object' && !('operationType' in orig)) {
+      const baseIdem = orig.idempotencyKey ? String(orig.idempotencyKey).replace(/_pay_\d+$/, '') : null;
+      if (baseIdem) {
+        const siblings = scopedRawMovs.filter(
+          rm =>
+            rm.flow === mov.flow &&
+            rm.idempotencyKey &&
+            String(rm.idempotencyKey).replace(/_pay_\d+$/, '') === baseIdem
+        );
+        if (siblings.length > 0) return siblings;
+      }
+      return [orig];
+    }
+    if (orig && typeof orig === 'object' && 'operationType' in orig) {
+      return [
+        {
+          amount: mov.amount,
+          paymentMethod: orig.paymentMethod || mov.paymentMethod,
+          paymentLines: orig.paymentLines
+        }
+      ];
+    }
+    return [
+      {
+        amount: mov.amount,
+        paymentMethod: mov.paymentMethod
+      }
+    ];
+  };
+
+  for (const mov of params.periodMovements) {
+    const movAmount = Number(mov.amount) || 0;
+    if (movAmount <= 0) continue;
+
+    const docs = resolveCombinedMovementDocs(mov);
+    if (mov.flow === 'expense') {
+      let validExpenseAmt = 0;
+      for (const docItem of docs) {
+        validExpenseAmt += addDocToTotals(expenseTotals, docItem);
+      }
+      // Si el movimiento real de gasto no coincide con ninguno de los 4 métodos filtrados,
+      // igual sumamos solo si no fue explícitamente ignorado (pending/fiado/cuenta_corriente/other)
+      if (validExpenseAmt > 0) {
+        expensesTotal += validExpenseAmt;
+      } else {
+        const fallbackBucket = normalizePaymentMethodBucket(mov.originalDoc?.paymentMethod || mov.paymentMethod);
+        if (fallbackBucket !== null) {
+          expensesTotal += movAmount;
+        }
+      }
+      continue;
+    }
+
+    for (const docItem of docs) {
+      addDocToTotals(incomeTotals, docItem);
+    }
+  }
+
+  const toNonZeroList = (totals: Record<CajaBreakdownBucketKey, number>): CajaBreakdownItem[] => {
+    const list: CajaBreakdownItem[] = [];
+    for (const bucket of CANONICAL_CAJA_BUCKETS) {
+      const rounded = Math.round(totals[bucket.key] || 0);
+      if (rounded > 0) {
+        list.push({ key: bucket.key, label: bucket.label, amount: rounded });
+      }
+    }
+    return list;
+  };
+
+  const incomes = toNonZeroList(incomeTotals);
+  const expenses = toNonZeroList(expenseTotals);
+  const roundedExpensesTotal = Math.round(expensesTotal);
+
+  return {
+    incomes,
+    expenses,
+    expensesTotal: roundedExpensesTotal,
+    hasMovements: incomes.length > 0 || expenses.length > 0 || roundedExpensesTotal > 0
+  };
+}
+
+
+
+
+

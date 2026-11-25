@@ -270,4 +270,48 @@ test('JOGO SAAS — AISLAMIENTO DE JUGADORES POR COMPLEJO', async (t) => {
     const matchOtherComplex = findMatchingLocalUser([historicalUser], { canonicalId: 'canon_erp_555' }, 'complejo_otro');
     assert.equal(matchOtherComplex, null, 'No debe devolver la ficha de complejo_central si se consulta para complejo_otro');
   });
+
+  await t.test('Escenario F: Sin trato especial entre B y complejo_central + supresión de jugadores eliminados', () => {
+    assert.equal(isSameComplex('B', 'complejo_central'), false, 'B y complejo_central deben tratarse como complejos distintos');
+    assert.equal(isSameComplex('complejo_central', 'B'), false, 'complejo_central y B no deben tener equivalencia especial');
+    assert.equal(isSameComplex('B', 'B'), true);
+
+    const guestBookings: Match[] = [
+      {
+        id: 'b_guest_1',
+        complejoId: 'complejo_a',
+        courtId: 'c1',
+        date: '2026-10-20',
+        startTime: '19:00',
+        endTime: '20:00',
+        userName: 'Invitado Borrado',
+        userPhone: '1122334455',
+        status: 'completed'
+      },
+      {
+        id: 'b_guest_2',
+        complejoId: 'complejo_a',
+        courtId: 'c1',
+        date: '2026-10-21',
+        startTime: '20:00',
+        endTime: '21:00',
+        userName: 'Invitado Activo',
+        userPhone: '1166778899',
+        status: 'completed'
+      }
+    ] as unknown as Match[];
+
+    const crmWithoutSuppression = buildCrmActivityIndex([], guestBookings, 'complejo_a', new Date('2026-10-26'), []);
+    assert.equal(crmWithoutSuppression.crmUsers.length, 2);
+
+    const crmWithSuppression = buildCrmActivityIndex(
+      [],
+      guestBookings,
+      'complejo_a',
+      new Date('2026-10-26'),
+      ['phone:1122334455']
+    );
+    assert.equal(crmWithSuppression.crmUsers.length, 1, 'El jugador suprimido no debe reaparecer como derived_* desde reservas');
+    assert.equal(crmWithSuppression.crmUsers[0].name, 'Invitado Activo');
+  });
 });

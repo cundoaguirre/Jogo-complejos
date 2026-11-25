@@ -23,6 +23,8 @@ export interface BillingConfig {
   cvu: string;
   whatsappNumber: string;
   email?: string;
+  appUrl?: string;
+  publicAppUrl?: string;
   updatedAt?: string;
 }
 
@@ -229,12 +231,15 @@ export function subscribeBillingConfig(onUpdate: (config: BillingConfig) => void
     const rawEmail = (data.email || '').toString().trim();
     const email = rawEmail || (SUPPORT_CONFIG.email || 'soporte@jogo.app').trim();
 
+    const rawAppUrl = (data.publicAppUrl || data.appUrl || '').toString().trim();
+
     onUpdate({
       accountHolder,
       alias,
       cvu,
       whatsappNumber,
       email,
+      ...(rawAppUrl ? { appUrl: rawAppUrl, publicAppUrl: rawAppUrl } : {}),
       updatedAt: data.updatedAt ? String(data.updatedAt) : undefined
     });
   }, (err) => {

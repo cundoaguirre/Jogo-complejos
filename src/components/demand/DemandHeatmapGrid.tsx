@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   DAYS_OF_WEEK,
@@ -18,17 +18,30 @@ interface DemandHeatmapGridProps {
   onSelectCell: (cell: HeatmapCellDetail | null) => void;
 }
 
+const formatHeatValue = (val: number): string => {
+  const rounded = Math.round(val * 100) / 100;
+  return String(rounded);
+};
+
 export const DemandHeatmapGrid: React.FC<DemandHeatmapGridProps> = ({
   heatmapMode,
   onChangeMode,
   hourRows,
   matrix,
   maxCellCount,
-  weekdayOccurrences,
-  activeCourtsDenominator,
+  weekdayOccurrences: _weekdayOccurrences,
+  activeCourtsDenominator: _activeCourtsDenominator,
   selectedCell,
   onSelectCell,
 }) => {
+  const totalMatrixWeight = useMemo(() => {
+    let sum = 0;
+    matrix.forEach((v) => {
+      if (v.total > 0) sum += v.total;
+    });
+    return sum;
+  }, [matrix]);
+
   const getCellColor = (count: number) => {
     if (count === 0 || maxCellCount === 0) {
       return 'bg-transparent text-transparent';
@@ -113,10 +126,11 @@ export const DemandHeatmapGrid: React.FC<DemandHeatmapGridProps> = ({
                   {selectedCell.dayLabel.slice(0, 3)}{' '}
                   {String(selectedCell.hour).padStart(2, '0')}:00 ·{' '}
                   <span className="font-black text-[#129D44]">
-                    {selectedCell.count} res
+                    {formatHeatValue(selectedCell.count)} res
                   </span>{' '}
-                  ({selectedCell.complexCount} prop · {selectedCell.jogoCount}{' '}
-                  Jogo) · {selectedCell.pct}% ocup.
+                  ({formatHeatValue(selectedCell.complexCount)} prop ·{' '}
+                  {formatHeatValue(selectedCell.jogoCount)} Jogo) ·{' '}
+                  {selectedCell.pct}% del total
                 </motion.div>
               )}
             </AnimatePresence>
@@ -140,19 +154,17 @@ export const DemandHeatmapGrid: React.FC<DemandHeatmapGridProps> = ({
                     jogo: 0,
                     complex: 0,
                   };
-                  const occDenom =
-                    (weekdayOccurrences.get(d.key) || 1) *
-                    activeCourtsDenominator;
-                  const pct =
-                    cell.total > 0
-                      ? Math.min(100, Math.round((cell.total / occDenom) * 100))
+                  const rawPct =
+                    totalMatrixWeight > 0 && cell.total > 0
+                      ? (cell.total / totalMatrixWeight) * 100
                       : 0;
+                  const pct = Math.round(rawPct * 10) / 10;
                   const displayVal =
                     cell.total === 0
                       ? ''
                       : heatmapMode === 'percent'
                       ? `${pct}%`
-                      : String(cell.total);
+                      : formatHeatValue(cell.total);
                   const isSelected =
                     selectedCell !== null &&
                     selectedCell.dayLabel === d.full &&
@@ -168,13 +180,13 @@ export const DemandHeatmapGrid: React.FC<DemandHeatmapGridProps> = ({
                           dayLabel: d.full,
                           hour: h % 24,
                           rawHour: h,
-                          count: cell.total,
-                          jogoCount: cell.jogo,
-                          complexCount: cell.complex,
+                          count: Math.round(cell.total * 100) / 100,
+                          jogoCount: Math.round(cell.jogo * 100) / 100,
+                          complexCount: Math.round(cell.complex * 100) / 100,
                           pct,
                         });
                       }}
-                      className={`h-6.5 w-full border-0 text-[10.5px] font-bold flex items-center justify-center transition-colors cursor-pointer ${getCornerRadius(
+                      className={`h-6.5 w-full border-0 text-[10px] sm:text-[10.5px] font-bold flex items-center justify-center transition-colors cursor-pointer ${getCornerRadius(
                         rowIdx,
                         colIdx
                       )} ${getCellColor(cell.total)} ${

@@ -28,10 +28,10 @@ interface CuentasCorrientesSectionProps {
 }
 
 export const CuentasCorrientesSection: React.FC<CuentasCorrientesSectionProps> = ({
-  complexId = 'B',
+  complexId = '',
   onNavigateToPOS
 }) => {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const targetId = complexId;
 
   const [transactions, setTransactions] = useState<any[]>([]);
   const [clients, setClients] = useState<UserType[]>([]);

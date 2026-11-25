@@ -24,6 +24,8 @@ import {
   serverTimestamp 
 } from 'firebase/firestore';
 import { db } from '../lib/firebase';
+import { useFirebase } from './FirebaseContext';
+import { getPublicAppOrigin } from '../lib/invitations';
 import type { ComplexMember, ComplexUserRole } from '../types';
 
 interface MembersModalProps {
@@ -58,6 +60,7 @@ export const MembersModal: React.FC<MembersModalProps> = ({
   isOwner,
   currentUserId
 }) => {
+  const { activeComplex, billingConfig } = useFirebase();
   const [members, setMembers] = useState<ComplexMember[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(true);
   const [inviteEnabled, setInviteEnabled] = useState(false);
@@ -71,12 +74,20 @@ export const MembersModal: React.FC<MembersModalProps> = ({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [inviteError, setInviteError] = useState<string | null>(null);
 
-  // 1. Listen to complex document for member invite settings
+  // 1. Sync invite settings from already-subscribed activeComplex (0 extra reads), fallback to onSnapshot only if complexId differs
   useEffect(() => {
     setInviteError(null);
     if (!isOpen || !complexId) {
       setLocalToken('');
       setInviteToken('');
+      return;
+    }
+
+    if (activeComplex && activeComplex.id === complexId) {
+      setInviteEnabled(Boolean(activeComplex.memberInviteEnabled));
+      const remoteToken = activeComplex.memberInviteToken || '';
+      setInviteToken(remoteToken);
+      setLocalToken(remoteToken);
       return;
     }
 
@@ -94,7 +105,7 @@ export const MembersModal: React.FC<MembersModalProps> = ({
     });
 
     return () => unsubComp();
-  }, [isOpen, complexId]);
+  }, [isOpen, complexId, activeComplex]);
 
   // 2. Listen to members subcollection
   useEffect(() => {
@@ -142,7 +153,7 @@ export const MembersModal: React.FC<MembersModalProps> = ({
   if (!isOpen) return null;
 
   const effectiveToken = localToken || inviteToken;
-  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  const origin = getPublicAppOrigin(billingConfig?.publicAppUrl || billingConfig?.appUrl);
   const inviteUrl = effectiveToken ? `${origin}/invite/member-${complexId}-${effectiveToken}` : '';
 
   // Toggle invite link enabled / disabled

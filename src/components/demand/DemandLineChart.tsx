@@ -36,6 +36,7 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
   onSelectPoint,
 }) => {
   const [zoomScale, setZoomScale] = useState(1);
+  const [containerWidth, setContainerWidth] = useState(340);
   const zoomScaleRef = useRef(1);
   zoomScaleRef.current = zoomScale;
 
@@ -65,6 +66,17 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
     const el = scrollContainerRef.current;
     if (!el) return;
 
+    const updateWidth = () => {
+      if (el.clientWidth > 0) setContainerWidth(el.clientWidth);
+    };
+    updateWidth();
+
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(updateWidth);
+      ro.observe(el);
+    }
+
     const handleNativeTouchMove = (e: TouchEvent) => {
       if (e.touches.length === 2) {
         e.preventDefault();
@@ -74,19 +86,47 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
     el.addEventListener('touchmove', handleNativeTouchMove, { passive: false });
     return () => {
       el.removeEventListener('touchmove', handleNativeTouchMove);
+      ro?.disconnect();
     };
   }, []);
+
+  const hourPointCount =
+    chartAxisMode === 'hour' ? hourRows.length * 2 : DAYS_OF_WEEK.length;
+
+  const maxZoom = useMemo(() => {
+    if (chartAxisMode !== 'hour' || hourPointCount === 0) return 3.5;
+    const minNeededForHalfHours =
+      (hourPointCount * 32) / Math.max(260, containerWidth);
+    return Math.max(4, Math.min(5, minNeededForHalfHours + 0.75));
+  }, [chartAxisMode, hourPointCount, containerWidth]);
+
+  const slotPixelWidth =
+    hourPointCount > 0 ? (containerWidth * zoomScale) / hourPointCount : 40;
+  const showHalfHourLabels =
+    chartAxisMode === 'hour' && zoomScale >= 2.2 && slotPixelWidth >= 28;
 
   const { chartPoints, yAxis, linePath, areaPath } = useMemo(() => {
     const pts: ChartPoint[] =
       chartAxisMode === 'hour'
-        ? hourRows.map((h) => ({
-            key: `h_${h}`,
-            shortLabel: String(h % 24).padStart(2, '0'),
-            fullLabel: `${String(h % 24).padStart(2, '0')}:00 hs`,
-            count: hourTotals.get(h) || 0,
-            revenue: hourRevenues.get(h) || 0,
-          }))
+        ? hourRows
+            .flatMap((h) => [h, h + 0.5])
+            .map((slot) => {
+              const wholeH = Math.floor(slot) % 24;
+              const isHalf = slot % 1 >= 0.5;
+              const mins = isHalf ? '30' : '00';
+              const shortLabel = showHalfHourLabels
+                ? `${wholeH}:${mins}`
+                : isHalf
+                ? ''
+                : String(wholeH);
+              return {
+                key: `h_${slot}`,
+                shortLabel,
+                fullLabel: `${String(wholeH).padStart(2, '0')}:${mins} hs`,
+                count: hourTotals.get(slot) || 0,
+                revenue: hourRevenues.get(slot) || 0,
+              };
+            })
         : DAYS_OF_WEEK.map((d) => ({
             key: `d_${d.key}`,
             shortLabel: d.label,
@@ -129,6 +169,7 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
     hourRevenues,
     dayTotals,
     dayRevenues,
+    showHalfHourLabels,
   ]);
 
   const updateActivePointFromClientX = (clientX: number) => {
@@ -167,7 +208,7 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
   };
 
   const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (e.touches.length === 2) {
+    if (chartAxisMode === 'hour' && e.touches.length === 2) {
       const dist = Math.hypot(
         e.touches[1].clientX - e.touches[0].clientX,
         e.touches[1].clientY - e.touches[0].clientY
@@ -177,7 +218,7 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
   };
 
   const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (e.touches.length === 2) {
+    if (chartAxisMode === 'hour' && e.touches.length === 2) {
       const currentDist = Math.hypot(
         e.touches[1].clientX - e.touches[0].clientX,
         e.touches[1].clientY - e.touches[0].clientY
@@ -187,7 +228,7 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
         return;
       }
       const nextScale = Math.min(
-        3.5,
+        maxZoom,
         Math.max(
           1,
           pinchRef.current.startScale * (currentDist / pinchRef.current.startDist)
@@ -207,13 +248,13 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
       return;
     }
 
-    if (e.touches.length === 1 && !pinchRef.current.active) {
+    if (e.touches.length === 1 && !pinchRef.current.active && zoomScaleRef.current <= 1) {
       updateActivePointFromClientX(e.touches[0].clientX);
     }
   };
 
   const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
-    if (e.touches.length < 2) {
+    if (e.touches.length === 0) {
       pinchRef.current.active = false;
     }
   };
@@ -409,6 +450,7 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
                   className="absolute z-20 pointer-events-none px-2 py-0.5 rounded-lg bg-slate-900 dark:bg-white text-white dark:text-slate-900 text-[11px] font-bold shadow-md whitespace-nowrap"
                   style={activePointLayout}
                 >
+                  {chartAxisMode === 'hour' ? `${activePoint.fullLabel} · ` : ''}
                   {activePoint.count}{' '}
                   {activePoint.count === 1 ? 'reserva' : 'reservas'} · $
                   {Math.round(activePoint.revenue).toLocaleString('es-AR')}
@@ -443,7 +485,9 @@ export const DemandLineChart: React.FC<DemandLineChartProps> = ({
               {chartPoints.map((pt, idx) => (
                 <div
                   key={`lbl_${pt.key}`}
-                  className={`flex-1 text-center text-[10px] font-mono transition-colors ${
+                  className={`flex-1 min-w-0 text-center font-mono whitespace-nowrap transition-colors ${
+                    showHalfHourLabels ? 'text-[9px]' : 'text-[10px]'
+                  } ${
                     selectedPoint === idx
                       ? 'text-[#129D44] font-bold'
                       : 'text-slate-400'

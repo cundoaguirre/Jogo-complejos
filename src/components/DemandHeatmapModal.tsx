@@ -30,7 +30,7 @@ interface DemandHeatmapModalProps {
 
 export const DemandHeatmapModal: React.FC<DemandHeatmapModalProps> = ({
   onClose,
-  complexId = 'complejo_central',
+  complexId = '',
   complexName = 'Complejo',
   bookings: propBookings,
   courts: propCourts,

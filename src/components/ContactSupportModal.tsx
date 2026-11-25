@@ -65,11 +65,11 @@ export const ContactSupportModal: React.FC<ContactSupportModalProps> = ({
   }, [adminName, adminPhone, adminEmail, user]);
 
   const { activeComplexId } = useFirebase();
-  const effectiveComplexId = complexId || activeComplexId || 'B';
+  const effectiveComplexId = complexId || activeComplexId || '';
 
   // Real-time Firestore subscription to support_tickets scoped strictly to the complex
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !effectiveComplexId) return;
     setIsLoadingTickets(true);
     const unsub = subscribeToSupportTickets(effectiveComplexId, (firestoreTickets) => {
       setTicketsList(firestoreTickets);

@@ -122,14 +122,39 @@ export function isGenericPlaceholderName(name?: string | null): boolean {
 }
 
 /**
- * Valida si dos IDs de complejo representan el mismo complejo (incluyendo alias canónicos 'B' <-> 'complejo_central')
+ * Devuelve los IDs equivalentes de un complejo (incluyendo alias histórico B <-> complejo_central).
+ */
+export function getComplexAliasIds(complexId?: string | null): string[] {
+  if (!complexId) return [];
+  const clean = String(complexId).trim();
+  if (!clean) return [];
+  if (clean === 'B' || clean === 'complejo_central') {
+    return ['B', 'complejo_central'];
+  }
+  return [clean];
+}
+
+/**
+ * Valida si dos IDs de complejo representan el mismo complejo (contemplando alias B <-> complejo_central).
  */
 export function isSameComplex(idA?: string | null, idB?: string | null): boolean {
   if (!idA || !idB) return false;
-  if (idA === idB) return true;
-  const normA = (idA === 'complejo_central' || idA === 'B') ? 'B' : idA;
-  const normB = (idB === 'complejo_central' || idB === 'B') ? 'B' : idB;
+  const normA = String(idA).trim() === 'complejo_central' ? 'B' : String(idA).trim();
+  const normB = String(idB).trim() === 'complejo_central' ? 'B' : String(idB).trim();
   return normA === normB;
+}
+
+/**
+ * Determina si una ficha de usuario está oculta/eliminada para un complejo específico o inactiva globalmente.
+ */
+export function isUserHiddenForComplex(user?: Partial<User> | any, complexId?: string | null): boolean {
+  if (!user) return false;
+  if (user.status === 'inactivo') return true;
+  const aliases = getComplexAliasIds(complexId);
+  if (aliases.length === 0) return false;
+  const hiddenIds = Array.isArray(user.hiddenForComplexIds) ? user.hiddenForComplexIds.map(String) : [];
+  const legacyDeleted = Array.isArray(user.deletedByComplexIds) ? user.deletedByComplexIds.map(String) : [];
+  return aliases.some(alias => hiddenIds.includes(alias) || legacyDeleted.includes(alias));
 }
 
 export interface ExtractedParticipant {
@@ -315,21 +340,32 @@ export function findMatchingLocalUser(
     phone?: string | null;
     email?: string | null;
   },
-  complexId?: string | null
+  complexId?: string | null,
+  options?: { includeHidden?: boolean }
 ): User | null {
   if (!users || users.length === 0 || !criteria) return null;
 
-  // Filtrar candidatos si complexId está especificado y excluir usuarios inactivos o eliminados
+  const includeHidden = Boolean(options?.includeHidden);
+  const complexAliases = getComplexAliasIds(complexId);
+
+  // Filtrar candidatos si complexId está especificado y excluir usuarios inactivos o ocultos en la sede
   const candidateUsers = (users || []).filter(u => {
     if (!u) return false;
-    if ((u as any).status === 'inactivo') return false;
-    const deletedIn = (u as any).deletedByComplexIds;
-    if (complexId && Array.isArray(deletedIn) && (deletedIn.includes(complexId) || (complexId === 'B' && deletedIn.includes('complejo_central')))) {
+    if (!includeHidden && isUserHiddenForComplex(u, complexId)) {
       return false;
     }
     if (complexId) {
       const uOrigin = u.originComplejoId || (u as any).originComplexId || (u as any).complejoId || (u as any).complexId;
-      if (uOrigin && !isSameComplex(uOrigin, complexId)) return false;
+      const assoc = Array.isArray(u.associatedComplexIds) ? u.associatedComplexIds.map(String) : [];
+      const isAssociated = complexAliases.some(a => assoc.includes(a));
+      const hiddenArr = Array.isArray((u as any).hiddenForComplexIds) ? (u as any).hiddenForComplexIds.map(String) : [];
+      const wasHiddenHere = includeHidden && complexAliases.some(a => hiddenArr.includes(a));
+      if (uOrigin && !isSameComplex(uOrigin, complexId) && !isAssociated && !wasHiddenHere) {
+        return false;
+      }
+      if (!uOrigin && assoc.length > 0 && !isAssociated && !wasHiddenHere) {
+        return false;
+      }
     }
     return true;
   });
@@ -443,10 +479,17 @@ export interface CrmActivityIndexResult {
 export function buildCrmActivityIndex(
   registeredUsers: User[],
   bookings: Match[],
-  activeComplexId: string = 'complejo_central',
-  systemDate: Date = new Date()
+  activeComplexId: string = '',
+  systemDate: Date = new Date(),
+  deletedPlayerKeys: string[] = [],
+  hiddenRegisteredUsers: User[] = []
 ): CrmActivityIndexResult {
-  const normComplexId = (!activeComplexId || activeComplexId === 'complejo_central') ? 'B' : activeComplexId;
+  const normComplexId = String(activeComplexId || '').trim();
+  const deletedKeysSet = new Set(
+    (Array.isArray(deletedPlayerKeys) ? deletedPlayerKeys : [])
+      .map(k => String(k || '').trim())
+      .filter(Boolean)
+  );
 
   // 1. Contenedores de participantes derivados (en memoria) para participantes sin ficha local
   const derivedByCanon = new Map<string, User>();
@@ -490,7 +533,25 @@ export function buildCrmActivityIndex(
   };
 
   // Función de resolución de usuario para un participante respetando la prioridad de la ficha local
-  const resolveUserForParticipant = (p: ExtractedParticipant, bookingDate?: string): User => {
+  const isSuppressedParticipant = (p: ExtractedParticipant): boolean => {
+    if (deletedKeysSet.size === 0) return false;
+    if (p.canonicalId && (deletedKeysSet.has(`canon:${p.canonicalId}`) || deletedKeysSet.has(`derived_canon_${p.canonicalId}`) || deletedKeysSet.has(p.canonicalId))) {
+      return true;
+    }
+    if (p.normPhone && (deletedKeysSet.has(`phone:${p.normPhone}`) || deletedKeysSet.has(`derived_phone_${p.normPhone}`))) {
+      return true;
+    }
+    if (p.rawId && (deletedKeysSet.has(p.rawId) || deletedKeysSet.has(`uid:${p.rawId}`) || deletedKeysSet.has(`derived_uid_${p.rawId}`))) {
+      return true;
+    }
+    const nameKey = (p.name || '').trim().toLowerCase();
+    if (nameKey && !p.canonicalId && !p.normPhone && !p.rawId && deletedKeysSet.has(`name:${nameKey}`)) {
+      return true;
+    }
+    return false;
+  };
+
+  const resolveUserForParticipant = (p: ExtractedParticipant, bookingDate?: string): User | null => {
     // 1. Buscar correspondencia inequívoca con las fichas locales registradas en este complejo
     const localMatch = findMatchingLocalUser(registeredUsers, {
       id: p.rawId,
@@ -500,7 +561,7 @@ export function buildCrmActivityIndex(
       historicalIds: p.historicalIds,
       phone: p.rawPhone || p.normPhone,
       email: p.email
-    }, normComplexId);
+    }, normComplexId || undefined);
 
     if (localMatch) {
       // Prioridad de ficha local: NUNCA sobrescribir el nombre local del complejo
@@ -526,6 +587,27 @@ export function buildCrmActivityIndex(
         localMatch.email = p.email;
       }
       return localMatch;
+    }
+
+    // Si este participante (sin ficha activa en /users) fue eliminado explícitamente de la sede, no resucitarlo en memoria
+    if (isSuppressedParticipant(p)) {
+      return null;
+    }
+
+    // Si existe una ficha real en /users que está oculta en este complejo (soft-delete), no materializar un derivado fantasma
+    if (hiddenRegisteredUsers.length > 0) {
+      const hiddenMatch = findMatchingLocalUser(hiddenRegisteredUsers, {
+        id: p.rawId,
+        canonicalId: p.canonicalId,
+        canonicalUserId: p.canonicalId,
+        historicalId: p.historicalId,
+        historicalIds: p.historicalIds,
+        phone: p.rawPhone || p.normPhone,
+        email: p.email
+      }, normComplexId || undefined, { includeHidden: true });
+      if (hiddenMatch) {
+        return null;
+      }
     }
 
     // 2. Si no existe ficha local, buscar si ya existe un derivado en memoria para esta misma identidad:
@@ -570,6 +652,10 @@ export function buildCrmActivityIndex(
       ? `derived_canon_${p.canonicalId}`
       : (p.normPhone ? `derived_phone_${p.normPhone}` : (p.rawId ? `derived_uid_${p.rawId}` : `derived_player_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`));
 
+    if (deletedKeysSet.has(assignedId)) {
+      return null;
+    }
+
     const effectiveName = (p.name && !isGenericPlaceholderName(p.name))
       ? p.name
       : (p.canonicalName && !isGenericPlaceholderName(p.canonicalName)
@@ -585,7 +671,7 @@ export function buildCrmActivityIndex(
       canonicalUserId: p.canonicalId,
       canonicalName: p.canonicalName,
       historicalIds: p.historicalIds,
-      originComplejoId: normComplexId,
+      originComplejoId: normComplexId || undefined,
       acquisitionDate: bookingDate || systemDate.toISOString().split('T')[0],
       acquisitionChannel: 'Jogo',
       isDerived: true,
@@ -600,13 +686,13 @@ export function buildCrmActivityIndex(
     return derivedUser;
   };
 
-  // 4. Procesar todas las reservas del complejo (respetando separación multi-tenant y alias canónicos)
+  // 4. Procesar todas las reservas del complejo (respetando aislamiento multi-tenant estricto)
   for (const booking of bookings) {
     if (!booking) continue;
 
     // Asegurar que la reserva corresponda al complejo activo
     const bComplex = booking.complejoId || booking.complexId;
-    if (bComplex && activeComplexId && !isSameComplex(bComplex, activeComplexId)) {
+    if (bComplex && normComplexId && !isSameComplex(bComplex, normComplexId)) {
       continue;
     }
 
@@ -615,7 +701,9 @@ export function buildCrmActivityIndex(
 
     for (const p of participants) {
       const resolvedUser = resolveUserForParticipant(p, bookingDate);
-      addBookingToUser(resolvedUser, booking, p.isOrganizer);
+      if (resolvedUser) {
+        addBookingToUser(resolvedUser, booking, p.isOrganizer);
+      }
     }
   }
 
@@ -633,18 +721,23 @@ export function buildCrmActivityIndex(
     uniqueDerivedMap.set(String(d.id), d);
   }
 
-  const crmUsers: User[] = [
+  const rawCrmUsers: User[] = [
     ...registeredUsers,
     ...Array.from(uniqueDerivedMap.values())
   ].filter(u => {
     if (!u) return false;
-    if ((u as any).status === 'inactivo') return false;
-    const deletedIn = (u as any).deletedByComplexIds;
-    if (Array.isArray(deletedIn) && (deletedIn.includes(normComplexId) || (normComplexId === 'B' && deletedIn.includes('complejo_central')))) {
-      return false;
-    }
+    if (isUserHiddenForComplex(u, normComplexId)) return false;
     return true;
   });
+
+  const crmUsersMap = new Map<string, User>();
+  for (const u of rawCrmUsers) {
+    const key = String(u.id);
+    if (!crmUsersMap.has(key)) {
+      crmUsersMap.set(key, u);
+    }
+  }
+  const crmUsers: User[] = Array.from(crmUsersMap.values());
 
   // 6. Precalcular métricas del ciclo de vida y enriquecer cada ficha para búsquedas y modales
   const userMetricsMap = new Map<string, UserLifecycleMetrics>();

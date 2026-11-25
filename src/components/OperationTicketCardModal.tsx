@@ -34,6 +34,7 @@ import {
 } from '../lib/firestoreSync';
 import { shareOrDownloadTicketImage, TicketImageData } from '../lib/ticketImageGenerator';
 import { useFirebase } from './FirebaseContext';
+import { ConfirmDeleteCardModal } from './ConfirmDeleteCardModal';
 
 const normalizePhoneDigits = (phone?: string) => String(phone || '').replace(/\D/g, '');
 
@@ -114,7 +115,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
   movements = [],
   users = [],
   bookings = [],
-  complexId = 'B',
+  complexId = '',
   onOpenFullTicket,
   onOpenSettleModal,
   onEditBooking,
@@ -128,6 +129,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
   const [toastMessage, setToastMessage] = useState('Comprobante descargado');
   const [isDeleting, setIsDeleting] = useState(false);
   const [showConfirmDelete, setShowConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [addPlayerModalOpen, setAddPlayerModalOpen] = useState(false);
   const [playerSearchQuery, setPlayerSearchQuery] = useState('');
   const [isUpdatingPlayers, setIsUpdatingPlayers] = useState(false);
@@ -145,7 +147,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
   // Subscribe to venue profile
   useEffect(() => {
     if (!complexId) return;
-    const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+    const targetId = complexId;
     const unsub = subscribeToVenueProfile(targetId, (prof) => {
       setVenueProfile(prof);
     });
@@ -429,9 +431,10 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
   const handleDeleteRecord = async () => {
     if (!operation) return;
     setIsDeleting(true);
+    setDeleteError(null);
     try {
       await permanentlyDeleteFinancialRecordInFirestore({
-        complexId: complexId || operation.complexId || (operation as any).complejoId || 'B',
+        complexId: complexId || operation.complexId || (operation as any).complejoId || '',
         operationId: operation.id,
         bookingId: operation.bookingId,
         isLegacyTransaction: Boolean((operation as any).isLegacy)
@@ -439,8 +442,9 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
       onDeleted?.(operation.ticketCode || operation.notes || 'Operación');
       setShowConfirmDelete(false);
       onClose();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error al eliminar registro:', err);
+      setDeleteError(err?.message || 'No se pudo eliminar el registro.');
     } finally {
       setIsDeleting(false);
     }
@@ -896,7 +900,7 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
 
                         return (
                           <div
-                            key={`bk-occupied-slot-${player.id || slotIdx}`}
+                            key={`bk-occupied-slot-${player.id || 'p'}-${slotIdx}`}
                             className="flex items-center justify-between py-1 text-xs"
                           >
                             {/* Izquierda: Cuadrado blanco con bordes redondeados + Nombre en negrita */}
@@ -1105,9 +1109,9 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
                       No se encontraron usuarios disponibles
                     </div>
                   ) : (
-                    availableUsersToAdd.map(u => (
+                    availableUsersToAdd.map((u, uIdx) => (
                       <div
-                        key={`add-p-user-${u.id}`}
+                        key={`add-p-user-${u.id || uIdx}-${uIdx}`}
                         onClick={() => handleAddPlayer(u)}
                         className="py-2.5 px-2 hover:bg-emerald-50/60 rounded-xl flex items-center justify-between cursor-pointer transition-colors"
                       >
@@ -1126,48 +1130,34 @@ export const OperationTicketCardModal: React.FC<OperationTicketCardModalProps> =
             </div>
           )}
 
-          {/* Sub-Modal de Confirmación para Eliminar Registro */}
-          {showConfirmDelete && (
-            <div 
-              className="fixed inset-0 z-[95] flex items-center justify-center bg-black/70 backdrop-blur-xs p-4"
-              onClick={() => setShowConfirmDelete(false)}
-            >
-              <div 
-                className="w-full max-w-xs bg-white rounded-3xl p-5 space-y-3.5 shadow-2xl text-center"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="w-12 h-12 rounded-2xl bg-red-100 text-red-600 flex items-center justify-center mx-auto">
-                  <Trash2 size={24} />
-                </div>
-                <h4 className="font-bold text-slate-800 text-base">
-                  ¿Eliminar {isBooking ? 'reserva' : isSale ? 'venta' : isPurchase ? 'compra' : 'gasto'}?
-                </h4>
-                <p className="text-xs text-gray-500">
-                  Esta acción es definitiva y eliminará todos los registros y movimientos asociados.
-                </p>
-                <div className="flex items-center gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowConfirmDelete(false)}
-                    className="flex-1 py-2.5 rounded-xl border border-gray-200 text-xs font-bold text-gray-600 hover:bg-gray-50 cursor-pointer"
-                  >
-                    Cancelar
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isDeleting}
-                    onClick={handleDeleteRecord}
-                    className="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md cursor-pointer disabled:opacity-50"
-                  >
-                    {isDeleting ? 'Eliminando...' : 'Eliminar'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
         </motion.div>
       </div>
+      <ConfirmDeleteCardModal
+        isOpen={showConfirmDelete}
+        onClose={() => {
+          if (!isDeleting) {
+            setDeleteError(null);
+            setShowConfirmDelete(false);
+          }
+        }}
+        onConfirm={handleDeleteRecord}
+        targetName={
+          isBooking
+            ? bookingOrganizerName
+            : resolvedName !== 'n/n'
+            ? resolvedName
+            : undefined
+        }
+        description={
+          isBooking
+            ? `Eliminarás a ${bookingOrganizerName || 'este usuario'} de manera permanente`
+            : resolvedName !== 'n/n'
+            ? `Eliminarás a ${resolvedName} de manera permanente`
+            : 'Eliminarás este registro de manera permanente'
+        }
+        errorMessage={deleteError}
+        isDeleting={isDeleting}
+      />
     </AnimatePresence>
   );
 };

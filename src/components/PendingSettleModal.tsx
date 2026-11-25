@@ -17,17 +17,15 @@ import {
   User as UserIcon
 } from 'lucide-react';
 import type { FinancialPaymentMethod, User, ExpenseEntity } from '../types';
-import { doc, getDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '../lib/firebase';
 import { 
   registerOperationPaymentsBatch, 
   settleLegacyOrVirtualDebt,
   resolveClientName, 
   resolveClientPhone,
-  updateBookingInFirestore,
   registerBookingPaymentInFirestore,
   subscribeToExpenseEntities
 } from '../lib/firestoreSync';
+import { isUserHiddenForComplex } from '../lib/crmActivityIndex';
 import { cn } from '../lib/utils';
 
 const DEFAULT_METHODS = ['Efectivo', 'Transferencia', 'Tarjeta', 'Pendiente'];
@@ -120,6 +118,18 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
   const mainDragControls = useDragControls();
   const searchDropdownRef = useRef<HTMLDivElement>(null);
 
+  const normalizeOrderedMethodsList = (rawList: string[]): string[] => {
+    const normalized = rawList.map((m: string) => {
+      if (m === 'Fiado') return 'Pendiente';
+      if (m === 'Crédito' || m === 'Credito' || m === 'Débito' || m === 'Debito') return 'Tarjeta';
+      return m;
+    });
+    DEFAULT_METHODS.forEach(def => {
+      if (!normalized.includes(def)) normalized.push(def);
+    });
+    return Array.from(new Set(normalized));
+  };
+
   // Ordered payment methods from shared localStorage
   const [orderedMethods, setOrderedMethods] = useState<string[]>(() => {
     try {
@@ -127,11 +137,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((m: string) => {
-            if (m === 'Fiado') return 'Pendiente';
-            if (m === 'Crédito' || m === 'Débito') return 'Tarjeta';
-            return m;
-          });
+          return normalizeOrderedMethodsList(parsed);
         }
       }
     } catch (e) {
@@ -147,11 +153,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
         if (saved) {
           const parsed = JSON.parse(saved);
           if (Array.isArray(parsed) && parsed.length > 0) {
-            setOrderedMethods(parsed.map((m: string) => {
-              if (m === 'Fiado') return 'Pendiente';
-              if (m === 'Crédito' || m === 'Débito') return 'Tarjeta';
-              return m;
-            }));
+            setOrderedMethods(normalizeOrderedMethodsList(parsed));
           }
         }
       } catch (e) {
@@ -165,7 +167,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
   // Subscribe to real expense entities in Firestore
   useEffect(() => {
     if (!complexId) return;
-    const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+    const targetId = complexId;
     const unsub = subscribeToExpenseEntities(targetId, (ents) => {
       setExpenseEntities(Array.isArray(ents) ? ents : []);
     });
@@ -356,87 +358,48 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
     setIsSubmitting(true);
     setErrorMsg(null);
 
+    const targetComplexId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+
     try {
       const displayClientName = assignedClient?.name || operation.userName || 'NN';
 
       // Si la operación es una Reserva (isBooking o operation.bookingId o operation.id.endsWith('-booking'))
       if (isBooking || operation.bookingId || operation.id.endsWith('-booking')) {
         const resolvedBookingId = String(operation.bookingId || operation.id.replace('-booking', ''));
-        const effectiveAmount = payments
-          .filter(p => p.method.toLowerCase() !== 'fiado' && p.method.toLowerCase() !== 'pendiente' && (Number(p.amount) || 0) > 0)
-          .reduce((sum, p) => sum + Number(p.amount), 0);
+        const monetaryRows = payments.filter(
+          p => p.method.toLowerCase() !== 'fiado' && p.method.toLowerCase() !== 'pendiente' && (Number(p.amount) || 0) > 0
+        );
+        const effectiveAmount = monetaryRows.reduce((sum, p) => sum + Number(p.amount), 0);
 
-        // 1. Registrar cobro oficial en Firestore (actualiza /bookings, /operations y crea /financial_movements)
-        for (const p of payments.filter(p => (Number(p.amount) || 0) > 0)) {
-          await registerBookingPaymentInFirestore({
-            bookingId: resolvedBookingId,
-            complexId,
+        if (monetaryRows.length === 0 || effectiveAmount <= 0) {
+          setErrorMsg('Seleccioná un medio de pago monetario válido (Efectivo, Transferencia o Tarjeta) para registrar el cobro.');
+          setIsSubmitting(false);
+          return;
+        }
+
+        // Registrar cobro + imputación al jugador atómicamente en una sola transacción
+        await registerBookingPaymentInFirestore({
+          bookingId: resolvedBookingId,
+          complexId: targetComplexId,
+          amount: effectiveAmount,
+          paymentMethod: mapMethodToFinancial(monetaryRows[0].method),
+          payments: monetaryRows.map(p => ({
             amount: Number(p.amount),
             paymentMethod: mapMethodToFinancial(p.method),
-            operatorId,
-            idempotencyKey: `pay_player_${resolvedBookingId}_${preselectedPlayer?.id || 'host'}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            notes: `Cobro turno cancha · Jugador: ${preselectedPlayer?.name || displayClientName}`
-          });
-        }
-
-        // 2. Imputar el pago directamente al jugador dentro de booking.players y registrar aporte individual del organizador
-        if (resolvedBookingId) {
-          const bRef = doc(db, 'bookings', resolvedBookingId);
-          const bSnap = await getDoc(bRef);
-          if (bSnap.exists()) {
-            const bData = bSnap.data();
-            const playersList = Array.isArray(bData.players) ? [...bData.players] : [];
-            
-            const isTargetHost = Boolean(
-              preselectedPlayer?.isHost ||
-              (!preselectedPlayer && (displayClientName === bData.host_name || displayClientName === bData.userName)) ||
-              (preselectedPlayer?.id && (preselectedPlayer.id === bData.userId || preselectedPlayer.id === bData.host_id)) ||
-              (bData.host_name && preselectedPlayer?.name && bData.host_name.trim().toLowerCase() === preselectedPlayer.name.trim().toLowerCase())
-            );
-
-            if (preselectedPlayer) {
-              const pIdx = playersList.findIndex((p: any) => 
-                (preselectedPlayer.id && (p.id === preselectedPlayer.id || p.userId === preselectedPlayer.id)) ||
-                (p.name && p.name.trim().toLowerCase() === preselectedPlayer.name.trim().toLowerCase())
-              );
-
-              if (pIdx >= 0) {
-                const prevAmt = Number(playersList[pIdx].amountPaid || playersList[pIdx].amount_paid || 0);
-                playersList[pIdx] = {
-                  ...playersList[pIdx],
-                  amountPaid: prevAmt + effectiveAmount,
-                  amount_paid: prevAmt + effectiveAmount,
-                  has_paid: true,
-                  ...(isTargetHost ? { isHost: true } : {})
-                };
-              } else {
-                playersList.push({
-                  id: preselectedPlayer.id || `player_${Date.now()}`,
-                  userId: preselectedPlayer.id || undefined,
-                  name: preselectedPlayer.name,
-                  phone: preselectedPlayer.phone || '',
-                  amountPaid: effectiveAmount,
-                  amount_paid: effectiveAmount,
-                  has_paid: true,
-                  isHost: isTargetHost
-                });
-              }
-            }
-
-            const updateBookingPayload: any = {
-              players: playersList,
-              updatedAt: serverTimestamp()
-            };
-
-            if (isTargetHost) {
-              const prevHostAmt = Number(bData.hostAmountPaid ?? bData.host_amount_paid ?? 0);
-              updateBookingPayload.hostAmountPaid = prevHostAmt + effectiveAmount;
-              updateBookingPayload.host_amount_paid = prevHostAmt + effectiveAmount;
-            }
-
-            await updateDoc(bRef, updateBookingPayload);
+            notes: `Cobro turno cancha (${p.method}) · Jugador: ${preselectedPlayer?.name || displayClientName}`
+          })),
+          operatorId,
+          idempotencyKey: `pay_player_${resolvedBookingId}_${preselectedPlayer?.id || 'host'}_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          notes: `Cobro turno cancha · Jugador: ${preselectedPlayer?.name || displayClientName}`,
+          playerUpdate: {
+            id: preselectedPlayer?.id || preselectedPlayer?.userId || undefined,
+            userId: preselectedPlayer?.userId || preselectedPlayer?.id || undefined,
+            name: preselectedPlayer?.name || displayClientName,
+            phone: preselectedPlayer?.phone || '',
+            isHost: preselectedPlayer?.isHost,
+            amount: effectiveAmount
           }
-        }
+        });
 
         setIsSubmitting(false);
         onSuccess?.();
@@ -445,7 +408,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
       }
 
       const paymentsPayload = payments
-        .filter(p => (Number(p.amount) || 0) > 0)
+        .filter(p => mapMethodToFinancial(p.method) !== 'other' && (Number(p.amount) || 0) > 0)
         .map((p, idx) => ({
           amount: Number(p.amount),
           paymentMethod: mapMethodToFinancial(p.method),
@@ -455,12 +418,29 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
             : `Cobro deuda pendiente (${p.method}) · Ticket ${operation.ticketCode || ''}`
         }));
 
+      if (paymentsPayload.length === 0) {
+        setErrorMsg(
+          isExpenseOrPurchase
+            ? 'Seleccioná un medio de pago monetario válido (Efectivo, Transferencia o Tarjeta) para registrar el pago.'
+            : 'Seleccioná un medio de pago monetario válido (Efectivo, Transferencia o Tarjeta) para registrar el cobro.'
+        );
+        setIsSubmitting(false);
+        return;
+      }
+
       const bId = operation.bookingId || (operation.id.endsWith('-booking') ? operation.id.replace('-booking', '') : null);
       const finalClientName = displayClientName;
+      const isVirtualOrLegacyOp = Boolean(
+        operation.isLegacy ||
+        operation.id.endsWith('-booking') ||
+        operation.originalDoc?.createdBy === 'histórico' ||
+        operation.originalDoc?.createdBy === 'reserva' ||
+        operation.originalDoc?.createdBy === 'sistema'
+      );
 
-      if (operation.isLegacy || operation.id.endsWith('-booking')) {
+      if (isVirtualOrLegacyOp) {
         await settleLegacyOrVirtualDebt({
-          complexId,
+          complexId: targetComplexId,
           operationId: operation.id,
           operatorId: operatorId || 'pos_operator',
           payments: paymentsPayload,
@@ -477,7 +457,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
       } else {
         try {
           await registerOperationPaymentsBatch({
-            complexId,
+            complexId: targetComplexId,
             operationId: operation.id,
             operatorId: operatorId || 'pos_operator',
             payments: paymentsPayload,
@@ -488,7 +468,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
         } catch (opErr: any) {
           if (opErr?.message?.includes('no encontrada') || opErr?.message?.includes('not found')) {
             await settleLegacyOrVirtualDebt({
-              complexId,
+              complexId: targetComplexId,
               operationId: operation.id,
               operatorId: operatorId || 'pos_operator',
               payments: paymentsPayload,
@@ -512,7 +492,26 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
       onClose();
     } catch (err: any) {
       console.error('Error al registrar cobro de deuda pendiente:', err);
-      setErrorMsg(err?.message || 'Error al procesar el cobro.');
+      let friendlyMsg = err?.message || 'Error al procesar el cobro.';
+      if (typeof friendlyMsg === 'string' && friendlyMsg.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(friendlyMsg);
+          if (parsed && typeof parsed.error === 'string') {
+            friendlyMsg = parsed.error.toLowerCase().includes('permission')
+              ? 'Permisos insuficientes en Firestore para registrar este cobro.'
+              : parsed.error;
+          }
+        } catch {
+          // Keep original message if not valid JSON
+        }
+      } else if (
+        typeof friendlyMsg === 'string' &&
+        (friendlyMsg.toLowerCase().includes('missing or insufficient permissions') ||
+          err?.code === 'permission-denied')
+      ) {
+        friendlyMsg = 'Permisos insuficientes en Firestore para registrar este cobro.';
+      }
+      setErrorMsg(friendlyMsg);
     } finally {
       setIsSubmitting(false);
     }
@@ -559,6 +558,7 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
 
   // Search results for Clients (users) or Entities (expenseEntities)
   const filteredUsers = users.filter((u: any) => {
+    if (!u || isUserHiddenForComplex(u, complexId)) return false;
     if (!clientSearchQuery) return true;
     const q = clientSearchQuery.toLowerCase();
     return (u.name && u.name.toLowerCase().includes(q)) || (u.phone && u.phone.includes(q));
@@ -761,9 +761,9 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
                           filteredEntities.length === 0 ? (
                             <div className="p-2 text-center text-gray-400">Sin coincidencias</div>
                           ) : (
-                            filteredEntities.map((ent: any) => (
+                            filteredEntities.map((ent: any, entIdx: number) => (
                               <div
-                                key={`p-entity-opt-${ent.id}`}
+                                key={`p-entity-opt-${ent.id || entIdx}-${entIdx}`}
                                 onClick={() => {
                                   setAssignedClient({ id: ent.id, name: ent.name });
                                   setClientSearchOpen(false);
@@ -783,9 +783,9 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
                           filteredUsers.length === 0 ? (
                             <div className="p-2 text-center text-gray-400">Sin coincidencias</div>
                           ) : (
-                            filteredUsers.map((u: any) => (
+                            filteredUsers.map((u: any, uIdx: number) => (
                               <div
-                                key={`p-client-opt-${u.id}`}
+                                key={`p-client-opt-${u.id || uIdx}-${uIdx}`}
                                 onClick={() => {
                                   setAssignedClient({ id: u.id, name: u.name, phone: u.phone });
                                   setClientSearchOpen(false);
@@ -1001,9 +1001,9 @@ export const PendingSettleModal: React.FC<PendingSettleModalProps> = ({
                 </div>
 
                 <div className="divide-y divide-gray-100">
-                  {orderedMethods.map((m) => (
+                  {orderedMethods.map((m, mIdx) => (
                     <button
-                      key={`choose-method-${m}`}
+                      key={`choose-method-${m}-${mIdx}`}
                       type="button"
                       onClick={() => handleSelectMethod(m)}
                       className="w-full py-3.5 px-3 flex items-center justify-between hover:bg-gray-50 rounded-xl transition-colors cursor-pointer text-left"

@@ -77,3 +77,58 @@ export function consumeProductBatchesFifo(
     category,
   };
 }
+
+/**
+ * Restaura unidades a lotes PEPS al anular o eliminar una venta,
+ * devolviendo primero a los lotes más recientemente consumidos hasta su initialQuantity.
+ */
+export function restoreProductBatches(
+  prodData: any,
+  productId: string,
+  qtyToRestore: number,
+  fallbackIdGenerator: () => string = () => `batch_ret_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`
+): { newStock: number; updatedBatches: ProductBatch[] } {
+  const currentStock = Math.max(0, Number(prodData?.stock || 0));
+  const qty = Math.max(0, Number(qtyToRestore || 0));
+  const newStock = currentStock + qty;
+
+  const updatedBatches: ProductBatch[] = Array.isArray(prodData?.batches)
+    ? prodData.batches.map((b: ProductBatch) => ({ ...b }))
+    : [];
+
+  if (qty <= 0) {
+    return { newStock, updatedBatches };
+  }
+
+  // Orden descendente por fecha para reponer primero las tandas consumidas más recientemente
+  const sortedDesc = [...updatedBatches].sort(
+    (a, b) => getBatchCreatedAtMs(b.createdAt) - getBatchCreatedAtMs(a.createdAt)
+  );
+
+  let remaining = qty;
+  for (const batch of sortedDesc) {
+    if (remaining <= 0) break;
+    const initQty = Number(batch.initialQuantity ?? batch.quantity ?? 0);
+    const curQty = Math.max(0, Number(batch.quantity ?? 0));
+    const room = Math.max(0, initQty - curQty);
+    if (room > 0) {
+      const add = Math.min(room, remaining);
+      batch.quantity = curQty + add;
+      remaining -= add;
+    }
+  }
+
+  if (remaining > 0) {
+    updatedBatches.push({
+      id: fallbackIdGenerator(),
+      quantity: remaining,
+      initialQuantity: remaining,
+      unitCost: Number(prodData?.purchasePrice || 0),
+      purchasePlace: 'Restitución de stock',
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  return { newStock, updatedBatches };
+}
+

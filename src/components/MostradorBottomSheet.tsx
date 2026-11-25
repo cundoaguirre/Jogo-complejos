@@ -82,7 +82,7 @@ export const MostradorBottomSheet: React.FC<MostradorBottomSheetProps> = ({
   mode = 'mostrador'
 }) => {
   const { isStaff } = useFirebase();
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const targetId = complexId || '';
 
   // View state: 'categories' | 'products' | 'expenses'
   const [activeTab, setActiveTab] = useState<'categories' | 'products' | 'expenses'>(mode === 'gastos' ? 'expenses' : 'categories');

@@ -32,6 +32,7 @@ import {
   executeExpenseOperation,
   subscribeToExpenseEntities
 } from '../lib/firestoreSync';
+import { isUserHiddenForComplex } from '../lib/crmActivityIndex';
 import { usePOSCart } from './POSCartContext';
 import { playAddToCartSound, playCashRegisterSound } from '../lib/posAudio';
 import { auth } from '../lib/firebase';
@@ -59,12 +60,12 @@ interface POSModalProps {
 export const POSModal: React.FC<POSModalProps> = ({
   isOpen,
   onClose,
-  complexId = 'B',
+  complexId = '',
   onNavigateToUserProfile,
   initialSection = 'mostrador',
   users: propUsers = []
 }) => {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const targetId = complexId;
 
   // Global cart state (persists across closures)
   const { 
@@ -391,18 +392,18 @@ export const POSModal: React.FC<POSModalProps> = ({
   const allAvailableClients = useMemo(() => {
     const map = new Map<string, User>();
     clients.forEach((c) => {
-      if (c && c.id) map.set(String(c.id), c);
+      if (c && c.id && !isUserHiddenForComplex(c, complexId)) map.set(String(c.id), c);
     });
     if (propUsers && Array.isArray(propUsers)) {
       propUsers.forEach((u) => {
-        if (u && u.id) {
+        if (u && u.id && !isUserHiddenForComplex(u, complexId)) {
           const existing = map.get(String(u.id));
           map.set(String(u.id), { ...existing, ...u });
         }
       });
     }
     return Array.from(map.values()).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  }, [clients, propUsers]);
+  }, [clients, propUsers, complexId]);
 
   // Filtered clients for quick selection (sin .slice(0, 10), todos disponibles con scroll max-h-28)
   const filteredClients = useMemo(() => {

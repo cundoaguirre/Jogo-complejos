@@ -88,6 +88,10 @@ function parseToDate(val: any): Date | null {
   if (!val) return null;
   if (val instanceof Date) return isNaN(val.getTime()) ? null : val;
   if (typeof val.toDate === 'function') return val.toDate();
+  if (typeof val?.seconds === 'number') {
+    const d = new Date(val.seconds * 1000);
+    return isNaN(d.getTime()) ? null : d;
+  }
   if (typeof val === 'string') {
     if (val.length === 10 && /^\d{4}-\d{2}-\d{2}$/.test(val)) {
       const [y, m, d] = val.split('-').map(Number);
@@ -344,9 +348,16 @@ function buildUnifiedOperations(
          (typeof op.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(op.date) ? op.date : null))
       : null;
 
-    const d = bookingDateRaw
-      ? (parseToDate(bookingDateRaw + 'T12:00:00') || parseToDate(bookingDateRaw) || new Date())
-      : (parseToDate(op.createdAt || op.date) || new Date());
+    const d =
+      parseToDate(op.createdAt) ||
+      parseToDate(op.effectiveDate) ||
+      parseToDate(op.paidAt) ||
+      parseToDate(op.updatedAt) ||
+      (bookingDateRaw
+        ? (parseToDate(bookingDateRaw + 'T12:00:00') || parseToDate(bookingDateRaw))
+        : null) ||
+      parseToDate(op.date) ||
+      new Date();
 
     const isExp = Boolean(op.isExpense || op.operationType === 'expense' || op.operationType === 'purchase' || op.metadata?.isExpense);
     const isCancelledOp = CANCELLED_STATUSES.has(String(op.paymentStatus)) ||
@@ -395,7 +406,14 @@ function buildUnifiedOperations(
     const bPayStatus = String(b.payment_status || b.paymentStatus || '').toLowerCase();
     const isCancelled = bStatus === 'cancelado' || bStatus === 'cancelled' || bPayStatus.includes('cancel');
 
-    const d = parseToDate(b.date || b.startTime || b.start_time || b.createdAt) || new Date();
+    const d =
+      parseToDate(b.createdAt) ||
+      parseToDate(b.created_at) ||
+      parseToDate(b.updatedAt) ||
+      parseToDate(b.date) ||
+      parseToDate(b.startTime) ||
+      parseToDate(b.start_time) ||
+      new Date();
     const rawPrice = Number(b.price || b.price_total || 0);
     const isPaid = b.payment_status === 'paid' || b.paymentStatus === 'paid' || b.payment_status === 'pagado';
     const rawPaid = Number(b.amount_paid ?? b.deposit ?? 0);
@@ -478,8 +496,8 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   } = params;
 
   const isMonthly = periodType === 'monthly';
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
-  const targetIds = (targetId === 'B' || targetId === 'complejo_central') ? ['B', 'complejo_central'] : [targetId];
+  const targetId = complexId || '';
+  const targetIds = targetId ? [targetId] : [];
   const complexName = (rawComplexName || 'Complejo Deportivo').trim();
 
   // ---------------------------------------------------------------------------
@@ -492,7 +510,7 @@ export async function downloadUnifiedWeeklyReportPdf(params: UnifiedReportOption
   let courts = propCourts || [];
 
   try {
-    if (!venueProfile) {
+    if (!venueProfile && targetId) {
       const snap = await getDoc(firestoreDoc(db, 'complejos', targetId));
       if (snap.exists()) {
         venueProfile = snap.data();

@@ -7,9 +7,14 @@ import {
   setPersistence,
   browserLocalPersistence
 } from 'firebase/auth';
-import { doc, setDoc, deleteDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, deleteDoc, onSnapshot, serverTimestamp } from 'firebase/firestore';
 import { auth, googleProvider, testConnection, db } from '../lib/firebase';
-import { parseTrialExpiration, isComplexCommerciallyAuthorized } from '../lib/invitations';
+import {
+  parseTrialExpiration,
+  isComplexCommerciallyAuthorized,
+  isPreviewOrLocalOrigin,
+  saveCachedPublicAppOrigin
+} from '../lib/invitations';
 import type { ComplexMembership, CollaboratorProfile, ComplexClientStatus, ComplexUserRole } from '../types';
 import type { BillingConfig } from '../lib/weeklyBilling';
 import { DEFAULT_BILLING_CONFIG, subscribeBillingConfig } from '../lib/weeklyBilling';
@@ -41,7 +46,7 @@ interface FirebaseContextType {
   signInWithGoogle: () => Promise<FirebaseUser | null>;
   logout: () => Promise<void>;
   setActiveComplexId: (complexId: string) => void;
-  reloadCollaboratorData: () => Promise<void>;
+  reloadCollaboratorData: (preferredComplexId?: string) => Promise<void>;
 }
 
 const FirebaseContext = createContext<FirebaseContextType>({
@@ -96,6 +101,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [activeRole, setActiveRole] = useState<ComplexUserRole | null>(null);
   const expirationTimerRef = useRef<NodeJS.Timeout | null>(null);
   const revokedCleanupAttemptedRef = useRef<Set<string>>(new Set());
+  const provisionedOwnerRefs = useRef<Set<string>>(new Set());
+  const syncedPublicUrlRefs = useRef<Set<string>>(new Set());
 
   const isOwner = activeRole === 'owner';
   const isManager = activeRole === 'manager';
@@ -125,10 +132,35 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, []);
 
-  // Test Firestore connection on boot
+  // Test Firestore connection on boot and cache real public origin (e.g. Vercel)
   useEffect(() => {
     testConnection();
+    if (typeof window !== 'undefined' && !isPreviewOrLocalOrigin(window.location.origin)) {
+      saveCachedPublicAppOrigin(window.location.origin);
+    }
   }, []);
+
+  // Automatically persist the real public Vercel origin on complejos/{activeComplexId} when opened by owner
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!isOwner || !activeComplexId || !activeComplex) return;
+    const currentOrigin = window.location.origin;
+    if (isPreviewOrLocalOrigin(currentOrigin)) return;
+
+    saveCachedPublicAppOrigin(currentOrigin);
+    if (activeComplex.publicAppUrl === currentOrigin) return;
+
+    const syncKey = `${activeComplexId}:${currentOrigin}`;
+    if (syncedPublicUrlRefs.current.has(syncKey)) return;
+    syncedPublicUrlRefs.current.add(syncKey);
+
+    updateDoc(doc(db, 'complejos', activeComplexId), {
+      publicAppUrl: currentOrigin,
+      updatedAt: serverTimestamp()
+    }).catch(() => {
+      // Ignore silent background sync errors
+    });
+  }, [isOwner, activeComplexId, activeComplex]);
 
   // 1. Auth State Observer:
   // Listens to Firebase Authentication changes
@@ -331,6 +363,25 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
         revokedCleanupAttemptedRef.current.delete(`${user.uid}:${cid}`);
 
+        // Auto-provision missing owner member doc ONCE when ownerUid === user.uid
+        if (isOwnerByComplexUid && !hasVerifiedMemberDoc) {
+          const provKey = `${cid}:${user.uid}`;
+          if (!provisionedOwnerRefs.current.has(provKey)) {
+            provisionedOwnerRefs.current.add(provKey);
+            setDoc(doc(db, 'complejos', cid, 'members', user.uid), {
+              uid: user.uid,
+              email: user.email || '',
+              displayName: user.displayName || user.email?.split('@')[0] || 'Propietario',
+              photoURL: user.photoURL || null,
+              role: 'owner',
+              joinedAt: serverTimestamp()
+            }, { merge: true }).catch((err) => {
+              provisionedOwnerRefs.current.delete(provKey);
+              console.warn('[Members] Auto-provision owner member error:', err);
+            });
+          }
+        }
+
         const resolvedRole: ComplexUserRole = isOwnerByComplexUid
           ? 'owner'
           : (memberState?.role || 'staff');
@@ -357,7 +408,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       }
 
-      if (revokedComplexIds.length > 0) {
+      const isInviteRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/invite/');
+      if (revokedComplexIds.length > 0 && !isInviteRoute) {
         cleanupRevokedMemberships(user.uid, revokedComplexIds, memberships);
       }
 
@@ -409,7 +461,7 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const allResponded = complexIds.every(
           id => respondedComplexIds.has(id) && respondedMemberIds.has(id)
         );
-        if (allResponded) {
+        if (allResponded && !isInviteRoute) {
           console.log('[Auth] Real-time: All complex & member checks completed, none authorized. Setting hasAccess=false.');
           setAuthorizedComplexes([]);
           setHasAccess(false);
@@ -420,6 +472,8 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           try {
             localStorage.removeItem('activeComplexId');
           } catch (e) {}
+          setLoading(false);
+        } else if (allResponded) {
           setLoading(false);
         }
       }
@@ -477,75 +531,6 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       unsubs.forEach(u => u());
     };
   }, [user, memberships, collaboratorData?.activeComplexId, cleanupRevokedMemberships]);
-
-  // 4. Real-Time Complex Membership & Active Role Listener:
-  // Subscribes to complejos/{activeComplexId}/members/{user.uid}
-  // - Auto-creates owner member record ONLY if activeComplex.ownerUid === user.uid.
-  // - Synchronizes activeRole ('owner' | 'manager' | 'staff') in real-time.
-  // - If member doc is removed/denied and user is not ownerUid: immediately revokes access & cleans collaborator doc.
-  useEffect(() => {
-    if (!user || !activeComplexId) {
-      setActiveRole(null);
-      return;
-    }
-
-    const memberDocRef = doc(db, 'complejos', activeComplexId, 'members', user.uid);
-    const isOwnerByComplexUid = activeComplex?.ownerUid === user.uid;
-
-    const revokeActiveComplexAccess = () => {
-      const isInviteRoute = typeof window !== 'undefined' && window.location.pathname.startsWith('/invite/');
-      if (isInviteRoute) return;
-
-      console.warn('[Members] User membership removed or not found. Revoking access for UID:', user.uid);
-      cleanupRevokedMemberships(user.uid, [activeComplexId], memberships);
-
-      setAuthorizedComplexes(prev => prev.filter(c => c.complexId !== activeComplexId));
-      setHasAccess(false);
-      activeComplexIdRef.current = null;
-      setActiveComplexIdState(null);
-      setActiveComplex(null);
-      setActiveRole(null);
-      try {
-        localStorage.removeItem('activeComplexId');
-      } catch (e) {}
-    };
-
-    const unsubMember = onSnapshot(memberDocRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        const normalizedRole: ComplexUserRole = isOwnerByComplexUid
-          ? 'owner'
-          : normalizeMemberRole(data?.role);
-        setActiveRole(normalizedRole);
-      } else {
-        if (isOwnerByComplexUid) {
-          // Auto-provision owner member doc ONLY when complex.ownerUid === user.uid
-          setActiveRole('owner');
-          setDoc(memberDocRef, {
-            uid: user.uid,
-            email: user.email || '',
-            displayName: user.displayName || user.email?.split('@')[0] || 'Propietario',
-            photoURL: user.photoURL || null,
-            role: 'owner',
-            joinedAt: serverTimestamp()
-          }, { merge: true }).catch((err) => {
-            console.warn('[Members] Auto-provision owner member error:', err);
-          });
-        } else {
-          revokeActiveComplexAccess();
-        }
-      }
-    }, (err) => {
-      console.warn('[Members] Real-time member listener error:', err);
-      if (isOwnerByComplexUid) {
-        setActiveRole('owner');
-      } else {
-        revokeActiveComplexAccess();
-      }
-    });
-
-    return () => unsubMember();
-  }, [user, activeComplexId, activeComplex?.ownerUid, memberships, cleanupRevokedMemberships]);
 
   /**
    * Switch active complex among the authorized complexes.
@@ -631,13 +616,42 @@ export const FirebaseProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  const reloadCollaboratorData = async () => {
-    // With onSnapshot active, state synchronizes automatically,
-    // but we can touch state to trigger an immediate flush if needed
-    if (user) {
-      setLoading(true);
+  const reloadCollaboratorData = useCallback(async (preferredComplexId?: string) => {
+    if (preferredComplexId) {
+      activeComplexIdRef.current = preferredComplexId;
+      try {
+        localStorage.setItem('activeComplexId', preferredComplexId);
+      } catch (e) {}
     }
-  };
+
+    const currentUser = auth.currentUser || user;
+    if (!currentUser) {
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const colabSnap = await getDoc(doc(db, 'collaborators', currentUser.uid));
+      if (!colabSnap.exists()) {
+        setCollaboratorData(null);
+        setMemberships([]);
+        setLoading(false);
+        return;
+      }
+
+      const data = colabSnap.data() as CollaboratorProfile;
+      setCollaboratorData(data);
+      const mList = Array.isArray(data.memberships) ? data.memberships : [];
+      setMemberships(mList);
+      if (mList.length === 0) {
+        setLoading(false);
+      }
+    } catch (err) {
+      console.warn('[Auth] reloadCollaboratorData error:', err);
+      setLoading(false);
+    }
+  }, [user]);
 
   const userEmail = user?.email?.toLowerCase() || '';
   const isAdmin = Boolean(user && SUPER_ADMIN_EMAILS.includes(userEmail));

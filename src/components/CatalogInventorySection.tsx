@@ -57,11 +57,11 @@ export interface CatalogInventorySectionProps {
 }
 
 export const CatalogInventorySection: React.FC<CatalogInventorySectionProps> = ({ 
-  complexId = 'B',
+  complexId = '',
   initialTab = 'sales',
   hideTopTabs = false
 }) => {
-  const targetId = (!complexId || complexId === 'complejo_central') ? 'B' : complexId;
+  const targetId = complexId;
 
   // Pestaña principal: 'sales' (Ventas) vs 'expenses' (Gastos)
   const [activeCatalogSection, setActiveCatalogSection] = useState<'sales' | 'expenses'>(initialTab);
